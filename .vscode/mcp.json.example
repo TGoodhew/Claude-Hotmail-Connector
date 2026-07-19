@@ -1,0 +1,14 @@
+{
+  // Copy to .vscode/mcp.json and edit the args path + client id.
+  // VS Code launches this server as a local stdio subprocess.
+  "servers": {
+    "hotmail-connector": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["C:\\Users\\Tony\\Source\\Repos\\Claude-Hotmail-Connector\\dist\\index.js"],
+      "env": {
+        "MICROSOFT_CLIENT_ID": "<your-entra-app-client-id>"
+      }
+    }
+  }
+}

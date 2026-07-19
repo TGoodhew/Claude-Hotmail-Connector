@@ -1,0 +1,12 @@
+{
+  "//": "Merge this into your claude_desktop_config.json. Edit the args path and client id.",
+  "mcpServers": {
+    "hotmail-connector": {
+      "command": "node",
+      "args": ["C:\\Users\\Tony\\Source\\Repos\\Claude-Hotmail-Connector\\dist\\index.js"],
+      "env": {
+        "MICROSOFT_CLIENT_ID": "<your-entra-app-client-id>"
+      }
+    }
+  }
+}
