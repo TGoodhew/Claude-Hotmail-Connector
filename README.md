@@ -19,14 +19,14 @@ OAuth 2.0 authorization-code + PKCE flow with a loopback redirect.
 
 ## Tools (planned)
 
-| Tool | Purpose | Graph permission |
-|---|---|---|
-| `whoami` | Confirm the connected account | `User.Read` |
-| `list_messages` | Search/list mail (find booking confirmations) | `Mail.Read` |
-| `get_message` | Read one email as text | `Mail.Read` |
-| `list_events` | Read calendar over a date range | `Calendars.Read` |
-| `create_event` | Add a calendar event (timezone-correct, idempotent) | `Calendars.ReadWrite` |
-| `update_event` | Edit a calendar event | `Calendars.ReadWrite` |
+| Tool            | Purpose                                             | Graph permission      |
+| --------------- | --------------------------------------------------- | --------------------- |
+| `whoami`        | Confirm the connected account                       | `User.Read`           |
+| `list_messages` | Search/list mail (find booking confirmations)       | `Mail.Read`           |
+| `get_message`   | Read one email as text                              | `Mail.Read`           |
+| `list_events`   | Read calendar over a date range                     | `Calendars.Read`      |
+| `create_event`  | Add a calendar event (timezone-correct, idempotent) | `Calendars.ReadWrite` |
+| `update_event`  | Edit a calendar event                               | `Calendars.ReadWrite` |
 
 Mail is **read-only** (no `Mail.Send`). There is **no hard-delete** tool. `cancel_event` is deliberately
 deferred as a gated/destructive action pending explicit approval.
