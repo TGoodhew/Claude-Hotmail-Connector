@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Secrets & local config (NEVER commit)
+.env
+.env.local
+.env.*.local
+.dev.vars
+*.pem
+
+# Token cache / credential store (holds Microsoft refresh tokens)
+.cache/
+*.token
+*.tokens
+token-cache.*
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test / coverage
+coverage/
+.vitest/
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+!.vscode/mcp.json.example
+.idea/
+.DS_Store
+Thumbs.db
