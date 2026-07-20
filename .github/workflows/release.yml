@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build single-exe (Node SEA)
+        run: npm run build:exe
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        run: npm run build:installer
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $files = @("build/hotmail-connector.exe", "dist-installer/HotmailConnectorSetup.exe")
+          $out = "dist-installer/SHA256SUMS.txt"
+          Remove-Item $out -ErrorAction SilentlyContinue
+          foreach ($f in $files) {
+            $hash = (Get-FileHash $f -Algorithm SHA256).Hash
+            "$hash  $(Split-Path $f -Leaf)" | Add-Content $out
+          }
+          Get-Content $out
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = "Windows build for $env:TAG. Unsigned by design (see docs/installer.md) - Windows SmartScreen will warn; choose More info -> Run anyway. Verify downloads against SHA256SUMS.txt. Installer: HotmailConnectorSetup.exe (recommended); portable: hotmail-connector.exe."
+          gh release view $env:TAG 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:TAG --title $env:TAG --notes $notes --target $env:GITHUB_SHA
+          }
+          gh release upload $env:TAG build/hotmail-connector.exe dist-installer/HotmailConnectorSetup.exe dist-installer/SHA256SUMS.txt --clobber
