@@ -6,8 +6,8 @@
  * this logger never touches it.
  *
  * All context objects and messages pass through {@link redact} before being
- * serialised, so tokens, `Authorization` headers, OAuth codes, cookies, and
- * secrets can never reach the log output.
+ * serialised, so tokens, `Authorization` headers, OAuth codes, cookies,
+ * secrets, and account identifiers (email/UPN) can never reach the log output.
  */
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -42,6 +42,13 @@ const SENSITIVE_KEY_EXACT = new Set([
   "state",
   "session",
   "mcp-session-id",
+  // Account identifiers (PII) — redacted from logs even though they aren't secrets.
+  "account",
+  "email",
+  "upn",
+  "userprincipalname",
+  "username",
+  "preferred_username",
 ]);
 
 // Substrings that mark a key as secret regardless of surrounding text.

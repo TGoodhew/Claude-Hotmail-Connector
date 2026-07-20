@@ -1,8 +1,8 @@
 /**
- * MCP tool definitions for the calendar.
- *
- * Read tools live here now; write tools (create_event / update_event) are added
- * by a later issue and appended to {@link calendarTools}.
+ * MCP tool definitions for the calendar: list_events (read) plus create_event
+ * and update_event (writes). Event times are local wall-clock + IANA zone.
+ * Deletion (cancel_event) is intentionally omitted (see the note by
+ * {@link calendarTools}).
  */
 
 import { z } from "zod";
@@ -116,9 +116,7 @@ export const createEventTool: ToolDefinition<typeof createEventShape> = defineTo
       reminderMinutesBeforeStart: input.reminderMinutesBeforeStart,
       transactionId: input.transactionId,
     });
-    return toolResult(`Created event "${result.subject ?? input.subject}".`, {
-      event: result as unknown as Record<string, unknown>,
-    });
+    return toolResult(`Created event "${result.subject ?? input.subject}".`, { event: result });
   },
 });
 
@@ -143,7 +141,8 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
   inputShape: updateEventShape,
   annotations: {
     readOnlyHint: false,
-    destructiveHint: false,
+    // A PATCH overwrites existing field values in place (not additive).
+    destructiveHint: true,
     idempotentHint: true,
     openWorldHint: true,
   },
@@ -158,9 +157,7 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
       isReminderOn: input.isReminderOn,
       reminderMinutesBeforeStart: input.reminderMinutesBeforeStart,
     });
-    return toolResult(`Updated event "${result.subject ?? input.id}".`, {
-      event: result as unknown as Record<string, unknown>,
-    });
+    return toolResult(`Updated event "${result.subject ?? input.id}".`, { event: result });
   },
 });
 

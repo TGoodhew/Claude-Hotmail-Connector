@@ -206,6 +206,69 @@ describe("createMicrosoftAuth.getAccessToken", () => {
     });
     await expect(auth.getAccessToken({ interactive: false })).rejects.toBeInstanceOf(AuthError);
   });
+
+  it("forces a refresh of a still-valid token when minTtlMs is huge (the 401-recovery contract)", async () => {
+    const store = memoryStore({ ...validCached, accessToken: "OLD-AT", expiresAt: future });
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ access_token: "FORCED-AT", refresh_token: "RT2", expires_in: 3600 }),
+    );
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    // Even though the cached token is valid, a huge minTtlMs must bypass it and refresh.
+    const token = await auth.getAccessToken({ minTtlMs: Number.MAX_SAFE_INTEGER });
+    expect(token).toBe("FORCED-AT");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(store.current?.accessToken).toBe("FORCED-AT");
+  });
+
+  it("collapses concurrent refreshes into a single network call (single-flight)", async () => {
+    const store = memoryStore({ ...validCached, expiresAt: 1_500 });
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      return jsonResponse({
+        access_token: `AT-${calls}`,
+        refresh_token: `RT-${calls}`,
+        expires_in: 3600,
+      });
+    });
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    const [a, b] = await Promise.all([auth.getAccessToken(), auth.getAccessToken()]);
+    // One refresh serves both callers — the rotating refresh token isn't spent twice.
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(a).toBe("AT-1");
+    expect(b).toBe("AT-1");
+  });
+
+  it("recovers from a corrupt cache: clears it and reports not-signed-in", async () => {
+    const clear = vi.fn(async () => {});
+    const throwingStore: TokenStore = {
+      load: async () => {
+        throw new AuthError("Token cache is unreadable.");
+      },
+      save: async () => {},
+      clear,
+    };
+    const auth = createMicrosoftAuth({
+      config,
+      store: throwingStore,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    await expect(auth.getAccessToken({ interactive: false })).rejects.toBeInstanceOf(AuthError);
+    expect(clear).toHaveBeenCalledOnce();
+    // getAccount() swallows the same load error and reports "no account".
+    expect(await auth.getAccount()).toBeUndefined();
+  });
 });
 
 function jsonResponse(body: unknown, status = 200): Response {

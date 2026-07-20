@@ -115,35 +115,60 @@ export function toGraphDateTime(localDateTime: string, timeZone: string): GraphD
   return { dateTime: normalizeLocalDateTime(localDateTime), timeZone };
 }
 
-function formatFromUtcParts(dt: Date): string {
-  const p2 = (n: number): string => String(n).padStart(2, "0");
-  return (
-    `${dt.getUTCFullYear()}-${p2(dt.getUTCMonth() + 1)}-${p2(dt.getUTCDate())}` +
-    `T${p2(dt.getUTCHours())}:${p2(dt.getUTCMinutes())}:${p2(dt.getUTCSeconds())}`
-  );
+/** True if an ISO string carries an explicit UTC `Z` or a numeric offset. */
+export function hasExplicitOffset(s: string): boolean {
+  const t = s.trim();
+  return HAS_ZULU_RE.test(t) || HAS_OFFSET_RE.test(t);
+}
+
+/** Offset (ms) of `timeZone` at a given UTC instant: local wall-clock − UTC. */
+function tzOffsetMs(utcMs: number, timeZone: string): number {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = dtf.formatToParts(new Date(utcMs));
+  const get = (t: string): number => Number(parts.find((p) => p.type === t)?.value ?? "0");
+  const hour = get("hour") % 24; // some ICU builds render midnight as "24"
+  const asIfUtc = Date.UTC(get("year"), get("month") - 1, get("day"), hour, get("minute"), get("second"));
+  return asIfUtc - utcMs;
 }
 
 /**
- * Shift a local wall-clock time by a number of minutes (may be negative),
- * handling day/month rollover. This is pure wall-clock arithmetic — it does
- * NOT convert between zones — so it is safe for building travel-time blocks
- * around a booking (e.g. 15 minutes before/after).
+ * Interpret a bare local wall-clock dateTime as a time in `timeZone` and return
+ * the corresponding UTC instant as an ISO string (`...Z`).
+ *
+ * Used to pin a calendar query window so the queried range matches the zone the
+ * results are rendered in. If the input already carries an offset/`Z` it is
+ * returned unchanged; anything that isn't a bare `YYYY-MM-DDTHH:mm[:ss]` (e.g. a
+ * date-only value) is passed through untouched for Graph to interpret.
  */
-export function shiftLocalDateTime(localDateTime: string, minutes: number): string {
-  const norm = normalizeLocalDateTime(localDateTime);
-  const m = LOCAL_DT_RE.exec(norm)!;
-  const dt = new Date(
-    Date.UTC(
-      Number(m[1]),
-      Number(m[2]) - 1,
-      Number(m[3]),
-      Number(m[4]),
-      Number(m[5]),
-      Number(m[6]),
-    ),
+export function zonedWallClockToUtcIso(dateTime: string, timeZone: string): string {
+  const s = dateTime.trim();
+  if (hasExplicitOffset(s)) return s;
+  const m = LOCAL_DT_RE.exec(s);
+  if (!m) return dateTime;
+  assertValidTimeZone(timeZone);
+  const asUtc = Date.UTC(
+    Number(m[1]),
+    Number(m[2]) - 1,
+    Number(m[3]),
+    Number(m[4]),
+    Number(m[5]),
+    m[6] ? Number(m[6]) : 0,
   );
-  dt.setUTCMinutes(dt.getUTCMinutes() + minutes);
-  return formatFromUtcParts(dt);
+  let offset = tzOffsetMs(asUtc, timeZone);
+  // Refine once so DST boundaries (where the offset differs at the corrected
+  // instant) resolve to the correct UTC time.
+  const refined = tzOffsetMs(asUtc - offset, timeZone);
+  if (refined !== offset) offset = refined;
+  return new Date(asUtc - offset).toISOString();
 }
 
 /**

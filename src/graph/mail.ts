@@ -11,7 +11,7 @@
 
 import { htmlToText } from "../util/html.js";
 import { ValidationError } from "../util/errors.js";
-import type { GraphClient } from "./client.js";
+import type { GraphClient, ODataPage } from "./client.js";
 
 const MESSAGE_SELECT = "id,subject,from,receivedDateTime,webLink,bodyPreview,hasAttachments";
 
@@ -51,11 +51,6 @@ interface GraphMessage {
   body?: { contentType?: string; content?: string };
 }
 
-interface MessagesPage {
-  value?: GraphMessage[];
-  "@odata.nextLink"?: string;
-}
-
 function toInstant(iso: string, label: string): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) {
@@ -65,6 +60,8 @@ function toInstant(iso: string, label: string): string {
 }
 
 export interface BuiltMessagesQuery {
+  /** Which Graph mode the query uses; drives the eventual-consistency header. */
+  mode: "search" | "filter";
   query: Record<string, string | number>;
   clientDateFilter?: { afterMs?: number; beforeMs?: number };
 }
@@ -82,14 +79,16 @@ export function buildMessagesQuery(input: ListMessagesInput): BuiltMessagesQuery
   if (input.subjectContains) terms.push(`subject:${input.subjectContains.trim()}`);
 
   if (terms.length > 0) {
-    // $search mode — cannot combine with $filter/$orderby.
-    q.$search = `"${terms.join(" ")}"`;
+    // $search mode — cannot combine with $filter/$orderby. Strip embedded
+    // double-quotes so a term can't break out of the quoted KQL phrase.
+    q.$search = `"${terms.map((t) => t.replace(/"/g, "")).join(" ")}"`;
     const clientDateFilter: { afterMs?: number; beforeMs?: number } = {};
     if (input.receivedAfter)
       clientDateFilter.afterMs = Date.parse(toInstant(input.receivedAfter, "receivedAfter"));
     if (input.receivedBefore)
       clientDateFilter.beforeMs = Date.parse(toInstant(input.receivedBefore, "receivedBefore"));
     return {
+      mode: "search",
       query: q,
       ...(clientDateFilter.afterMs !== undefined || clientDateFilter.beforeMs !== undefined
         ? { clientDateFilter }
@@ -105,7 +104,7 @@ export function buildMessagesQuery(input: ListMessagesInput): BuiltMessagesQuery
     filters.push(`receivedDateTime le ${toInstant(input.receivedBefore, "receivedBefore")}`);
   if (filters.length > 0) q.$filter = filters.join(" and ");
   q.$orderby = "receivedDateTime desc";
-  return { query: q };
+  return { mode: "filter", query: q };
 }
 
 function shapeSummary(m: GraphMessage): MessageSummary {
@@ -136,20 +135,19 @@ export async function listMessages(
   input: ListMessagesInput,
 ): Promise<ListMessagesResult> {
   // A pageToken is a full @odata.nextLink URL — follow it verbatim.
-  const useSearch = Boolean(input.query || input.from || input.subjectContains);
-  let page: MessagesPage;
+  let page: ODataPage<GraphMessage>;
   let clientDateFilter: { afterMs?: number; beforeMs?: number } | undefined;
 
   if (input.pageToken) {
-    page = (await graph.request<MessagesPage>("GET", input.pageToken)).data;
+    page = (await graph.request<ODataPage<GraphMessage>>("GET", input.pageToken)).data;
   } else {
     const built = buildMessagesQuery(input);
     clientDateFilter = built.clientDateFilter;
     page = (
-      await graph.request<MessagesPage>("GET", "/me/messages", {
+      await graph.request<ODataPage<GraphMessage>>("GET", "/me/messages", {
         query: built.query,
         // $search on messages benefits from eventual consistency.
-        headers: useSearch ? { consistencylevel: "eventual" } : undefined,
+        headers: built.mode === "search" ? { consistencylevel: "eventual" } : undefined,
       })
     ).data;
   }
@@ -188,14 +186,12 @@ export interface MessageDetail {
   attachments: AttachmentMeta[];
 }
 
-interface AttachmentsPage {
-  value?: Array<{
-    id?: string;
-    name?: string;
-    contentType?: string;
-    size?: number;
-    isInline?: boolean;
-  }>;
+interface GraphAttachment {
+  id?: string;
+  name?: string;
+  contentType?: string;
+  size?: number;
+  isInline?: boolean;
 }
 
 /** Read a single message, converting HTML to text unless html is requested. */
@@ -217,7 +213,7 @@ export async function getMessage(
 
   let attachments: AttachmentMeta[] = [];
   if (msg.hasAttachments) {
-    const page = await graph.get<AttachmentsPage>(`/me/messages/${id}/attachments`, {
+    const page = await graph.get<ODataPage<GraphAttachment>>(`/me/messages/${id}/attachments`, {
       query: { $select: "id,name,contentType,size,isInline" },
     });
     attachments = (page.value ?? []).map((a) => ({

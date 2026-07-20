@@ -3,8 +3,9 @@
  *
  * Every Graph module goes through this wrapper, which centralises the common
  * tool rules from the spec (§7): inject the Bearer access token; refresh once on
- * 401 and retry; back off on 429/503 honouring `Retry-After`; follow
- * `@odata.nextLink` pagination up to a cap; enforce a per-request timeout; and
+ * 401 and retry; back off on 429/503/504 honouring `Retry-After`; retry timeouts
+ * and transient network errors with the same budget; follow `@odata.nextLink`
+ * pagination up to a cap; enforce a per-request timeout (covering the body); and
  * never log tokens.
  */
 
@@ -16,6 +17,8 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 3;
 const MAX_RETRY_DELAY_MS = 60_000;
 const DEFAULT_PAGE_CAP = 100;
+/** Extra page-request budget beyond the item cap, bounding pathological pagination. */
+const MAX_EXTRA_PAGES = 10;
 
 export interface GraphRequestOptions {
   query?: Record<string, string | number | boolean | undefined>;
@@ -38,7 +41,7 @@ export interface PageOptions {
   maxItems?: number;
 }
 
-interface ODataPage<T> {
+export interface ODataPage<T> {
   value?: T[];
   "@odata.nextLink"?: string;
 }
@@ -119,12 +122,18 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
   const maxRetries = deps.maxRetries ?? DEFAULT_MAX_RETRIES;
   const defaultTimeoutMs = deps.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
 
+  interface RawResponse {
+    status: number;
+    headers: Headers;
+    text: string;
+  }
+
   async function fetchOnce(
     method: string,
     url: string,
     token: string,
     opts: GraphRequestOptions,
-  ): Promise<Response> {
+  ): Promise<RawResponse> {
     const controller = new AbortController();
     const timeoutMs = opts.timeoutMs ?? defaultTimeoutMs;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -146,8 +155,16 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
     }
 
     try {
-      return await doFetch(url, { method, headers, body, signal: controller.signal });
+      const res = await doFetch(url, { method, headers, body, signal: controller.signal });
+      // Read the body under the SAME timeout/abort signal so a stalled or
+      // trickled response body is bounded too — not just the wait for headers.
+      const text = res.status === 204 ? "" : await res.text();
+      return { status: res.status, headers: res.headers, text };
     } catch (e) {
+      // A caller-initiated cancellation must not be retried or reported as a timeout.
+      if (opts.signal?.aborted) {
+        throw new GraphError("Graph request was cancelled.", { cause: e });
+      }
       if (controller.signal.aborted) {
         throw new TimeoutError(`Graph request timed out after ${timeoutMs}ms.`, e);
       }
@@ -158,26 +175,35 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
     }
   }
 
-  async function toGraphError(res: Response): Promise<GraphError> {
+  function toGraphError(res: RawResponse): GraphError {
     let code: string | undefined;
     let message = `Graph request failed with status ${res.status}.`;
-    try {
-      const body = (await res.json()) as { error?: { code?: string; message?: string } };
-      if (body.error) {
-        code = body.error.code;
-        if (body.error.message) message = body.error.message;
+    if (res.text) {
+      try {
+        const body = JSON.parse(res.text) as { error?: { code?: string; message?: string } };
+        if (body.error) {
+          code = body.error.code;
+          if (body.error.message) message = body.error.message;
+        }
+      } catch {
+        // non-JSON body; keep the generic message.
       }
-    } catch {
-      // non-JSON body; keep the generic message.
     }
     return new GraphError(message, { status: res.status, graphCode: code });
   }
 
-  async function parseBody<T>(res: Response): Promise<T> {
-    if (res.status === 204) return undefined as T;
-    const text = await res.text();
-    if (!text) return undefined as T;
-    return JSON.parse(text) as T;
+  function parseBody<T>(res: RawResponse): T {
+    if (res.status === 204 || !res.text) return undefined as T;
+    return JSON.parse(res.text) as T;
+  }
+
+  /**
+   * A pre-response failure (timeout or transient network error) worth retrying.
+   * A GraphError that carries an HTTP `status` came from a real response and is
+   * handled by the status paths instead; a caller cancellation is thrown earlier.
+   */
+  function isRetriableThrow(e: unknown): boolean {
+    return e instanceof TimeoutError || (e instanceof GraphError && e.status === undefined);
   }
 
   async function request<T>(
@@ -196,7 +222,26 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
         ...(refreshed ? { minTtlMs: Number.MAX_SAFE_INTEGER } : {}),
       });
 
-      const res = await fetchOnce(method, url, token, opts);
+      let res: RawResponse;
+      try {
+        res = await fetchOnce(method, url, token, opts);
+      } catch (e) {
+        // Never retry a caller-initiated cancellation; retry timeouts and
+        // transient network errors with the same backoff budget as throttling.
+        if (opts.signal?.aborted) throw e;
+        if (isRetriableThrow(e) && attempt < maxRetries) {
+          const delay = backoffMs(attempt);
+          attempt += 1;
+          log.warn("Graph request failed transiently; backing off", {
+            attempt,
+            delayMs: delay,
+            error: e instanceof Error ? e.name : "unknown",
+          });
+          await sleep(delay);
+          continue;
+        }
+        throw e;
+      }
 
       if (res.status === 401 && !refreshed) {
         refreshed = true;
@@ -212,10 +257,9 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
         continue;
       }
 
-      if (!res.ok) throw await toGraphError(res);
+      if (res.status < 200 || res.status >= 300) throw toGraphError(res);
 
-      const data = await parseBody<T>(res);
-      return { status: res.status, data, headers: res.headers };
+      return { status: res.status, data: parseBody<T>(res), headers: res.headers };
     }
   }
 
@@ -242,15 +286,23 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       const items: T[] = [];
       let target = path;
       let first = true;
+      // Backstop: bound the number of page requests so an empty page that still
+      // carries an @odata.nextLink (or a self-referential link) cannot loop forever.
+      let pages = 0;
+      const maxPages = cap + MAX_EXTRA_PAGES;
       do {
         // On the first request send the full opts; for nextLink pages keep the
         // headers (e.g. Prefer: outlook.timezone) but not the baked-in query.
         const pageOptsToSend: GraphRequestOptions = first ? opts : { headers: opts.headers };
         const { data } = await request<ODataPage<T>>("GET", target, pageOptsToSend);
         if (data.value) items.push(...data.value);
-        target = data["@odata.nextLink"] ?? "";
+        const next = data["@odata.nextLink"] ?? "";
+        // Stop if Graph hands back the same link it just gave us (would spin).
+        if (next === target) break;
+        target = next;
         first = false;
-      } while (target && items.length < cap);
+        pages += 1;
+      } while (target && items.length < cap && pages < maxPages);
       return items.slice(0, cap);
     },
   };
