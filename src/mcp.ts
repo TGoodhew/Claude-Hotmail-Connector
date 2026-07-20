@@ -3,8 +3,9 @@
  *
  * Registers every tool with the MCP SDK's high-level McpServer. The SDK
  * validates incoming arguments against each tool's input shape; handler errors
- * are caught and returned as a redacted, generic tool error (never thrown to
- * the transport, never leaking internals).
+ * are caught and returned as a client-safe tool result — canned messages for
+ * internal failures, the validation message itself for input errors (see
+ * clientSafeMessage) — never thrown to the transport, never leaking internals.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

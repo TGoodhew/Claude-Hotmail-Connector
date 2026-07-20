@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ValidationError } from "./errors.js";
 import {
+  hasExplicitOffset,
   isValidTimeZone,
   normalizeLocalDateTime,
   preferTimeZoneHeader,
-  shiftLocalDateTime,
   toGraphDateTime,
+  zonedWallClockToUtcIso,
 } from "./time.js";
 
 describe("isValidTimeZone", () => {
@@ -56,17 +57,45 @@ describe("toGraphDateTime — timezone correctness (spec §13)", () => {
   });
 });
 
-describe("shiftLocalDateTime — travel blocks", () => {
-  it("subtracts and adds minutes on the wall clock", () => {
-    expect(shiftLocalDateTime("2026-07-20T12:00:00", -15)).toBe("2026-07-20T11:45:00");
-    expect(shiftLocalDateTime("2026-07-20T12:00:00", 15)).toBe("2026-07-20T12:15:00");
+describe("hasExplicitOffset", () => {
+  it("detects Z and numeric offsets", () => {
+    expect(hasExplicitOffset("2026-07-20T00:00:00Z")).toBe(true);
+    expect(hasExplicitOffset("2026-07-20T00:00:00+10:00")).toBe(true);
+    expect(hasExplicitOffset("2026-07-20T00:00:00-0500")).toBe(true);
   });
-  it("rolls over day boundaries", () => {
-    expect(shiftLocalDateTime("2026-07-20T23:50:00", 15)).toBe("2026-07-21T00:05:00");
-    expect(shiftLocalDateTime("2026-07-20T00:05:00", -15)).toBe("2026-07-19T23:50:00");
+  it("returns false for a bare local wall-clock", () => {
+    expect(hasExplicitOffset("2026-07-20T00:00:00")).toBe(false);
+    expect(hasExplicitOffset("2026-07-20T00:00")).toBe(false);
   });
-  it("rolls over month/year boundaries", () => {
-    expect(shiftLocalDateTime("2026-12-31T23:45:00", 30)).toBe("2027-01-01T00:15:00");
+});
+
+describe("zonedWallClockToUtcIso — calendar window pinning", () => {
+  it("interprets a bare local time in the given zone (Brisbane = UTC+10, no DST)", () => {
+    // 2026-07-20 00:00 in Brisbane is 2026-07-19 14:00 UTC.
+    expect(zonedWallClockToUtcIso("2026-07-20T00:00:00", "Australia/Brisbane")).toBe(
+      "2026-07-19T14:00:00.000Z",
+    );
+  });
+  it("is a no-op when the value already carries an offset/Z", () => {
+    expect(zonedWallClockToUtcIso("2026-07-20T00:00:00Z", "Australia/Brisbane")).toBe(
+      "2026-07-20T00:00:00Z",
+    );
+    expect(zonedWallClockToUtcIso("2026-07-20T00:00:00+10:00", "Australia/Brisbane")).toBe(
+      "2026-07-20T00:00:00+10:00",
+    );
+  });
+  it("handles a DST zone on both sides of the transition (New York)", () => {
+    // July: EDT = UTC-4, so 12:00 local is 16:00 UTC.
+    expect(zonedWallClockToUtcIso("2026-07-20T12:00:00", "America/New_York")).toBe(
+      "2026-07-20T16:00:00.000Z",
+    );
+    // January: EST = UTC-5, so 12:00 local is 17:00 UTC.
+    expect(zonedWallClockToUtcIso("2026-01-20T12:00:00", "America/New_York")).toBe(
+      "2026-01-20T17:00:00.000Z",
+    );
+  });
+  it("passes a date-only value through untouched", () => {
+    expect(zonedWallClockToUtcIso("2026-07-20", "Australia/Brisbane")).toBe("2026-07-20");
   });
 });
 
