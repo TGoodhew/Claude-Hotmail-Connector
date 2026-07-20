@@ -238,8 +238,9 @@ npm run build:installer # Windows: Inno Setup installer (needs iscc on PATH)
 
 Layout: `src/auth` (Microsoft OAuth + encrypted token cache), `src/graph` (Graph client + mail /
 calendar / user modules), `src/tools` (zod schemas + thin handlers), `src/setup` (client auto-config
-+ the `setup`/`unsetup` commands), `src/util` (time, logging, errors, html), `src/mcp.ts` +
-`src/index.ts` (server assembly + stdio entry).
+
+- the `setup`/`unsetup` commands), `src/util` (time, logging, errors, html), `src/mcp.ts` +
+  `src/index.ts` (server assembly + stdio entry).
 
 ## Requirements & design
 

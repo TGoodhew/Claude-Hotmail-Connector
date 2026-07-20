@@ -34,7 +34,11 @@ function memFs(files: Record<string, string> = {}, dirs: Record<string, string[]
 
 describe("buildServerEntry", () => {
   it("builds a stdio entry with the client id in env", () => {
-    const entry = buildServerEntry({ command: "C:\\node.exe", args: ["C:\\index.js"], clientId: "cid" });
+    const entry = buildServerEntry({
+      command: "C:\\node.exe",
+      args: ["C:\\index.js"],
+      clientId: "cid",
+    });
     expect(entry).toEqual({
       type: "stdio",
       command: "C:\\node.exe",
@@ -109,15 +113,19 @@ describe("discoverDesktopConfigsWindows", () => {
 
   it("returns nothing when no configs exist", () => {
     const { fs } = memFs({}, { [packagesDir]: ["Claude_pzs8sxrjxfjjc"] });
-    expect(discoverDesktopConfigsWindows({ APPDATA, LOCALAPPDATA } as NodeJS.ProcessEnv, fs)).toEqual(
-      [],
-    );
+    expect(
+      discoverDesktopConfigsWindows({ APPDATA, LOCALAPPDATA } as NodeJS.ProcessEnv, fs),
+    ).toEqual([]);
   });
 });
 
 describe("applyToConfigFile", () => {
   const path = "C:\\cfg\\claude_desktop_config.json";
-  const entry = buildServerEntry({ command: "C:\\node.exe", args: ["C:\\dist\\index.js"], clientId: "cid" });
+  const entry = buildServerEntry({
+    command: "C:\\node.exe",
+    args: ["C:\\dist\\index.js"],
+    clientId: "cid",
+  });
 
   it("merges into an existing config, backs it up, and writes valid JSON", () => {
     const original = JSON.stringify({ preferences: { a: 1 } });
@@ -137,7 +145,9 @@ describe("applyToConfigFile", () => {
     const res = applyToConfigFile(path, SERVER_KEY, entry, fs);
     expect(res.outcome).toBe("created");
     expect(res.backupPath).toBeUndefined();
-    expect((JSON.parse(store[path]!) as { mcpServers: Record<string, unknown> }).mcpServers[SERVER_KEY]).toEqual(entry);
+    expect(
+      (JSON.parse(store[path]!) as { mcpServers: Record<string, unknown> }).mcpServers[SERVER_KEY],
+    ).toEqual(entry);
   });
 
   it("keeps the first backup pristine across repeated applies", () => {
@@ -148,7 +158,9 @@ describe("applyToConfigFile", () => {
     const entry2 = buildServerEntry({ command: "other.exe" });
     applyToConfigFile(path, SERVER_KEY, entry2, fs);
     expect(store[`${path}.backup`]).toBe(original);
-    expect((JSON.parse(store[path]!) as { mcpServers: Record<string, unknown> }).mcpServers[SERVER_KEY]).toEqual(entry2);
+    expect(
+      (JSON.parse(store[path]!) as { mcpServers: Record<string, unknown> }).mcpServers[SERVER_KEY],
+    ).toEqual(entry2);
   });
 
   it("throws on an existing invalid-JSON config (rather than silently clobbering)", () => {

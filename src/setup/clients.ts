@@ -143,7 +143,9 @@ export function discoverDesktopConfigsWindows(env: NodeJS.ProcessEnv, fs: FsLike
     if (fs.existsSync(packagesDir)) {
       for (const pkg of safeReaddir(fs, packagesDir)) {
         if (!pkg.startsWith("Claude")) continue;
-        add(join(packagesDir, pkg, "LocalCache", "Roaming", "Claude", "claude_desktop_config.json"));
+        add(
+          join(packagesDir, pkg, "LocalCache", "Roaming", "Claude", "claude_desktop_config.json"),
+        );
       }
     }
   }

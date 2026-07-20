@@ -75,7 +75,9 @@ export function runSetup(deps: SetupDeps = {}): SetupOutcome {
 }
 
 /** Reverse of {@link runSetup}: remove our entry from detected host configs (used on uninstall). */
-export function runUnsetup(deps: Pick<SetupDeps, "env" | "platform" | "fs" | "log"> = {}): SetupOutcome {
+export function runUnsetup(
+  deps: Pick<SetupDeps, "env" | "platform" | "fs" | "log"> = {},
+): SetupOutcome {
   const env = deps.env ?? process.env;
   const platform = deps.platform ?? process.platform;
   const fs = deps.fs ?? realFs;
