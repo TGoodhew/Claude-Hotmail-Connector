@@ -25,9 +25,12 @@ const outDir = join(root, "build");
 const exePath = join(outDir, "hotmail-connector.exe");
 const blobPath = join(outDir, "sea-prep.blob");
 
-function run(cmd, args) {
+function run(cmd, args, useShell = false) {
   console.log(`$ ${cmd} ${args.join(" ")}`);
-  execFileSync(cmd, args, { stdio: "inherit", shell: process.platform === "win32" });
+  // A shell is needed to resolve `npx` (a .cmd on Windows), but must NOT be used
+  // for an executable path that contains spaces (e.g. "C:\Program Files\...\node.exe"),
+  // which cmd.exe would split on the space.
+  execFileSync(cmd, args, { stdio: "inherit", shell: useShell });
 }
 
 if (process.platform !== "win32") {
@@ -38,24 +41,23 @@ if (process.platform !== "win32") {
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
-// 1. Bundle to a single CJS file for SEA.
-run("npx", [
-  "tsup",
-  "src/index.ts",
-  "--format",
-  "cjs",
-  "--bundle",
-  "--platform",
-  "node",
-  "--target",
-  "node20",
-  "--out-dir",
-  "dist-sea",
-  "--clean",
-  "--no-splitting",
-]);
-// tsup emits dist-sea/index.cjs; SEA config expects bundle.cjs.
-copyFileSync(join(root, "dist-sea", "index.cjs"), join(root, "dist-sea", "bundle.cjs"));
+// 1. Bundle EVERYTHING (incl. node_modules deps) into one CJS file for SEA.
+//    esbuild bundles dependencies by default; tsup externalises anything listed
+//    under "dependencies", which breaks a SEA (there is no node_modules at
+//    runtime, so those requires fail with ERR_UNKNOWN_BUILTIN_MODULE).
+run(
+  "npx",
+  [
+    "esbuild",
+    "src/index.ts",
+    "--bundle",
+    "--platform=node",
+    "--format=cjs",
+    "--target=node20",
+    "--outfile=dist-sea/bundle.cjs",
+  ],
+  true,
+);
 
 // 2. Generate the SEA blob.
 run(process.execPath, ["--experimental-sea-config", "sea-config.json"]);
@@ -64,14 +66,18 @@ run(process.execPath, ["--experimental-sea-config", "sea-config.json"]);
 copyFileSync(process.execPath, exePath);
 
 // 4. Inject the blob (Windows fuse sentinel).
-run("npx", [
-  "postject",
-  exePath,
-  "NODE_SEA_BLOB",
-  blobPath,
-  "--sentinel-fuse",
-  "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
-]);
+run(
+  "npx",
+  [
+    "postject",
+    exePath,
+    "NODE_SEA_BLOB",
+    blobPath,
+    "--sentinel-fuse",
+    "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
+  ],
+  true,
+);
 
 console.log(`\n✓ Built ${exePath}`);
 console.log("  Test it:  build\\hotmail-connector.exe whoami");
