@@ -36,14 +36,36 @@ Claude Desktop / VS Code ──stdio──▶ this server ──HTTPS──▶ M
 Mail is **read-only** (no `Mail.Send`). There is **no hard-delete** tool. `cancel_event` (event
 deletion) is deliberately **deferred** as a gated/destructive action pending explicit approval.
 
-## Prerequisites
+## Install (recommended)
+
+The easy path — **no Node, no Azure, no config files**. On **Windows**, download the latest
+`HotmailConnectorSetup.exe` (or the portable `hotmail-connector.exe`) from
+[Releases](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases) and run it. The installer
+auto-configures Claude Desktop and runs the one-time Microsoft sign-in for you — the build embeds a
+shared public-client id, so there's nothing to register or configure.
+
+- Windows shows an **"unknown publisher"** warning (the build is unsigned, by design) — click
+  **More info → Run anyway**.
+- After it finishes, **fully quit Claude Desktop from the system tray** (closing the window only
+  minimises it) and reopen it.
+
+See [`docs/installer.md`](docs/installer.md) for the details, the SmartScreen note, and how the
+packages are built. Want to build or run it yourself instead? Use the developer setup below.
+
+## Manual / developer setup
+
+### Prerequisites
 
 - **Node.js 20+** (`node --version`).
 - A **personal Microsoft account** (`@hotmail.com` / `@outlook.com` / `@live.com`).
 - **Claude Desktop** and/or **VS Code** (with MCP support) on the same machine.
 - A one-time **Microsoft Entra app registration** (free — see below).
 
-## 1. Register a Microsoft Entra application (one-time)
+### 1. Register a Microsoft Entra application (one-time, optional)
+
+> You can **skip this** — the build ships with a bundled shared client id. Only do it to bring your
+> own Entra registration. (Maintainers: `scripts/register-app.ps1` automates it; see
+> [`docs/installer.md`](docs/installer.md).)
 
 The connector signs in as a **public/native client** — no client secret is ever used or stored.
 
@@ -64,7 +86,7 @@ The connector signs in as a **public/native client** — no client secret is eve
    `openid`, `profile`, `email`, `offline_access`, `User.Read`, `Mail.Read`, `Calendars.ReadWrite`.
    (Admin consent is not required for a personal account — you consent at first sign-in.)
 
-## 2. Install & build
+### 2. Install & build
 
 ```bash
 git clone https://github.com/TGoodhew/Claude-Hotmail-Connector.git
@@ -73,9 +95,10 @@ npm install
 npm run build          # produces dist/index.js
 ```
 
-## 3. Configure
+### 3. Configure (optional)
 
-Copy the template and set your client id:
+The build ships with a bundled shared client id, so this is **optional**. To use your own Entra
+registration (step 1), set it via a local `.env`:
 
 ```bash
 cp .env.example .env
@@ -93,7 +116,7 @@ Configurable environment variables (see [`.env.example`](.env.example)):
 | `MICROSOFT_SCOPES`         | least-privilege set  | Space/comma-separated override.                 |
 | `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir   | Where the encrypted token cache lives.          |
 
-## 4. Sign in once
+### 4. Sign in once
 
 ```bash
 node dist/index.js login
@@ -109,10 +132,18 @@ Verify:
 node dist/index.js whoami       # should print your name <tony_goodhew@hotmail.com>
 ```
 
-## 5. Wire it into a client
+### 5. Wire it into a client
 
-The server is launched by the MCP client as a stdio subprocess. Pass `MICROSOFT_CLIENT_ID` via the
-client's `env` (or rely on a `.env` file next to the built server).
+The quickest way is to let the connector configure Claude Desktop for you — the same engine the
+installer uses:
+
+```bash
+node dist/index.js setup   # detects Claude Desktop (incl. the Microsoft Store build) and wires it up
+```
+
+Or configure a client manually — the server is launched as a stdio subprocess. Pass
+`MICROSOFT_CLIENT_ID` via the client's `env` only if you're bringing your own registration (otherwise
+the bundled default is used).
 
 ### VS Code / Claude Code
 
@@ -196,16 +227,20 @@ you, then call `create_event` for each booking (and the travel blocks) at the co
 ## Development
 
 ```bash
-npm run dev          # rebuild on change (tsup --watch)
-npm run typecheck    # tsc --noEmit
-npm run lint         # eslint
-npm run format       # prettier --write
-npm test             # vitest (unit + in-memory + built-subprocess smoke)
+npm run dev             # rebuild on change (tsup --watch)
+npm run typecheck       # tsc --noEmit
+npm run lint            # eslint
+npm run format          # prettier --write
+npm test                # vitest (unit + in-memory + built-subprocess smoke)
+npm run build:exe       # Windows: Node SEA single executable (postject via npx)
+npm run build:installer # Windows: Inno Setup installer (needs iscc on PATH)
 ```
 
 Layout: `src/auth` (Microsoft OAuth + encrypted token cache), `src/graph` (Graph client + mail /
-calendar / user modules), `src/tools` (zod schemas + thin handlers), `src/util` (time, logging,
-errors, html), `src/mcp.ts` + `src/index.ts` (server assembly + stdio entry).
+calendar / user modules), `src/tools` (zod schemas + thin handlers), `src/setup` (client auto-config
+
+- the `setup`/`unsetup` commands), `src/util` (time, logging, errors, html), `src/mcp.ts` +
+  `src/index.ts` (server assembly + stdio entry).
 
 ## Requirements & design
 
@@ -213,6 +248,7 @@ The authoritative specifications live in [`docs/`](docs/):
 
 - [`docs/personal-outlook-mcp-connector-requirements.md`](docs/personal-outlook-mcp-connector-requirements.md) — the main build spec (tools, Graph, security, timezone).
 - [`docs/local-hosting-investigation-and-requirements.md`](docs/local-hosting-investigation-and-requirements.md) — why/how to host locally (Mode A stdio, chosen here).
+- [`docs/installer.md`](docs/installer.md) — the packaged Windows installer: auto-config engine, one-time `register-app`, and the SEA/Inno build.
 
 ## License
 

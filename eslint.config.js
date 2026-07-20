@@ -21,4 +21,11 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Node build scripts (plain JS): declare the Node globals they use.
+    files: ["scripts/**/*.{js,mjs,cjs}"],
+    languageOptions: {
+      globals: { process: "readonly", console: "readonly" },
+    },
+  },
 );

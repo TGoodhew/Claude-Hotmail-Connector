@@ -39,3 +39,11 @@ coverage/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local MCP client config (test setup)
+.mcp.json
+
+# Installer / packaging build outputs
+build/
+dist-sea/
+dist-installer/
