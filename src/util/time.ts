@@ -136,7 +136,14 @@ function tzOffsetMs(utcMs: number, timeZone: string): number {
   const parts = dtf.formatToParts(new Date(utcMs));
   const get = (t: string): number => Number(parts.find((p) => p.type === t)?.value ?? "0");
   const hour = get("hour") % 24; // some ICU builds render midnight as "24"
-  const asIfUtc = Date.UTC(get("year"), get("month") - 1, get("day"), hour, get("minute"), get("second"));
+  const asIfUtc = Date.UTC(
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    hour,
+    get("minute"),
+    get("second"),
+  );
   return asIfUtc - utcMs;
 }
 
