@@ -79,9 +79,9 @@ export function toRegistered<Shape extends ZodRawShape>(
 }
 
 /** Build a standard tool result: a human summary followed by the JSON payload. */
-export function toolResult(summary: string, data: Record<string, unknown>): ToolResult {
+export function toolResult<T extends object>(summary: string, data: T): ToolResult {
   return {
     content: [{ type: "text", text: `${summary}\n\n${JSON.stringify(data, null, 2)}` }],
-    structuredContent: data,
+    structuredContent: data as Record<string, unknown>,
   };
 }

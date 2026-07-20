@@ -25,7 +25,7 @@ export const whoamiTool: ToolDefinition<typeof whoamiShape> = defineTool({
     const me = await whoami(ctx.graph);
     const email = me.mail ?? me.userPrincipalName ?? "unknown";
     const summary = `Signed in as ${me.displayName ?? email} <${email}>.`;
-    return toolResult(summary, me as unknown as Record<string, unknown>);
+    return toolResult(summary, me);
   },
 });
 

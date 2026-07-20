@@ -203,7 +203,8 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     }
     if (!res.ok) {
       const err = json as { error?: string; error_description?: string } | undefined;
-      // error_description can be verbose but does not contain the code/verifier.
+      // Deliberately surface only the short error code, never error_description
+      // (verbose upstream detail we don't want echoed into the thrown message).
       throw new AuthError(
         `Microsoft token endpoint returned ${res.status}: ${err?.error ?? "unknown_error"}`,
       );
@@ -228,6 +229,26 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       scopes: current.scopes,
       account: current.account,
     });
+  }
+
+  // Single-flight guard: collapse concurrent refreshes into one network call.
+  // MSA refresh tokens rotate, so two parallel refreshes would spend the same
+  // token twice — the loser gets `invalid_grant` and their `store.save()` could
+  // clobber the freshly-rotated set. Concurrent callers await the same promise.
+  let inflightRefresh: Promise<TokenSet> | null = null;
+  function refreshAndSave(current: TokenSet): Promise<TokenSet> {
+    if (!inflightRefresh) {
+      inflightRefresh = (async () => {
+        try {
+          const refreshed = await refresh(current);
+          await store.save(refreshed);
+          return refreshed;
+        } finally {
+          inflightRefresh = null;
+        }
+      })();
+    }
+    return inflightRefresh;
   }
 
   async function interactiveSignIn(): Promise<TokenSet> {
@@ -346,8 +367,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
 
       if (cached?.refreshToken) {
         try {
-          const refreshed = await refresh(cached);
-          await store.save(refreshed);
+          const refreshed = await refreshAndSave(cached);
           return refreshed.accessToken;
         } catch (e) {
           log.warn("Silent token refresh failed", { error: (e as Error).message });

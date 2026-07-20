@@ -76,7 +76,7 @@ export const getMessageTool: ToolDefinition<typeof getMessageShape> = defineTool
   async handler(input, ctx) {
     const msg = await getMessage(ctx.graph, input);
     const summary = `${msg.subject ?? "(no subject)"} — from ${msg.from?.address ?? "unknown"}`;
-    return toolResult(summary, msg as unknown as Record<string, unknown>);
+    return toolResult(summary, msg);
   },
 });
 

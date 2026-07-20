@@ -31,7 +31,17 @@ describe("retryAfterMs", () => {
   it("parses an HTTP date relative to now", () => {
     const now = 1_000_000;
     const when = new Date(now + 3000).toUTCString();
-    expect(retryAfterMs(when, now)).toBeGreaterThanOrEqual(0);
+    expect(retryAfterMs(when, now)).toBe(3000);
+  });
+  it("floors a past HTTP date at 0", () => {
+    const now = 2_000_000;
+    const past = new Date(now - 5000).toUTCString();
+    expect(retryAfterMs(past, now)).toBe(0);
+  });
+  it("caps a far-future HTTP date at the max delay", () => {
+    const now = 1_000_000;
+    const far = new Date(now + 10 * 60_000).toUTCString();
+    expect(retryAfterMs(far, now)).toBe(60_000);
   });
   it("returns undefined for junk / null", () => {
     expect(retryAfterMs(null)).toBeUndefined();
@@ -179,7 +189,8 @@ describe("createGraphClient", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("raises a TimeoutError when the request aborts", async () => {
+  it("retries then raises a TimeoutError when every attempt times out", async () => {
+    const sleep = vi.fn(async () => {});
     const fetchImpl = fetchMock(
       (_url, init) =>
         new Promise<Response>((_resolve, reject) => {
@@ -192,7 +203,109 @@ describe("createGraphClient", () => {
       auth: makeAuth(),
       baseUrl: BASE,
       fetchImpl: fetchImpl as never,
+      sleep,
+      maxRetries: 2,
     });
     await expect(client.get("/me", { timeoutMs: 5 })).rejects.toBeInstanceOf(TimeoutError);
+    expect(fetchImpl).toHaveBeenCalledTimes(3); // original + 2 retries
+  });
+
+  it("does not retry a caller-cancelled request", async () => {
+    const sleep = vi.fn(async () => {});
+    const external = new AbortController();
+    const fetchImpl = fetchMock(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+          );
+          external.abort();
+        }),
+    );
+    const client = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+      sleep,
+    });
+    await expect(client.get("/me", { signal: external.signal })).rejects.toBeInstanceOf(GraphError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // cancelled → no retry
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("retries a transient network error then succeeds", async () => {
+    const sleep = vi.fn(async () => {});
+    const fetchImpl = fetchMock()
+      .mockRejectedValueOnce(new Error("ECONNRESET"))
+      .mockResolvedValueOnce(json({ ok: true }));
+    const client = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+      sleep,
+    });
+    const data = await client.get<{ ok: boolean }>("/me");
+    expect(data.ok).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries 503 and 504 like 429", async () => {
+    const sleep = vi.fn(async () => {});
+    for (const status of [503, 504]) {
+      const fetchImpl = fetchMock()
+        .mockResolvedValueOnce(json(undefined, { status }))
+        .mockResolvedValueOnce(json({ ok: true }));
+      const client = createGraphClient({
+        auth: makeAuth(),
+        baseUrl: BASE,
+        fetchImpl: fetchImpl as never,
+        sleep,
+      });
+      const data = await client.get<{ ok: boolean }>("/me");
+      expect(data.ok, `status ${status}`).toBe(true);
+      expect(fetchImpl, `status ${status}`).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it("uses exponential backoff (bounded) when no Retry-After is present", async () => {
+    const delays: number[] = [];
+    const sleep = vi.fn(async (ms: number) => {
+      delays.push(ms);
+    });
+    const fetchImpl = fetchMock(async () => json({ error: { code: "x" } }, { status: 503 }));
+    const client = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+      sleep,
+      maxRetries: 3,
+    });
+    await expect(client.get("/me")).rejects.toBeInstanceOf(GraphError);
+    expect(delays).toHaveLength(3);
+    // base grows as 500 * 2^attempt (with jitter) and never exceeds the 60s cap
+    expect(delays[0]).toBeLessThan(delays[1]!);
+    expect(delays[1]).toBeLessThan(delays[2]!);
+    for (const d of delays) expect(d).toBeLessThanOrEqual(60_000);
+  });
+
+  it("bounds pagination when Graph returns empty pages carrying a nextLink", async () => {
+    let calls = 0;
+    const fetchImpl = fetchMock(async () => {
+      calls += 1;
+      // Always-empty page with an ever-changing nextLink would loop forever
+      // without the page-count backstop.
+      return json({ value: [], "@odata.nextLink": `${BASE}/next?skip=${calls}` });
+    });
+    const client = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+    });
+    const items = await client.getAllPages<number>("/x", {}, { maxItems: 3 });
+    expect(items).toEqual([]);
+    // cap (3) + MAX_EXTRA_PAGES (10) = 13 page requests max.
+    expect(calls).toBeLessThanOrEqual(13);
+    expect(calls).toBeGreaterThan(3);
   });
 });
