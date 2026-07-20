@@ -16,6 +16,8 @@
   },
   "scripts": {
     "build": "tsup",
+    "build:exe": "node scripts/build-exe.mjs",
+    "build:installer": "iscc installer/hotmail-connector.iss",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",

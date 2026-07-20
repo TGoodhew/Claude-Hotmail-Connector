@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SCOPES, loadConfig } from "./config.js";
+import { DEFAULT_CLIENT_ID, DEFAULT_SCOPES, loadConfig } from "./config.js";
 import { ConfigError } from "./util/errors.js";
 
 const base = { MICROSOFT_CLIENT_ID: "11111111-2222-3333-4444-555555555555" };
 
 describe("loadConfig", () => {
-  it("throws a ConfigError when MICROSOFT_CLIENT_ID is missing", () => {
-    expect(() => loadConfig({})).toThrow(ConfigError);
-    expect(() => loadConfig({})).toThrow(/MICROSOFT_CLIENT_ID/);
+  it("falls back to the bundled shared client id when absent or blank", () => {
+    expect(loadConfig({}).microsoftClientId).toBe(DEFAULT_CLIENT_ID);
+    expect(loadConfig({ MICROSOFT_CLIENT_ID: "   " }).microsoftClientId).toBe(DEFAULT_CLIENT_ID);
   });
 
-  it("throws when MICROSOFT_CLIENT_ID is blank", () => {
-    expect(() => loadConfig({ MICROSOFT_CLIENT_ID: "   " })).toThrow(ConfigError);
+  it("prefers an explicit MICROSOFT_CLIENT_ID over the bundled default", () => {
+    expect(loadConfig(base).microsoftClientId).toBe(base.MICROSOFT_CLIENT_ID);
   });
 
   it("applies the documented defaults", () => {

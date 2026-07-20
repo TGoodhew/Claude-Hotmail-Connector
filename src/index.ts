@@ -3,6 +3,8 @@
  *
  * Subcommands:
  *   (default)  start the MCP server on stdio (for Claude Desktop / VS Code)
+ *   setup      auto-configure detected MCP hosts (Claude Desktop) to launch this server
+ *   unsetup    remove this server from detected MCP hosts (used on uninstall)
  *   login      run the one-time interactive Microsoft sign-in and cache tokens
  *   logout     clear the cached tokens
  *   whoami     print the signed-in account (diagnostic)
@@ -18,6 +20,7 @@ import { getConfig } from "./config.js";
 import { createGraphClient } from "./graph/client.js";
 import { whoami } from "./graph/user.js";
 import { createMcpServer } from "./mcp.js";
+import { runSetup, runUnsetup } from "./setup/run.js";
 import { createLogger } from "./util/log.js";
 
 async function run(): Promise<void> {
@@ -45,6 +48,24 @@ async function run(): Promise<void> {
   if (command === "whoami") {
     const me = await whoami(graph);
     process.stderr.write(`${me.displayName ?? ""} <${me.mail ?? me.userPrincipalName ?? "?"}>\n`);
+    return;
+  }
+
+  if (command === "setup") {
+    const outcome = runSetup();
+    for (const c of outcome.configured) {
+      process.stderr.write(`  ${c.outcome}: ${c.path}\n`);
+    }
+    process.stderr.write(`\n${outcome.message}\n`);
+    return;
+  }
+
+  if (command === "unsetup") {
+    const outcome = runUnsetup();
+    for (const c of outcome.configured) {
+      process.stderr.write(`  removed: ${c.path}\n`);
+    }
+    process.stderr.write(`\n${outcome.message}\n`);
     return;
   }
 

@@ -1,0 +1,21 @@
+Claude Hotmail Connector — what this is, and why it's safe
+============================================================
+
+This installs a small helper that lets Claude read your email and read/write your
+calendar in a PERSONAL Microsoft account (hotmail.com / outlook.com / live.com).
+
+  • It runs entirely on THIS computer. There is no server and no cloud account —
+    Claude talks to it locally, and it talks straight to Microsoft on your behalf.
+  • You sign in with Microsoft's own sign-in page. This app never sees your
+    password, and your sign-in is stored ENCRYPTED on this PC only.
+  • Least privilege: it can READ mail and read/write your calendar. It cannot send
+    mail and has no delete tool.
+  • The source code is open: https://github.com/TGoodhew/Claude-Hotmail-Connector
+
+A note about the Windows warning
+--------------------------------
+This installer is not code-signed (a certificate no longer removes the warning for
+low-volume apps, so it isn't worth the cost). Windows may show a blue
+"Windows protected your PC" screen. To continue, click "More info", then
+"Run anyway". You can verify what you downloaded against the checksums on the
+project's Releases page.

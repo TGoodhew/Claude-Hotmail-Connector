@@ -32,11 +32,23 @@ export const DEFAULT_TIMEZONE = "Australia/Brisbane";
 export const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 export const LOOPBACK_HOST = "127.0.0.1";
 
+/**
+ * Bundled shared **public client** id (the maintainer's multitenant Entra app
+ * registration). This is NOT a secret: a public/native client authenticates
+ * with PKCE and no client secret, so the id is safe to ship. It lets an
+ * installed build work with **no configuration** — the user just signs in. An
+ * explicit `MICROSOFT_CLIENT_ID` env var (e.g. a "bring your own registration"
+ * setup) always overrides it.
+ */
+export const DEFAULT_CLIENT_ID = "f5b05303-171f-4645-87bf-f2761166bf9c";
+
 const EnvSchema = z.object({
+  // Optional: falls back to the bundled shared public client (DEFAULT_CLIENT_ID).
   MICROSOFT_CLIENT_ID: z
-    .string({ message: "MICROSOFT_CLIENT_ID is required" })
+    .string()
     .trim()
-    .min(1, "MICROSOFT_CLIENT_ID is required (the Entra app registration client id)"),
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
   MICROSOFT_TENANT: z.string().trim().min(1).default(DEFAULT_TENANT),
   DEFAULT_TIMEZONE: z.string().trim().min(1).default(DEFAULT_TIMEZONE),
   MICROSOFT_SCOPES: z.string().trim().optional(),
@@ -103,7 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const cacheDir = defaultCacheDir(env);
 
   return {
-    microsoftClientId: e.MICROSOFT_CLIENT_ID,
+    microsoftClientId: e.MICROSOFT_CLIENT_ID ?? DEFAULT_CLIENT_ID,
     microsoftTenant: e.MICROSOFT_TENANT,
     authority: `https://login.microsoftonline.com/${e.MICROSOFT_TENANT}`,
     defaultTimeZone: e.DEFAULT_TIMEZONE,
