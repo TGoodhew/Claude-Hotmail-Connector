@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../util/errors.js";
 import type { GraphClient } from "./client.js";
-import { createEvent, updateEvent } from "./calendar.js";
+import {
+  assertWritableEventPayload,
+  createEvent,
+  updateEvent,
+  WRITABLE_EVENT_FIELDS,
+} from "./calendar.js";
 
 type PostMock = (path: string, body: unknown, opts?: unknown) => Promise<unknown>;
 type PatchMock = (path: string, body: unknown, opts?: unknown) => Promise<unknown>;
@@ -178,5 +183,41 @@ describe("updateEvent", () => {
       updateEvent(graphWith({ get, patch }), { id: "gone", subject: "x" }),
     ).rejects.toThrow("404");
     expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("no attendees / invitations (spec v2 §7.5, #61)", () => {
+  const sneaky = {
+    attendees: [{ emailAddress: { address: "someone@example.com" }, type: "required" }],
+    isOnlineMeeting: true,
+    responseRequested: true,
+  };
+
+  it("never allows attendee or meeting properties", () => {
+    for (const f of ["attendees", "isOnlineMeeting", "responseRequested", "organizer"]) {
+      expect(WRITABLE_EVENT_FIELDS.has(f)).toBe(false);
+    }
+    expect(() => assertWritableEventPayload({ subject: "x", attendees: [] })).toThrow(
+      /Refusing to write event properties: attendees/,
+    );
+  });
+
+  it("create_event drops attendee fields even if a caller smuggles them in", async () => {
+    const post = vi.fn<PostMock>(async () => createdReply);
+    await createEvent(graphWith({ post }), {
+      subject: "Trip",
+      start: { dateTime: "2026-07-20T10:00:00", timeZone: "Australia/Brisbane" },
+      end: { dateTime: "2026-07-20T11:00:00", timeZone: "Australia/Brisbane" },
+      ...sneaky,
+    } as never);
+    const payload = post.mock.calls[0]![1] as Record<string, unknown>;
+    for (const k of Object.keys(payload)) expect(WRITABLE_EVENT_FIELDS.has(k)).toBe(true);
+    expect(payload).not.toHaveProperty("attendees");
+  });
+
+  it("update_event drops attendee fields even if a caller smuggles them in", async () => {
+    const patch = vi.fn<PatchMock>(async () => ({ id: "evt-1" }));
+    await updateEvent(graphWith({ patch }), { id: "evt-1", subject: "x", ...sneaky } as never);
+    expect(patch.mock.calls[0]![1]).toEqual({ subject: "x" });
   });
 });

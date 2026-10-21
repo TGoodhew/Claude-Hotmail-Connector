@@ -52,6 +52,21 @@ describe("create_event tool", () => {
       }),
     ).not.toThrow();
   });
+
+  it("strips attendees from the arguments an MCP client sends (no invitations)", async () => {
+    const post = vi.fn<PostMock>(async () => ({ id: "e1", subject: "Trip" }));
+    const registered = calendarTools.find((t) => t.name === "create_event")!;
+    await registered.handler(
+      {
+        subject: "Trip",
+        start: { dateTime: "2026-07-20T10:00:00" },
+        end: { dateTime: "2026-07-20T11:00:00" },
+        attendees: [{ emailAddress: { address: "someone@example.com" } }],
+      },
+      ctxWith({ post: post as unknown as GraphClient["post"] }),
+    );
+    expect(post.mock.calls[0]![1]).not.toHaveProperty("attendees");
+  });
 });
 
 describe("update_event tool", () => {
