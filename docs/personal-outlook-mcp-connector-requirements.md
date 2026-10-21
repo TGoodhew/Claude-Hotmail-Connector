@@ -50,8 +50,9 @@ personal accounts for mail and calendar when you use **your own** Entra app regi
 - Built and maintained by Claude Code, with reproducible steps and automated tests.
 
 ### Non-goals (v2)
-- **Multi-user distribution.** This is a personal, single-user tool. Each user brings **their own**
-  Entra app registration; builds do not embed a shared client id *(→ #68)*.
+- **Being anyone's host or support desk.** Others may use the connector, but each user brings
+  **their own** Entra app registration and runs it themselves. Builds do not embed a shared client id
+  *(→ #68)*, and support is community, best effort *(→ #77)*.
 - Use from claude.ai web/mobile or cloud sessions. That needs a remote mode, a future phase (§15, #58).
 - Contacts, OneDrive/Files, Teams, SharePoint.
 - Deleting or permanently destroying mail. **No hard-delete tools.** Calendar event deletion is gated and
@@ -461,7 +462,7 @@ Decided by the owner on 2026-10-21. Details and rationale are in #59.
 |---|---|---|---|
 | D1 | Deployment model | Local stdio primary; remote → §15 | #58 |
 | D2 | Entra registration | Public client + PKCE + loopback; no secret | — |
-| D3 | Users & distribution | **Single user**; bring-your-own registration; no bundled client id | #68, #62 |
+| D3 | Users & distribution | **Single user**; bring-your-own registration; no bundled client id. Re-confirmed after learning that each user needs their own Entra tenant: others may use it, but the maintainer is not host, support or a single point of responsibility. The shared registration is retired after the next release. | #68, #62, #77 |
 | D4 | Sign-in UX | `login` command **and** on-demand sign-in | #69 |
 | D5 | Token storage | OS-protected storage required | #42 |
 | D6 | Downstream OAuth | Moved to §15, refreshed to current MCP auth spec | #58 |
