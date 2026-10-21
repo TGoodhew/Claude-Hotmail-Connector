@@ -171,6 +171,36 @@ function shapeWrite(e: GraphEvent, transactionId?: string): EventWriteResult {
 }
 
 /**
+ * The only event properties the connector ever writes (spec v2 §7.5).
+ * Notably absent: `attendees` (and anything that triggers invitations or
+ * meeting responses). Outlook emails invitations to attendees, so allowing
+ * them would turn calendar access into a way to send mail, which the
+ * connector deliberately can't do (no `Mail.Send`; see #57).
+ */
+export const WRITABLE_EVENT_FIELDS: ReadonlySet<string> = new Set([
+  "subject",
+  "start",
+  "end",
+  "location",
+  "body",
+  "isReminderOn",
+  "reminderMinutesBeforeStart",
+  "transactionId",
+]);
+
+/**
+ * Defence in depth: refuse to send any property outside
+ * {@link WRITABLE_EVENT_FIELDS}, so a future change can't quietly start
+ * sending invitations.
+ */
+export function assertWritableEventPayload(payload: Record<string, unknown>): void {
+  const extra = Object.keys(payload).filter((k) => !WRITABLE_EVENT_FIELDS.has(k));
+  if (extra.length > 0) {
+    throw new ValidationError(`Refusing to write event properties: ${extra.join(", ")}.`);
+  }
+}
+
+/**
  * Derive a stable transactionId from the event's semantic fields, so an
  * accidental retry of the *same* create call dedupes at Graph instead of
  * creating a duplicate — which is what `idempotentHint: true` promises the
@@ -215,6 +245,7 @@ export async function createEvent(
       ? { reminderMinutesBeforeStart: input.reminderMinutesBeforeStart }
       : {}),
   };
+  assertWritableEventPayload(payload);
   const created = await graph.post<GraphEvent>("/me/events", payload);
   return shapeWrite(created, transactionId);
 }
@@ -300,6 +331,7 @@ export async function updateEvent(
   if (Object.keys(patch).length === 0) {
     throw new ValidationError("update_event requires at least one field to change.");
   }
+  assertWritableEventPayload(patch);
 
   const fields = UPDATABLE_FIELDS.filter((f) => f in patch);
   const zone = input.start?.timeZone ?? input.end?.timeZone;

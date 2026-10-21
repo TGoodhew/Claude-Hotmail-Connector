@@ -207,8 +207,13 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   - body/reminder differences are not part of the key.
 
   Graph's response to a repeated id MUST be verified and documented *(→ #48)*.
-- **No attendees.** The payload MUST be built from an explicit field allowlist. Attendees/invitations
-  MUST NOT be sendable, because invitations send email *(→ #61)*.
+- **No attendees.** Attendees and invitations MUST NOT be sendable, because invitations send email.
+  Three layers enforce this:
+  - tool input schemas have no attendee fields, and unknown arguments are stripped;
+  - payloads are built field by field;
+  - `assertWritableEventPayload` rejects any property outside `WRITABLE_EVENT_FIELDS` (`subject`,
+    `start`, `end`, `location`, `body`, `isReminderOn`, `reminderMinutesBeforeStart`,
+    `transactionId`) before a create or update is sent.
 - **Safety:** a write. The description instructs the model to confirm details with the user first. The
   tool returns the created event (id, webLink, normalized start/end) so Claude can echo it.
 - Annotations: `destructiveHint: false`, `idempotentHint: true`. `Calendars.ReadWrite`.
