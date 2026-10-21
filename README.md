@@ -247,10 +247,11 @@ with no duplicates if it retries.
   logged or returned to the client.
 - **Logging:** structured logs go to **stderr only** (stdout is reserved for MCP JSON-RPC) and are
   scrubbed of tokens, `Authorization` headers, OAuth codes and secrets.
-- **Email is untrusted input:** messages are written by strangers and may try to steer the model. The
-  threat model and its mitigations are in spec v2 §9
-  ([#60](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/60)). Review what Claude proposes
-  before approving calendar writes.
+- **Email (and others' invites) are untrusted input:** they're written by strangers and may try to
+  steer the model. The connector can't send mail: no `Mail.Send`, no attendees, and no deleting
+  meetings with attendees. Writes and deletes are confirmation-gated. The full threat model is in
+  [spec v2 §9.2](docs/personal-outlook-mcp-connector-requirements.md#92-threat-model). Review what
+  Claude proposes before approving calendar changes.
 - **Timezone-correct writes:** events are sent as local wall-clock time + an IANA time zone (never a
   UTC `Z` with a named zone), so they land at the intended local time.
 
