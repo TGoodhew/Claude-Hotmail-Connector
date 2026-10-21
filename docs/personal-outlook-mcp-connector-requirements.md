@@ -326,7 +326,7 @@ signed in to that tenant. Registration settings:
   - **Windows (implemented):** the cache (`token-cache.enc`) is AES-256-GCM encrypted. Its key file
     (`token-cache.key`) holds only the DPAPI-wrapped key (`{"v":2,"protection":"dpapi",…}`, with
     app-specific entropy), produced through PowerShell's `ProtectedData` with the key passed on stdin.
-    A legacy plain key is upgraded in place, so existing sign-ins survive. If DPAPI fails, a warning is
+    A legacy plain key is upgraded in place on the next save (loads never write to disk), so existing sign-ins survive. If DPAPI fails, a warning is
     logged and the plain key file is used. A key that can't be unwrapped (another user or machine) is
     reset, which means signing in again.
   - **macOS / Linux:** plain owner-only key file for now *(→ #83)*.

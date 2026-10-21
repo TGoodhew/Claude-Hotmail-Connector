@@ -177,12 +177,16 @@ export function createFileTokenStore(
   }
 
   type KeyRead =
-    | { status: "ok"; key: Buffer; rewrote?: boolean }
+    | { status: "ok"; key: Buffer; rewrote?: boolean; legacy?: boolean }
     | { status: "absent" }
     | { status: "unusable" };
 
-  /** Read the key file. "unusable" = present but corrupt or foreign (caller replaces it). */
-  async function readKey(): Promise<KeyRead> {
+  /**
+   * Read the key file. "unusable" = present but corrupt or foreign (a writer
+   * replaces it). `upgrade` wraps a legacy plain key in place, so only writers
+   * pass it: loads never write to disk.
+   */
+  async function readKey(upgrade: boolean): Promise<KeyRead> {
     let raw: string;
     try {
       raw = (await readFile(resolvedKeyFile, "utf8")).trim();
@@ -212,11 +216,11 @@ export function createFileTokenStore(
     const key = Buffer.from(raw, "base64");
     // Corrupt => regenerate (invalidates the old cache).
     if (key.length !== KEY_BYTES) return { status: "unusable" };
-    if (protector) {
+    if (protector && upgrade) {
       await writeKeyFile(key, false); // upgrade a legacy plain key in place
       return { status: "ok", key, rewrote: true };
     }
-    return { status: "ok", key };
+    return { status: "ok", key, legacy: protector !== null };
   }
 
   /** Identity of the key file on disk; changes whenever any process replaces it. */
@@ -233,25 +237,56 @@ export function createFileTokenStore(
   // The key is cached against the key file's identity: unwrapping may spawn a
   // process (DPAPI), so it happens again only if another process replaced the
   // file. A stale key would write a cache that fresh processes can't decrypt.
-  let cached: { key: Buffer; signature: string | null } | null = null;
-  let inflight: Promise<Buffer> | null = null;
+  // `needsUpgrade`: a legacy plain key read by a load; the next save wraps it.
+  let cached: { key: Buffer; signature: string | null; needsUpgrade?: boolean } | null = null;
+  // Key work in progress, per mode: "read" (load) never writes; "write" (save)
+  // may create, reset or upgrade the key file.
+  const inflight: { read: Promise<Buffer | null> | null; write: Promise<Buffer> | null } = {
+    read: null,
+    write: null,
+  };
 
   async function remember(key: Buffer): Promise<Buffer> {
     cached = { key, signature: await keyFileSignature() };
     return key;
   }
 
+  /** The key for reading the cache, or null if there's no usable one. Never writes. */
+  function readCurrentKey(): Promise<Buffer | null> {
+    inflight.read ??= (async () => {
+      const signature = await keyFileSignature();
+      if (signature === null) return null;
+      if (cached && signature === cached.signature) return cached.key;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const before = await keyFileSignature();
+        const read = await readKey(false);
+        if (read.status !== "ok") return null;
+        const after = await keyFileSignature();
+        if (before !== after) continue; // replaced while we read it: read again
+        cached = { key: read.key, signature: after, needsUpgrade: read.legacy };
+        return read.key;
+      }
+      return null;
+    })().finally(() => {
+      inflight.read = null;
+    });
+    return inflight.read;
+  }
+
+  /** The key for writing the cache: creates, resets or upgrades the key file as needed. */
   function loadOrCreateKey(): Promise<Buffer> {
-    inflight ??= (async () => {
+    inflight.write ??= (async () => {
       await ensureDir();
       const signature = await keyFileSignature();
-      if (cached && signature !== null && signature === cached.signature) return cached.key;
+      if (cached && signature !== null && signature === cached.signature && !cached.needsUpgrade) {
+        return cached.key;
+      }
       for (let attempt = 0; attempt < 3; attempt++) {
         // Note the file's identity around the read: if another process replaced
         // it meanwhile (e.g. while DPAPI was unwrapping), the key we got belongs
         // to the old file, so read again rather than pair it with the new one.
         const before = await keyFileSignature();
-        const read = await readKey();
+        const read = await readKey(true);
         if (read.status === "ok") {
           const after = await keyFileSignature();
           if (before !== after && !read.rewrote) continue;
@@ -272,9 +307,9 @@ export function createFileTokenStore(
       }
       throw new AuthError("Could not establish the token-cache key.");
     })().finally(() => {
-      inflight = null;
+      inflight.write = null;
     });
-    return inflight;
+    return inflight.write;
   }
 
   async function writeAtomic(path: string, contents: string): Promise<void> {
@@ -325,7 +360,10 @@ export function createFileTokenStore(
         }
         try {
           const container = JSON.parse(raw) as Container;
-          const key = await loadOrCreateKey();
+          // Read-only: a load never creates, resets or upgrades the key file, so
+          // a load that outlives a full cleanup can't put a key back on disk.
+          const key = await readCurrentKey();
+          if (!key) throw new AuthError("No usable token-cache key.");
           const plaintext = decrypt(key, container);
           return TokenSetSchema.parse(JSON.parse(plaintext));
         } catch (e) {
@@ -346,6 +384,9 @@ export function createFileTokenStore(
     },
 
     async clear(options: { includeKey?: boolean } = {}): Promise<void> {
+      // Let key work already under way in this store finish first, so it can't
+      // land after the deletion (a full cleanup must leave nothing behind).
+      await Promise.allSettled([inflight.read, inflight.write].filter((p) => p !== null));
       const files = options.includeKey ? [tokenCacheFile, resolvedKeyFile] : [tokenCacheFile];
       for (const path of files) {
         try {

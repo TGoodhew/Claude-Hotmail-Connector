@@ -733,6 +733,48 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     expect(current).toBeNull();
   });
 
+  it("a request starting while sign-out is still cleaning up waits instead of reviving tokens", async () => {
+    let releaseClear!: () => void;
+    const clearGate = new Promise<void>((r) => (releaseClear = r));
+    let current: TokenSet | null = {
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 0,
+      scopes: [],
+    };
+    let clearStarted = false;
+    const store: TokenStore = {
+      async load() {
+        return current;
+      },
+      async save(t) {
+        current = t;
+      },
+      async clear() {
+        clearStarted = true;
+        await clearGate; // slow cleanup (e.g. file I/O)
+        current = null;
+      },
+    };
+    const fetchImpl = vi.fn(async () => tokenReply());
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    const signingOut = auth.signOut();
+    await until(() => clearStarted);
+    // A new request (already in the new epoch) arrives mid-cleanup…
+    const request = auth.getAccessToken({ interactive: false }).catch((e: unknown) => e);
+    releaseClear();
+    await signingOut;
+    // …and finds nothing to refresh, rather than refreshing the old token back.
+    expect(await request).toBeInstanceOf(AuthError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(current).toBeNull();
+  });
+
   it("a save already writing when the user signs out is removed by the cleanup", async () => {
     let releaseSave!: () => void;
     const saveGate = new Promise<void>((r) => (releaseSave = r));

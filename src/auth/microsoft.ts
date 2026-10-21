@@ -266,6 +266,10 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   // writing finishes first (and the cleanup then removes it), while a save
   // queued after the sign-out sees it and is dropped.
   let signOuts = 0;
+  // The sign-out cleanup in progress, if any. Requests that start meanwhile
+  // already belong to the new epoch, so they must wait for it rather than
+  // read (and refresh) the credentials being deleted.
+  let pendingSignOut: Promise<void> | null = null;
   let commits: Promise<unknown> = Promise.resolve();
   function serialized<T>(op: () => Promise<T>): Promise<T> {
     const run = commits.then(op, op);
@@ -511,9 +515,12 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     async getAccessToken(options: GetAccessTokenOptions = {}): Promise<string> {
       const interactive = options.interactive ?? true;
       const minTtlMs = options.minTtlMs ?? DEFAULT_MIN_TTL_MS;
+      // A sign-out still cleaning up: wait, so this request can't read the
+      // credentials being deleted and refresh them back into existence.
+      while (pendingSignOut) await pendingSignOut.catch(() => undefined);
       const signInsAtStart = signInsCompleted;
-      // Noted before any await: if the user signs out while this request is in
-      // flight, it stops (see "Sign-out ordering" above).
+      // Noted before any further await: if the user signs out while this request
+      // is in flight, it stops (see "Sign-out ordering" above).
       const epoch = signOuts;
       const ensureNotSignedOut = () => {
         if (signOuts !== epoch) throw new SignedOutError();
@@ -597,7 +604,13 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       inflightRefresh = null;
       // Cache and key: nothing of the sign-in stays on disk. Queued behind any
       // save already in progress, so that save can't land after the cleanup.
-      await serialized(() => store.clear({ includeKey: true }));
+      const cleanup = serialized(() => store.clear({ includeKey: true }));
+      pendingSignOut = cleanup;
+      try {
+        await cleanup;
+      } finally {
+        if (pendingSignOut === cleanup) pendingSignOut = null;
+      }
     },
 
     async getAccount(): Promise<string | undefined> {
