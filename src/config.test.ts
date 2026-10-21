@@ -34,14 +34,39 @@ describe("loadConfig", () => {
     expect(cfg.tokenCacheFile).toMatch(/token-cache\.enc$/);
   });
 
-  it("parses space- or comma-separated scope overrides", () => {
+  it("parses space- or comma-separated scope overrides, always adding the sign-in scopes", () => {
     expect(loadConfig({ ...base, MICROSOFT_SCOPES: "openid Mail.Read" }).scopes).toEqual([
       "openid",
+      "offline_access",
       "Mail.Read",
     ]);
-    expect(
-      loadConfig({ ...base, MICROSOFT_SCOPES: "openid, Mail.Read , User.Read" }).scopes,
-    ).toEqual(["openid", "Mail.Read", "User.Read"]);
+    expect(loadConfig({ ...base, MICROSOFT_SCOPES: "Mail.Read , User.Read" }).scopes).toEqual([
+      "openid",
+      "offline_access",
+      "User.Read",
+      "Mail.Read",
+    ]);
+  });
+
+  it("allows narrowing Calendars.ReadWrite to Calendars.Read, case-insensitively", () => {
+    expect(loadConfig({ ...base, MICROSOFT_SCOPES: "mail.read calendars.read" }).scopes).toEqual([
+      "openid",
+      "offline_access",
+      "Mail.Read",
+      "Calendars.Read",
+    ]);
+  });
+
+  it("rejects scope overrides that would broaden access", () => {
+    for (const broad of ["Mail.ReadWrite", "Mail.Send", "Files.Read", "Calendars.Read.Shared"]) {
+      expect(() => loadConfig({ ...base, MICROSOFT_SCOPES: `openid ${broad}` })).toThrow(
+        new RegExp(`not allowed: ${broad.replace(/\./g, "\\.")}`),
+      );
+    }
+  });
+
+  it("treats an empty override as the default set", () => {
+    expect(loadConfig({ ...base, MICROSOFT_SCOPES: " , " }).scopes).toEqual([...DEFAULT_SCOPES]);
   });
 
   it("honours a custom tenant and timezone", () => {

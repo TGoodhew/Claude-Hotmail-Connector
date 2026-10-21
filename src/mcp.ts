@@ -25,10 +25,24 @@ export function allTools(): RegisteredTool[] {
   return [...userTools, ...mailTools, ...calendarTools];
 }
 
-/** Build an McpServer with every tool registered against the given context. */
+/**
+ * The tools usable with the granted scopes: a tool is kept if any of its
+ * `scopesAnyOf` was requested (case-insensitive, as Graph scope names are).
+ * A narrowed `MICROSOFT_SCOPES` therefore hides tools it can't support,
+ * rather than offering them to the model only to fail with 403s.
+ */
+export function toolsForScopes(
+  scopes: readonly string[],
+  tools: RegisteredTool[] = allTools(),
+): RegisteredTool[] {
+  const granted = new Set(scopes.map((s) => s.toLowerCase()));
+  return tools.filter((t) => t.scopesAnyOf.some((s) => granted.has(s.toLowerCase())));
+}
+
+/** Build an McpServer with the tools the configured scopes support (or the given set). */
 export function createMcpServer(
   ctx: ToolContext,
-  tools: RegisteredTool[] = allTools(),
+  tools: RegisteredTool[] = toolsForScopes(ctx.config.scopes),
   logger?: Logger,
 ): McpServer {
   const log = logger ?? createLogger({ name: "mcp" });

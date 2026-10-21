@@ -41,6 +41,7 @@ export const listMessagesTool: ToolDefinition<typeof listMessagesShape> = define
     "read a full message body.",
   inputShape: listMessagesShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
+  scopesAnyOf: ["Mail.Read"],
   async handler(input, ctx) {
     const result = await listMessages(ctx.graph, input);
     const summary =
@@ -73,6 +74,7 @@ export const getMessageTool: ToolDefinition<typeof getMessageShape> = defineTool
     "(names/sizes only — no file contents). Read-only.",
   inputShape: getMessageShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
+  scopesAnyOf: ["Mail.Read"],
   async handler(input, ctx) {
     const msg = await getMessage(ctx.graph, input);
     const summary = `${msg.subject ?? "(no subject)"} — from ${msg.from?.address ?? "unknown"}`;
