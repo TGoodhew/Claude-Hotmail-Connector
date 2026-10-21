@@ -35,6 +35,12 @@ describe("toolsForScopes", () => {
     ]);
   });
 
+  it("says in every description that it is the personal Outlook.com / Hotmail account (#65)", () => {
+    for (const t of allTools()) {
+      expect(t.description, t.name).toContain("personal Outlook.com / Hotmail");
+    }
+  });
+
   it("declares a scope for every tool", () => {
     for (const t of allTools()) expect(t.scopesAnyOf.length).toBeGreaterThan(0);
   });

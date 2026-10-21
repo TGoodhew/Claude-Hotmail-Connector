@@ -36,7 +36,8 @@ export const listMessagesTool: ToolDefinition<typeof listMessagesShape> = define
   name: "list_messages",
   title: "List / search email",
   description:
-    "Search or list email messages (e.g. to find booking or confirmation emails). " +
+    "Search or list email in the user's personal Outlook.com / Hotmail mailbox (e.g. to find " +
+    "booking or confirmation emails). " +
     "Read-only. Returns id, subject, sender, receivedDateTime, webLink, a body preview, " +
     "and hasAttachments, plus a nextPageToken when more results exist. Use get_message to " +
     "read a full message body. " +
@@ -71,7 +72,8 @@ export const getMessageTool: ToolDefinition<typeof getMessageShape> = defineTool
   name: "get_message",
   title: "Read an email",
   description:
-    "Read a single email message by id, returning subject, sender, receivedDateTime, webLink, " +
+    "Read a single email from the user's personal Outlook.com / Hotmail mailbox by id, " +
+    "returning subject, sender, receivedDateTime, webLink, " +
     "the body (HTML converted to plain text by default), and attachment metadata " +
     "(names/sizes only — no file contents). Read-only. " +
     UNTRUSTED_CONTENT_DESCRIPTION,

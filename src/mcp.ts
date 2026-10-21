@@ -18,6 +18,7 @@ import { clientSafeMessage } from "./util/errors.js";
 import { createLogger, type Logger } from "./util/log.js";
 
 export const SERVER_NAME = "claude-hotmail-connector";
+export const SERVER_TITLE = "Personal Outlook.com / Hotmail";
 export const SERVER_VERSION = "0.1.0";
 
 /** Sent once at initialization; tool descriptions and results repeat the rule (T12). */
@@ -54,7 +55,7 @@ export function createMcpServer(
 ): McpServer {
   const log = logger ?? createLogger({ name: "mcp" });
   const server = new McpServer(
-    { name: SERVER_NAME, version: SERVER_VERSION },
+    { name: SERVER_NAME, title: SERVER_TITLE, version: SERVER_VERSION },
     { instructions: SERVER_INSTRUCTIONS },
   );
 
