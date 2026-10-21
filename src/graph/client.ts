@@ -65,7 +65,7 @@ export interface GraphClient {
 }
 
 export interface GraphClientDeps {
-  auth: Pick<MicrosoftAuth, "getAccessToken">;
+  auth: Pick<MicrosoftAuth, "getAccessToken"> & Partial<Pick<MicrosoftAuth, "signOutEpoch">>;
   baseUrl: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -244,6 +244,9 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
     const url = buildUrl(deps.baseUrl, pathOrUrl, opts.query);
     let attempt = 0;
     let refreshed = false;
+    // One epoch for the whole request, retries included: a retry or 401
+    // recovery that outlives a sign-out must stop, not sign in again.
+    const signOutEpoch = deps.auth.signOutEpoch?.();
 
     for (;;) {
       const token = await deps.auth.getAccessToken({
@@ -251,6 +254,7 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
         ...(deps.interactiveSignIn ? { interactiveWaitMs: deps.interactiveSignIn.waitMs } : {}),
         // Force a refresh after a 401 (token may be revoked despite our clock).
         ...(refreshed ? { minTtlMs: Number.MAX_SAFE_INTEGER } : {}),
+        ...(signOutEpoch !== undefined ? { signOutEpoch } : {}),
       });
 
       let res: RawResponse;

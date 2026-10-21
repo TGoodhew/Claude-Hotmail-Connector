@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
+import { createGraphClient } from "../graph/client.js";
 import { AuthError, SignedOutError, SignInRequiredError } from "../util/errors.js";
 import {
   buildAuthorizeUrl,
@@ -808,6 +809,46 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     await Promise.all([first, second]);
     expect(await request).toBeInstanceOf(SignedOutError);
     expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("a Graph request whose 401 retry spans a sign-out stops instead of signing in", async () => {
+    const store = memoryStore({
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000_000_000,
+      scopes: config.scopes,
+    });
+    const openBrowser = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    let releaseResponse!: () => void;
+    const responseGate = new Promise<void>((r) => (releaseResponse = r));
+    let graphCalls = 0;
+    const graph = createGraphClient({
+      auth,
+      baseUrl: "https://graph.microsoft.com/v1.0",
+      fetchImpl: (async () => {
+        graphCalls += 1;
+        await responseGate; // the response is slow…
+        return jsonResponse({ error: { code: "InvalidAuthenticationToken" } }, 401);
+      }) as unknown as typeof fetch,
+      interactiveSignIn: { waitMs: 5_000 },
+    });
+    const call = graph.get("/me").then(
+      () => new Error("expected the request to stop"),
+      (e: unknown) => e as Error,
+    );
+    await until(() => graphCalls === 1);
+    await auth.signOut(); // …the user signs out meanwhile…
+    releaseResponse(); // …then the 401 triggers the retry.
+    expect(await call).toBeInstanceOf(SignedOutError);
+    expect(openBrowser).not.toHaveBeenCalled();
+    expect(store.current).toBeNull();
   });
 
   it("a save already writing when the user signs out is removed by the cleanup", async () => {

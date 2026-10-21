@@ -68,6 +68,7 @@ type AuthFn = (opts?: {
   interactive?: boolean;
   interactiveWaitMs?: number;
   minTtlMs?: number;
+  signOutEpoch?: number;
 }) => Promise<string>;
 
 function fetchMock(impl?: FetchFn) {
@@ -106,6 +107,19 @@ describe("retryAfterMs", () => {
 });
 
 describe("createGraphClient token acquisition", () => {
+  it("passes one sign-out epoch to every lookup of a request, retries included", async () => {
+    const auth = { ...makeAuth(), signOutEpoch: vi.fn(() => 7) };
+    const fetchImpl = fetchMock()
+      .mockResolvedValueOnce(
+        json({ error: { code: "InvalidAuthenticationToken" } }, { status: 401 }),
+      )
+      .mockResolvedValueOnce(json({ ok: true }));
+    const client = createGraphClient({ auth, baseUrl: BASE, fetchImpl: fetchImpl as never });
+    await client.get("/me");
+    expect(auth.signOutEpoch).toHaveBeenCalledOnce(); // taken once, at the start
+    expect(auth.getAccessToken.mock.calls.map(([o]) => o?.signOutEpoch)).toEqual([7, 7]);
+  });
+
   it("is non-interactive by default (CLI diagnostics never open a browser)", async () => {
     const auth = makeAuth();
     const client = createGraphClient({

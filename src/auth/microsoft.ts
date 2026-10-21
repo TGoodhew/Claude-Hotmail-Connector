@@ -194,6 +194,13 @@ export interface GetAccessTokenOptions {
   interactiveWaitMs?: number;
   /** Refresh if fewer than this many ms remain (default 60s). */
   minTtlMs?: number;
+  /**
+   * The sign-out epoch of the operation this lookup belongs to (from
+   * `signOutEpoch()` when the operation began). A Graph request makes several
+   * lookups (retries, 401 recovery); passing its epoch makes one that outlived
+   * a sign-out stop instead of signing in again. Defaults to "now".
+   */
+  signOutEpoch?: number;
 }
 
 export interface MicrosoftAuth {
@@ -201,6 +208,8 @@ export interface MicrosoftAuth {
   signIn(): Promise<TokenSet>;
   signOut(): Promise<void>;
   getAccount(): Promise<string | undefined>;
+  /** Current sign-out epoch: note it when an operation starts (see `signOutEpoch` above). */
+  signOutEpoch(): number;
 }
 
 export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
@@ -515,12 +524,14 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     async getAccessToken(options: GetAccessTokenOptions = {}): Promise<string> {
       const interactive = options.interactive ?? true;
       const minTtlMs = options.minTtlMs ?? DEFAULT_MIN_TTL_MS;
-      // Noted before any await: if the user signs out while this request is in
-      // flight (including while it waits below), it stops (see "Sign-out ordering").
-      const epoch = signOuts;
+      // Noted before any await (or taken from the calling operation): if the user
+      // signs out while this request is in flight, including while it waits
+      // below, it stops (see "Sign-out ordering").
+      const epoch = options.signOutEpoch ?? signOuts;
       const ensureNotSignedOut = () => {
         if (signOuts !== epoch) throw new SignedOutError();
       };
+      ensureNotSignedOut();
       // A sign-out still cleaning up: wait, so this request can't read the
       // credentials being deleted and refresh them back into existence.
       while (pendingSignOut) await pendingSignOut.catch(() => undefined);
@@ -612,6 +623,10 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       } finally {
         if (pendingSignOut === cleanup) pendingSignOut = null;
       }
+    },
+
+    signOutEpoch(): number {
+      return signOuts;
     },
 
     async getAccount(): Promise<string | undefined> {
