@@ -103,7 +103,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   `@modelcontextprotocol/sdk`.
 - **Runtime: Node.js 24 LTS** (`engines >=24`; CI and release on 24) *(→ #45; currently Node 20, which
   reached EOL in April 2026)*. The Claude Desktop extension runs on Claude Desktop's own bundled Node
-  (version undocumented; the bundle targets Node 18+), so CI and source checkouts are what this pins.
+  (version undocumented; the manifest requires `engines.node`, Node 20+, which dependencies such as `open` also need), so CI and source checkouts are what this pins.
 - **Libraries:** `zod` (input validation), `dotenv` (dev config), `open` (system browser). Build with
   `tsup`, test with `vitest`. Crypto (PKCE, AES-256-GCM, SHA-256) uses Node's built-in `crypto`; no
   hand-rolled primitives.

@@ -1,6 +1,23 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { createDpapiProtector, defaultKeyProtector, type PowerShellRunner } from "./protect.js";
+import {
+  createDpapiProtector,
+  defaultKeyProtector,
+  powershellPath,
+  type PowerShellRunner,
+} from "./protect.js";
+
+describe("powershellPath (no PATH / current-directory lookup)", () => {
+  it("is an absolute path under the Windows system root", () => {
+    expect(powershellPath({ SystemRoot: "C:\\Windows" })).toBe(
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
+    expect(powershellPath({ windir: "D:\\WIN" })).toBe(
+      "D:\\WIN\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
+    expect(powershellPath({})).toMatch(/^C:\\Windows\\System32\\/);
+  });
+});
 
 describe("createDpapiProtector (injected runner)", () => {
   it("sends the secret on stdin (never in the command) and decodes the base64 reply", async () => {
