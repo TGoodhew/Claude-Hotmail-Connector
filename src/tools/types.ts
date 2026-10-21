@@ -40,6 +40,8 @@ export interface ToolDefinition<Shape extends ZodRawShape = ZodRawShape> {
   description: string;
   inputShape: Shape;
   annotations?: ToolAnnotations;
+  /** Graph scopes, any one of which makes the tool usable (see `toolsForScopes`). */
+  scopesAnyOf: string[];
   handler: (input: z.infer<z.ZodObject<Shape>>, ctx: ToolContext) => Promise<ToolResult>;
 }
 
@@ -50,6 +52,7 @@ export interface RegisteredTool {
   description: string;
   inputShape: ZodRawShape;
   annotations?: ToolAnnotations;
+  scopesAnyOf: string[];
   handler: (input: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
 }
 
@@ -74,6 +77,7 @@ export function toRegistered<Shape extends ZodRawShape>(
     description: def.description,
     inputShape: def.inputShape,
     annotations: def.annotations,
+    scopesAnyOf: def.scopesAnyOf,
     handler: (input, ctx) => def.handler(schema.parse(input), ctx),
   };
 }

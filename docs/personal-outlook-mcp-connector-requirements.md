@@ -128,9 +128,11 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - The server MUST NOT request `Mail.ReadWrite` or `Mail.Send`.
 - `Mail.Read` covers the **whole mailbox**; Graph has no per-folder scope. Least privilege beyond the
   scope MUST therefore come from tool design: result caps, no bulk export, junk filtering (§9.3).
-- **Scope override:** `MICROSOFT_SCOPES` MAY be set to **narrow** the default set, e.g. drop
-  `Calendars.ReadWrite` for a read-only setup. It MUST NOT add scopes outside the default set, and
-  `openid` + `offline_access` remain mandatory *(→ #70; the override is currently free-form)*.
+- **Scope override:** `MICROSOFT_SCOPES` MAY be set to **narrow** the default set, e.g. swap
+  `Calendars.ReadWrite` for `Calendars.Read` for a read-only setup. Any scope outside the default set
+  (plus `Calendars.Read`) is rejected at startup with a `ConfigError`. `openid` + `offline_access` are
+  always requested. Tools whose scope isn't granted are **not registered**, so the model never sees
+  a tool that would only fail.
 
 ---
 

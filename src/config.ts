@@ -92,13 +92,36 @@ export function resolveCacheDir(env: NodeJS.ProcessEnv): string {
   return join(homedir(), ".claude-hotmail-connector");
 }
 
+/**
+ * Scopes `MICROSOFT_SCOPES` may choose from: the least-privilege default plus
+ * `Calendars.Read`, the read-only narrowing of `Calendars.ReadWrite`. The
+ * override can only narrow access, never broaden it (spec v2 §6, decision D11).
+ */
+export const ALLOWED_SCOPES = [...DEFAULT_SCOPES, "Calendars.Read"] as const;
+
+/** Always requested: needed for sign-in and silent refresh. */
+export const REQUIRED_SCOPES = ["openid", "offline_access"] as const;
+
 function parseScopes(raw: string | undefined): string[] {
   if (!raw) return [...DEFAULT_SCOPES];
-  const scopes = raw
+  const requested = raw
     .split(/[\s,]+/)
     .map((s) => s.trim())
     .filter(Boolean);
-  return scopes.length > 0 ? scopes : [...DEFAULT_SCOPES];
+  if (requested.length === 0) return [...DEFAULT_SCOPES];
+
+  // Graph scope names are case-insensitive; normalise to the canonical spelling.
+  const canonical = new Map<string, string>(ALLOWED_SCOPES.map((s) => [s.toLowerCase(), s]));
+  const rejected = requested.filter((s) => !canonical.has(s.toLowerCase()));
+  if (rejected.length > 0) {
+    throw new ConfigError(
+      `MICROSOFT_SCOPES may only narrow the default scopes; not allowed: ${rejected.join(", ")}. ` +
+        `Allowed: ${ALLOWED_SCOPES.join(" ")}.`,
+    );
+  }
+  const chosen = new Set(requested.map((s) => canonical.get(s.toLowerCase())!));
+  for (const s of REQUIRED_SCOPES) chosen.add(s);
+  return ALLOWED_SCOPES.filter((s) => chosen.has(s));
 }
 
 /**

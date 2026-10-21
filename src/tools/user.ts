@@ -21,6 +21,7 @@ export const whoamiTool: ToolDefinition<typeof whoamiShape> = defineTool({
     "the correct personal account is connected. Read-only.",
   inputShape: whoamiShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
+  scopesAnyOf: ["User.Read"],
   async handler(_input, ctx) {
     const me = await whoami(ctx.graph);
     const email = me.mail ?? me.userPrincipalName ?? "unknown";

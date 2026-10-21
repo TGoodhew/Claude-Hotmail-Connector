@@ -5,8 +5,39 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 import type { GraphClient } from "./graph/client.js";
-import { allTools, createMcpServer } from "./mcp.js";
+import { allTools, createMcpServer, toolsForScopes } from "./mcp.js";
 import type { ToolContext } from "./tools/types.js";
+
+describe("toolsForScopes", () => {
+  const names = (scopes: string[]) =>
+    toolsForScopes(scopes)
+      .map((t) => t.name)
+      .sort();
+
+  it("keeps every tool for the default scopes", () => {
+    expect(toolsForScopes(loadConfig({ MICROSOFT_CLIENT_ID: "c" }).scopes)).toHaveLength(
+      allTools().length,
+    );
+  });
+
+  it("drops the calendar write tools when narrowed to Calendars.Read", () => {
+    expect(names(["openid", "offline_access", "User.Read", "Mail.Read", "Calendars.Read"])).toEqual(
+      ["get_message", "list_events", "list_messages", "whoami"],
+    );
+  });
+
+  it("drops mail tools without Mail.Read, and whoami without User.Read", () => {
+    expect(names(["openid", "offline_access", "Calendars.ReadWrite"])).toEqual([
+      "create_event",
+      "list_events",
+      "update_event",
+    ]);
+  });
+
+  it("declares a scope for every tool", () => {
+    for (const t of allTools()) expect(t.scopesAnyOf.length).toBeGreaterThan(0);
+  });
+});
 
 const EXPECTED_TOOLS = [
   "create_event",

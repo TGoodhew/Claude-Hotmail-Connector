@@ -54,6 +54,7 @@ export const listEventsTool: ToolDefinition<typeof listEventsShape> = defineTool
     "Times are returned in the requested IANA time zone. Read-only.",
   inputShape: listEventsShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
+  scopesAnyOf: ["Calendars.Read", "Calendars.ReadWrite"],
   async handler(input, ctx) {
     const timeZone = input.timeZone ?? ctx.config.defaultTimeZone;
     const events = await listEvents(ctx.graph, {
@@ -105,6 +106,7 @@ export const createEventTool: ToolDefinition<typeof createEventShape> = defineTo
     idempotentHint: true,
     openWorldHint: true,
   },
+  scopesAnyOf: ["Calendars.ReadWrite"],
   async handler(input, ctx) {
     const result = await createEvent(ctx.graph, {
       subject: input.subject,
@@ -146,6 +148,7 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
     idempotentHint: true,
     openWorldHint: true,
   },
+  scopesAnyOf: ["Calendars.ReadWrite"],
   async handler(input, ctx) {
     const result = await updateEvent(ctx.graph, {
       id: input.id,

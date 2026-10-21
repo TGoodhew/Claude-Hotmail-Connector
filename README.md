@@ -137,14 +137,14 @@ cp .env.example .env
 
 Environment variables (see [`.env.example`](.env.example)):
 
-| Variable                   | Default                       | Notes                                                                                                                           |
-| -------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `MICROSOFT_CLIENT_ID`      | the ID saved by `setup`       | Your Entra app's client ID. Required if no ID has been saved.                                                                   |
-| `MICROSOFT_TENANT`         | `common`                      | `common` allows personal + work/school accounts.                                                                                |
-| `DEFAULT_TIMEZONE`         | `Australia/Brisbane`          | IANA zone used when a call doesn't specify one ([#34](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/34)).         |
-| `LOG_LEVEL`                | `info`                        | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                        |
-| `MICROSOFT_SCOPES`         | least-privilege set (spec §6) | Space/comma-separated override; becomes narrowing-only ([#70](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/70)). |
-| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir            | Where the encrypted token cache and `settings.json` live.                                                                       |
+| Variable                   | Default                       | Notes                                                                                                                       |
+| -------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `MICROSOFT_CLIENT_ID`      | the ID saved by `setup`       | Your Entra app's client ID. Required if no ID has been saved.                                                               |
+| `MICROSOFT_TENANT`         | `common`                      | `common` allows personal + work/school accounts.                                                                            |
+| `DEFAULT_TIMEZONE`         | `Australia/Brisbane`          | IANA zone used when a call doesn't specify one ([#34](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/34)).     |
+| `LOG_LEVEL`                | `info`                        | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
+| `MICROSOFT_SCOPES`         | least-privilege set (spec §6) | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
+| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir            | Where the encrypted token cache and `settings.json` live.                                                                   |
 
 ### 4. Sign in once
 
