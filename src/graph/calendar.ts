@@ -310,20 +310,37 @@ function fieldValue(e: GraphEvent, field: UpdatableField): unknown {
   }
 }
 
-/** `If-Match` for the version that was checked, so a write can't hit a changed event. */
-function ifMatch(e: GraphEvent): Record<string, string> {
-  return e["@odata.etag"] ? { "if-match": e["@odata.etag"] } : {};
+/**
+ * `If-Match` for the version that was checked, so a write can't hit a changed
+ * event. Graph always returns `@odata.etag` for events. Without one, the write
+ * would be unconditional and the checks above could be stale, so refuse.
+ */
+function ifMatch(e: GraphEvent, action: string): Record<string, string> {
+  const etag = e["@odata.etag"]?.trim();
+  if (!etag) {
+    throw new ValidationError(
+      `Can't ${action} this event safely: Microsoft Graph didn't return its version tag. ` +
+        "Nothing was changed.",
+    );
+  }
+  return { "if-match": etag };
 }
 
-/** Graph answers 412 when `If-Match` no longer matches: the event changed after it was checked. */
-async function onCheckedVersion<T>(write: () => Promise<T>, outcome: string): Promise<T> {
+/**
+ * Graph answers 412 when `If-Match` no longer matches. That means the event
+ * changed after it was checked, or (because the Graph client retries timed-out
+ * requests) an earlier attempt of this very request already succeeded and its
+ * response was lost. Both are possible, so the message mustn't claim nothing happened.
+ */
+async function onCheckedVersion<T>(write: () => Promise<T>): Promise<T> {
   try {
     return await write();
   } catch (e) {
     if (e instanceof GraphError && e.status === 412) {
       throw new ValidationError(
-        `The event changed after it was checked, so nothing was ${outcome}. Read it again ` +
-          "(list_events) and confirm with the user.",
+        "Microsoft Graph refused the write because the event no longer matches the version that " +
+          "was checked. Either it was changed elsewhere, or an earlier attempt of this request " +
+          "already went through. Check the event with list_events before trying again.",
       );
     }
     throw e;
@@ -381,10 +398,10 @@ export async function updateEvent(
   // Prepare the report's "before" side now: a failure here must not happen
   // after the write, where it would hide a change that was actually made.
   const beforeValues = fields.map((field) => fieldValue(before, field));
+  const precondition = ifMatch(before, "update");
 
-  const updated = await onCheckedVersion(
-    () => graph.patch<GraphEvent>(path, patch, { headers: { ...headers, ...ifMatch(before) } }),
-    "changed",
+  const updated = await onCheckedVersion(() =>
+    graph.patch<GraphEvent>(path, patch, { headers: { ...headers, ...precondition } }),
   );
 
   return {
@@ -457,6 +474,7 @@ export async function cancelEvent(
     );
   }
 
-  await onCheckedVersion(() => graph.delete(path, { headers: ifMatch(event) }), "deleted");
+  const precondition = ifMatch(event, "delete");
+  await onCheckedVersion(() => graph.delete(path, { headers: precondition }));
   return shapeWrite(event);
 }

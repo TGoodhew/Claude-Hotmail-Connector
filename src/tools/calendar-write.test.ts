@@ -72,7 +72,7 @@ describe("create_event tool", () => {
 
 describe("update_event tool", () => {
   it("passes through only provided fields and returns the before/after changes", async () => {
-    const get = vi.fn(async () => ({ id: "e1", subject: "Original" }));
+    const get = vi.fn(async () => ({ id: "e1", "@odata.etag": 'W/"t1"', subject: "Original" }));
     const patch = vi.fn<PatchMock>(async () => ({ id: "e1", subject: "Renamed" }));
     const res = await updateEventTool.handler(
       { id: "e1", subject: "Renamed" },
@@ -111,7 +111,12 @@ describe("cancel_event tool", () => {
   });
 
   it("deletes after the checks and reports the removed event", async () => {
-    const get = vi.fn(async () => ({ id: "e1", subject: "Trip", attendees: [] }));
+    const get = vi.fn(async () => ({
+      id: "e1",
+      "@odata.etag": 'W/"t1"',
+      subject: "Trip",
+      attendees: [],
+    }));
     const del = vi.fn(async (_path: string, _opts?: unknown) => undefined);
     const res = await cancelEventTool.handler(
       { id: "e1", confirmSubject: "Trip" },

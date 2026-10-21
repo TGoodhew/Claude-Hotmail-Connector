@@ -237,9 +237,11 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   *before* the PATCH, so a failure there can't hide a completed write.
 - **No meetings.** Events with attendees are refused, because changing a meeting you organised emails
   every attendee an update, which is a send channel (§9.2 T3).
-- **Checked version only.** The PATCH carries `If-Match` with the event's `@odata.etag` from the pre-read.
-  If the event changed in between, Graph returns 412 and nothing is written ("changed after it was
-  checked"). Graph's enforcement for events is to be confirmed by the live test (#48).
+- **Checked version only.** The PATCH carries `If-Match` with the event's `@odata.etag` from the pre-read;
+  a pre-read without a tag is refused rather than writing unconditionally. A 412 means the event changed
+  in between, *or* a retried request already applied (its first response was lost). The error says so
+  rather than claiming nothing happened. Graph's enforcement for events is to be confirmed by the live
+  test (#48).
 - Same attendee prohibition for the payload as §7.5. `Calendars.ReadWrite`.
 
 ### 7.7 Planned read tools (optional)
