@@ -34,7 +34,7 @@ export interface SetupDeps {
   command?: string;
   /** Args used to launch the server (defaults derived from how we started). */
   args?: string[];
-  /** Client id to embed; defaults to the env override, else the bundled default. */
+  /** Client id to embed; defaults to `MICROSOFT_CLIENT_ID` (the CLI resolves the saved setting). */
   clientId?: string;
 }
 

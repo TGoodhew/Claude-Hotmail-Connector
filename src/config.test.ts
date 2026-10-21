@@ -1,17 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CLIENT_ID, DEFAULT_SCOPES, loadConfig } from "./config.js";
+import { DEFAULT_SCOPES, loadConfig, MISSING_CLIENT_ID_MESSAGE } from "./config.js";
 import { ConfigError } from "./util/errors.js";
 
 const base = { MICROSOFT_CLIENT_ID: "11111111-2222-3333-4444-555555555555" };
+const savedId = "99999999-8888-7777-6666-555555555555";
 
 describe("loadConfig", () => {
-  it("falls back to the bundled shared client id when absent or blank", () => {
-    expect(loadConfig({}).microsoftClientId).toBe(DEFAULT_CLIENT_ID);
-    expect(loadConfig({ MICROSOFT_CLIENT_ID: "   " }).microsoftClientId).toBe(DEFAULT_CLIENT_ID);
+  it("requires a client id: there is no bundled shared default", () => {
+    expect(() => loadConfig({})).toThrow(ConfigError);
+    expect(() => loadConfig({ MICROSOFT_CLIENT_ID: "   " })).toThrow(MISSING_CLIENT_ID_MESSAGE);
   });
 
-  it("prefers an explicit MICROSOFT_CLIENT_ID over the bundled default", () => {
-    expect(loadConfig(base).microsoftClientId).toBe(base.MICROSOFT_CLIENT_ID);
+  it("uses the saved settings client id when the env var is absent", () => {
+    expect(loadConfig({}, { clientId: savedId }).microsoftClientId).toBe(savedId);
+  });
+
+  it("prefers MICROSOFT_CLIENT_ID over the saved settings", () => {
+    expect(loadConfig(base, { clientId: savedId }).microsoftClientId).toBe(
+      base.MICROSOFT_CLIENT_ID,
+    );
   });
 
   it("applies the documented defaults", () => {

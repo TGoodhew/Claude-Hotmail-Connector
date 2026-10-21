@@ -1,17 +1,17 @@
 <#
-  register-app.ps1 — ONE-TIME publisher setup (run by the maintainer, not end users).
+  register-app.ps1 — create YOUR OWN Microsoft Entra app registration for the connector.
 
-  Creates the shared Microsoft Entra app registration the build ships with. The app is a
-  PUBLIC / native client: it authenticates with PKCE and NO client secret, so the resulting
-  "Application (client) id" is NOT a secret and is safe to embed in the build
-  (src/config.ts -> DEFAULT_CLIENT_ID) and distribute.
-
-  End users NEVER run this — a personal Microsoft account has no tenant to register an app in.
-  This turns the ~8-screen portal walkthrough (docs/installer.md) into one command.
+  Each user brings their own registration (spec v2 section 8.1); the connector does not ship a shared
+  one. This turns the README's portal walkthrough ("Register a Microsoft Entra application")
+  into one command. The app is a PUBLIC / native client: it authenticates with PKCE and NO
+  client secret, so the resulting "Application (client) ID" is not a secret.
 
   Requirements:
-    - Azure CLI (`az`) signed in to a tenant you own:  az login
-    - Permission to create app registrations in that tenant.
+    - A Microsoft Entra tenant. A personal Microsoft account (hotmail/outlook/live) has none by
+      default: create a free one first (typically by signing up for a free Azure account), see
+      https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-create-new-tenant
+    - Azure CLI (`az`) signed in to that tenant:  az login
+    - Permission to create app registrations in that tenant (you have it in your own tenant).
 
   Usage:
     pwsh ./scripts/register-app.ps1 [-DisplayName "Claude Hotmail Connector"]
@@ -63,8 +63,10 @@ Write-Host "Done. Application (client) id:" -ForegroundColor Green
 Write-Host "  $($app.appId)"
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. Put this id in src/config.ts -> DEFAULT_CLIENT_ID (and/or your .env)."
-Write-Host "  2. (Recommended before wide distribution) complete Microsoft Publisher Verification"
-Write-Host "     and set consent-screen branding (logo, privacy/ToS URLs) so users don't see the"
-Write-Host "     'unverified app' warning at sign-in."
-Write-Host "  3. Confirm under Authentication: 'Allow public client flows' = Yes, redirect http://localhost."
+Write-Host "  1. Give the connector this id, either:"
+Write-Host "       - paste it into the installer's 'Your Microsoft app registration' page, or"
+Write-Host "       - run:  hotmail-connector.exe setup --client-id $($app.appId)"
+Write-Host "         (from a source checkout: node dist/index.js setup --client-id $($app.appId))"
+Write-Host "  2. Sign in once:  hotmail-connector.exe login   (or the Start-menu 'Sign in' shortcut)"
+Write-Host "  3. If sign-in fails, confirm under Authentication: 'Allow public client flows' = Yes,"
+Write-Host "     and the 'Mobile and desktop applications' redirect URI is http://localhost."

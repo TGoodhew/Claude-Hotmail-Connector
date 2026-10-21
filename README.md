@@ -46,24 +46,28 @@ attendees or send invitations. `cancel_event` (event deletion) is undecided and 
 
 ## Install (Windows)
 
-Download the latest `HotmailConnectorSetup.exe` (or the portable `hotmail-connector.exe`) from
-[Releases](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases) and run it. The installer
-configures Claude Desktop and offers to run the one-time Microsoft sign-in. Verify downloads against
-`SHA256SUMS.txt`.
+1. **Create your own Microsoft Entra app registration** and copy its **Application (client) ID**:
+   see [step 1](#1-register-a-microsoft-entra-application) below, or run
+   `scripts/register-app.ps1`. The connector doesn't ship a shared registration, so each user owns
+   their own Microsoft access.
+2. Download the latest `HotmailConnectorSetup.exe` (or the portable `hotmail-connector.exe`) from
+   [Releases](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases), verify it against
+   `SHA256SUMS.txt`, and run it. Windows shows an **"unknown publisher"** warning (the build is
+   unsigned, by design); click **More info → Run anyway**.
+3. Paste your client ID when asked. The installer configures Claude Desktop and offers to run the
+   one-time Microsoft sign-in.
+4. **Fully quit Claude Desktop from the system tray** (closing the window only minimises it) and reopen
+   it.
 
-- Windows shows an **"unknown publisher"** warning (the build is unsigned, by design). Click
-  **More info → Run anyway**.
-- After it finishes, **fully quit Claude Desktop from the system tray** (closing the window only
-  minimises it) and reopen it.
-
-> **Changing soon:** v0.1.0 embeds a shared public-client id, so no Entra registration is needed. Per
-> spec v2 this is a single-user tool, so that shared id is being removed: you'll create **your own**
-> Entra app registration (step 1 below) and the installer will ask for its client id
-> ([#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)). Packaging as a
-> one-click Claude Desktop extension (`.mcpb`) is being evaluated
+> **Upgrading from v0.1.0:** v0.1.0 embedded a shared client ID, which is being retired. Create your
+> own registration and enter its ID when you install the new version, or run
+> `hotmail-connector.exe setup --client-id <id>`, then sign in again
+> ([#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)). Packaging as a one-click
+> Claude Desktop extension (`.mcpb`) is being evaluated
 > ([#63](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/63)).
 
-See [`docs/installer.md`](docs/installer.md) for installer details and how the packages are built.
+See [`docs/installer.md`](docs/installer.md) for installer details, unattended install, and how the
+packages are built.
 
 ## Manual / developer setup
 
@@ -80,9 +84,9 @@ See [`docs/installer.md`](docs/installer.md) for installer details and how the p
 
 ### 1. Register a Microsoft Entra application
 
-> Optional in v0.1.0 (the bundled shared client id is used if you skip it), and **required** once
-> [#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68) lands. If you have the Azure
-> CLI signed in to your tenant (`az login`), `scripts/register-app.ps1` automates these steps.
+> **Required.** Every user needs their own registration. If you have the Azure CLI signed in to your
+> tenant (`az login`), `pwsh ./scripts/register-app.ps1` does all of the steps below and prints the
+> client ID.
 
 The connector signs in as a **public/native client**. No client secret is ever used or stored.
 
@@ -116,8 +120,15 @@ npm run build          # produces dist/index.js
 
 ### 3. Configure
 
-Set your client id (step 1) in a local `.env` for development, or in the client's `env` block when
-wiring it up (step 5):
+Save your client ID (step 1). `setup` validates it, stores it in `settings.json` in the cache folder
+so that `login`, `whoami` and the server all find it, and configures Claude Desktop (step 5):
+
+```bash
+node dist/index.js setup --client-id <the Application (client) ID from step 1>
+```
+
+For development you can instead set it in a local `.env` (`MICROSOFT_CLIENT_ID` wins over the saved
+ID):
 
 ```bash
 cp .env.example .env
@@ -128,12 +139,12 @@ Environment variables (see [`.env.example`](.env.example)):
 
 | Variable                   | Default                       | Notes                                                                                                                           |
 | -------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `MICROSOFT_CLIENT_ID`      | bundled shared id (v0.1.0)    | Your Entra app's client id. Becomes required ([#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)).           |
+| `MICROSOFT_CLIENT_ID`      | the ID saved by `setup`       | Your Entra app's client ID. Required if no ID has been saved.                                                                   |
 | `MICROSOFT_TENANT`         | `common`                      | `common` allows personal + work/school accounts.                                                                                |
 | `DEFAULT_TIMEZONE`         | `Australia/Brisbane`          | IANA zone used when a call doesn't specify one ([#34](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/34)).         |
 | `LOG_LEVEL`                | `info`                        | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                        |
 | `MICROSOFT_SCOPES`         | least-privilege set (spec §6) | Space/comma-separated override; becomes narrowing-only ([#70](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/70)). |
-| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir            | Where the encrypted token cache lives.                                                                                          |
+| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir            | Where the encrypted token cache and `settings.json` live.                                                                       |
 
 ### 4. Sign in once
 
@@ -157,12 +168,13 @@ The quickest way is to let the connector configure Claude Desktop for you (the s
 installer uses):
 
 ```bash
-node dist/index.js setup     # detects Claude Desktop (incl. the Microsoft Store build) and adds the server
-node dist/index.js unsetup   # removes it again
+node dist/index.js setup --client-id <id>   # saves the ID; detects Claude Desktop (incl. Microsoft Store build)
+node dist/index.js setup                    # re-run later: reuses the saved ID
+node dist/index.js unsetup                  # removes the server from Claude Desktop again
 ```
 
-Or configure a client manually. The server is launched as a stdio subprocess; pass your
-`MICROSOFT_CLIENT_ID` in its `env`.
+Or configure a client manually. The server is launched as a stdio subprocess. It reads the saved ID,
+or you can pass `MICROSOFT_CLIENT_ID` in its `env`.
 
 #### Claude Code / VS Code
 
@@ -247,6 +259,9 @@ Known security issues are tracked under the `area:security` label.
 - **Event lands an hour off:** always pass a local wall-clock `dateTime` (e.g. `2026-07-20T10:00:00`)
   with an IANA `timeZone`, never a `Z`-suffixed value. The connector rejects `Z`/offset values for
   event times.
+- **"No Microsoft app registration is configured":** no client ID is saved or set. Run
+  `hotmail-connector.exe setup --client-id <id>` (or `node dist/index.js setup --client-id <id>`) with
+  your own registration's Application (client) ID (step 1).
 - **"Not signed in" from a tool:** run `node dist/index.js login` (or the **Sign in to Hotmail
   Connector** Start-menu shortcut) once. If it persists, run `logout` then `login` to reset the token
   cache.
