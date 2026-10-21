@@ -164,14 +164,14 @@ node dist/index.js logout    # removes the saved sign-in (token cache and key)
 
 ### Configuration
 
-| Variable                   | Default                       | Notes                                                                                                                       |
-| -------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `MICROSOFT_CLIENT_ID`      | — (required)                  | Your Entra app's Application (client) ID. The extension sets it from its settings.                                          |
-| `MICROSOFT_TENANT`         | `consumers`                   | Personal accounts only. `common` also allows work/school accounts (needs a multitenant registration).                       |
-| `DEFAULT_TIMEZONE`         | `Australia/Brisbane`          | IANA zone used when a call doesn't specify one ([#34](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/34)).     |
-| `LOG_LEVEL`                | `info`                        | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
-| `MICROSOFT_SCOPES`         | least-privilege set (spec §6) | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
-| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir            | Where the encrypted token cache lives.                                                                                      |
+| Variable                   | Default                                    | Notes                                                                                                                       |
+| -------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `MICROSOFT_CLIENT_ID`      | — (required)                               | Your Entra app's Application (client) ID. The extension sets it from its settings.                                          |
+| `MICROSOFT_TENANT`         | `consumers`                                | Personal accounts only. `common` also allows work/school accounts (needs a multitenant registration).                       |
+| `DEFAULT_TIMEZONE`         | This computer's time zone (UTC if unknown) | IANA zone used when a call doesn't specify one. An invalid name stops the server at startup.                                |
+| `LOG_LEVEL`                | `info`                                     | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
+| `MICROSOFT_SCOPES`         | least-privilege set (spec §6)              | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
+| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir                         | Where the encrypted token cache lives.                                                                                      |
 
 ## Usage example
 

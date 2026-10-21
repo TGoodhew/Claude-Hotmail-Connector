@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
 import { ConfigError } from "./util/errors.js";
+import { isValidTimeZone } from "./util/time.js";
 
 /**
  * Where a development `.env` may live: the root of the connector's own checkout
@@ -61,7 +62,22 @@ export const DEFAULT_SCOPES = [
  * to allow them anyway.
  */
 export const DEFAULT_TENANT = "consumers";
-export const DEFAULT_TIMEZONE = "Australia/Brisbane";
+/** Used when `DEFAULT_TIMEZONE` is unset and the computer's own zone can't be read. */
+export const FALLBACK_TIMEZONE = "UTC";
+
+/**
+ * The computer's own IANA time zone, or UTC if the runtime can't tell (#34).
+ * It is the default for calendar calls that don't name a zone, so events land
+ * at the user's local time wherever they are.
+ */
+export function systemTimeZone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return tz && isValidTimeZone(tz) ? tz : FALLBACK_TIMEZONE;
+  } catch {
+    return FALLBACK_TIMEZONE;
+  }
+}
 export const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 export const LOOPBACK_HOST = "127.0.0.1";
 
@@ -83,7 +99,12 @@ const EnvSchema = z.object({
     .optional()
     .transform((v) => (v && v.length > 0 ? v : undefined)),
   MICROSOFT_TENANT: z.string().trim().min(1).default(DEFAULT_TENANT),
-  DEFAULT_TIMEZONE: z.string().trim().min(1).default(DEFAULT_TIMEZONE),
+  // Blank means unset: fall back to the computer's own zone.
+  DEFAULT_TIMEZONE: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
   MICROSOFT_SCOPES: z.string().trim().optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   CLAUDE_HOTMAIL_CACHE_DIR: z.string().trim().optional(),
@@ -96,7 +117,7 @@ export interface AppConfig {
   microsoftTenant: string;
   /** Full authority base, e.g. https://login.microsoftonline.com/consumers */
   authority: string;
-  /** Default IANA time zone for calendar reads/writes. */
+  /** Default IANA time zone for calendar reads/writes: `DEFAULT_TIMEZONE`, else the system zone. */
   defaultTimeZone: string;
   /** Delegated Graph scopes. */
   scopes: string[];
@@ -173,12 +194,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const cacheDir = resolveCacheDir(env);
   const clientId = e.MICROSOFT_CLIENT_ID;
   if (!clientId) throw new ConfigError(MISSING_CLIENT_ID_MESSAGE);
+  // Checked here so a typo fails at startup, not on every calendar call.
+  if (e.DEFAULT_TIMEZONE && !isValidTimeZone(e.DEFAULT_TIMEZONE)) {
+    throw new ConfigError(
+      `DEFAULT_TIMEZONE "${e.DEFAULT_TIMEZONE}" is not an IANA time zone. Use a name like ` +
+        `"Europe/London" or "UTC", or leave it unset to use this computer's time zone.`,
+    );
+  }
 
   return {
     microsoftClientId: clientId,
     microsoftTenant: e.MICROSOFT_TENANT,
     authority: `https://login.microsoftonline.com/${e.MICROSOFT_TENANT}`,
-    defaultTimeZone: e.DEFAULT_TIMEZONE,
+    defaultTimeZone: e.DEFAULT_TIMEZONE ?? systemTimeZone(),
     scopes: parseScopes(e.MICROSOFT_SCOPES),
     graphBaseUrl: GRAPH_BASE_URL,
     loopbackHost: LOOPBACK_HOST,
