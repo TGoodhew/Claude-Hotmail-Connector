@@ -141,6 +141,46 @@ describe("htmlToText structure (#32)", () => {
     ).toBe("Total\t€240\nRef\tA\nB\n\tx");
   });
 
+  it("doesn't let a `<!--` inside <style> swallow the message (Copilot review on #109)", () => {
+    expect(htmlToText("<style>p::before{content:'<!--'}</style><p>Body</p><!-- footer -->")).toBe(
+      "Body",
+    );
+    // And the other way round: a <style> inside a comment goes with the comment.
+    expect(htmlToText("<!-- <style> --><p>Body</p><style>x{}</style>")).toBe("Body");
+  });
+
+  it("keeps the text after an unclosed <head>, <style> or comment", () => {
+    expect(htmlToText("<head><meta charset=utf-8><body><p>Hi</p>")).toBe("Hi");
+    expect(htmlToText("<p>Hi</p><style>x")).toBe("Hi\nx");
+    expect(htmlToText("<p>Hi</p><!--x")).toBe("Hi\n<!--x");
+  });
+});
+
+// Mail is untrusted and conversion is synchronous: none of these may be
+// quadratic (Copilot review on #109). Quadratic versions take tens of seconds.
+describe("htmlToText stays fast on hostile input", () => {
+  const ZWNJ = String.fromCharCode(0x200c);
+  const cases: Record<string, string> = {
+    "<br> run with no cell close": "<br>".repeat(100_000),
+    "</p> run with no cell close": "</p>".repeat(100_000),
+    "unclosed comments": "<!--x".repeat(100_000),
+    "unclosed <style>": "<style>x".repeat(100_000),
+    "unclosed <pre>": "<pre>x".repeat(100_000),
+    "stray <": "<x".repeat(100_000),
+    "joiner padding": `${ZWNJ} `.repeat(100_000),
+    "joiner run": ZWNJ.repeat(400_000) + "x",
+    "long space run in <pre>": `<pre>${" ".repeat(400_000)}x</pre>`,
+  };
+  for (const [name, html] of Object.entries(cases)) {
+    it(name, () => {
+      const t0 = performance.now();
+      htmlToText(html);
+      expect(performance.now() - t0).toBeLessThan(1_500);
+    });
+  }
+});
+
+describe("htmlToText tables and blocks (#32, continued)", () => {
   it("lays out a table-based confirmation email row by row", () => {
     const html = `
       <table>

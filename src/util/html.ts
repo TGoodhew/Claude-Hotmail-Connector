@@ -8,21 +8,26 @@
  * renderer, and it never throws on malformed input (#32).
  */
 
-// Removed with their content. Comments go first: they can hide tags, and
-// Outlook's conditional comments (`<!--[if mso]>…<![endif]-->`) are comments.
-const COMMENT_RE = /<!--[\s\S]*?-->/g;
-const NON_CONTENT_RE = /<(script|style|head|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+// Removed with their content, in one left-to-right scan (replaceSpans), so
+// whichever starts first wins: a `<!--` inside a <style> can't swallow the text
+// after it, and a <style> inside a comment goes with the comment. Outlook's
+// conditional comments (`<!--[if mso]>…<![endif]-->`) are comments.
+const NON_CONTENT_OPEN_RE = /<!--|<(script|style|head|title)\b[^<>]*>/gi;
 // Preformatted blocks keep their own spacing (see htmlToText).
-const PRE_RE = /(<pre\b[^>]*>[\s\S]*?<\/pre\s*>)/gi;
-const LINE_BREAK_RE = /<(br|hr)\b[^>]*>/gi;
+const PRE_OPEN_RE = /<(pre)\b[^<>]*>/gi;
+// Tag patterns stop at the next `<` (`[^<>]`), so a stray `<` costs only the
+// text up to the next one, and malformed mail can't make the scan quadratic.
+const LINE_BREAK_RE = /<(br|hr)\b[^<>]*>/gi;
 const BLOCK_BREAK_RE =
   /<\/(p|div|li|tr|table|thead|tbody|tfoot|caption|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd|pre)\s*>/gi;
 const CELL_BREAK_RE = /<\/(td|th)\s*>/gi;
 // Breaks that end a cell's content (`<td><p>Total</p></td>`) would split a row
 // across lines, so they're dropped; breaks between blocks inside a cell stay.
+// Each run of break tags is matched once, with the cell close (if any) captured
+// rather than looked ahead for, so a long run outside a table stays linear.
 const CELL_END_BREAKS_RE =
-  /(?:\s*(?:<\/(?:p|div|li|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd)\s*>|<br\b[^>]*>))+\s*(?=<\/t[dh]\s*>)/gi;
-const TAG_RE = /<[^>]+>/g;
+  /(?:\s*(?:<\/(?:p|div|li|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd)\s*>|<br\b[^<>]*>))+\s*(<\/t[dh]\s*>)?/gi;
+const TAG_RE = /<[^<>]+>/g;
 
 const ENTITY_RE = /&(?:#(\d+)|#x([0-9a-f]+)|([a-z][a-z0-9]*));/gi;
 
@@ -93,7 +98,17 @@ const ALWAYS_INVISIBLE_RE = new RegExp(`[${ch(0xad, 0xfeff)}]`, "g");
 // Indic shaping, joined emoji), so they're dropped only next to whitespace or a
 // line end: the padding marketing mail puts in its preheader.
 const JOINERS = ch(0x34f, 0x200b, 0x200c, 0x200d, 0x2060);
-const PADDING_RE = new RegExp(`(?<=^|\\s)[${JOINERS}]+|[${JOINERS}]+(?=\\s|$)`, "gm");
+const JOINER_RUN_RE = new RegExp(`[${JOINERS}]+`, "g");
+const SPACE_RE = /\s/;
+
+/** Drop joiner runs that touch whitespace or an end; checked per run, so linear. */
+function dropPadding(text: string): string {
+  return text.replace(JOINER_RUN_RE, (run, at: number) => {
+    const before = at === 0 || SPACE_RE.test(text[at - 1]!);
+    const after = at + run.length === text.length || SPACE_RE.test(text[at + run.length]!);
+    return before || after ? "" : run;
+  });
+}
 const NBSP_RE = new RegExp(ch(0xa0), "g");
 
 // Each <pre> block waits as a placeholder while the rest is normalised, so its
@@ -114,33 +129,66 @@ function inlineText(html: string): string {
     .replace(NBSP_RE, " ");
 }
 
+/**
+ * Replace each span from an opener matched by `openRe` (group 1 names the
+ * element; no group means a comment) to its closer, scanning once from the
+ * left. An opener without a closer is left in place as text, and a closer found
+ * missing isn't searched for again, so malformed mail stays linear time.
+ */
+function replaceSpans(html: string, openRe: RegExp, replace: (span: string) => string): string {
+  const closers = new Map<string, RegExp | null>(); // null: none from here on
+  let out = "";
+  let pos = 0;
+  openRe.lastIndex = 0;
+  for (let m = openRe.exec(html); m; m = openRe.exec(html)) {
+    const kind = m[1]?.toLowerCase() ?? "--";
+    let close = closers.get(kind);
+    if (close === undefined) {
+      close = kind === "--" ? /-->/g : new RegExp(`</${kind}\\s*>`, "gi");
+      closers.set(kind, close);
+    }
+    if (close === null) continue;
+    close.lastIndex = openRe.lastIndex;
+    const found = close.exec(html);
+    if (!found) {
+      closers.set(kind, null);
+      continue;
+    }
+    const end = found.index + found[0].length;
+    out += html.slice(pos, m.index) + replace(html.slice(m.index, end));
+    pos = end;
+    openRe.lastIndex = end;
+  }
+  return out + html.slice(pos);
+}
+
 /** A <pre> block's text, with its spacing and line breaks as written. */
 function preText(block: string): string {
   const inner = block.replace(/^<pre\b[^>]*>/i, "").replace(/<\/pre\s*>$/i, "");
   return inlineText(inner)
     .replace(/^\n/, "") // HTML ignores a newline straight after <pre>
-    .replace(/\s+$/, "");
+    .trimEnd();
 }
 
 /** Convert an HTML string to readable plain text. */
 export function htmlToText(html: string): string {
   if (!html) return "";
   const pres: string[] = [];
-  const marked = html
-    .replace(MARKERS_RE, "")
-    .replace(COMMENT_RE, "")
-    .replace(NON_CONTENT_RE, "")
-    .replace(PRE_RE, (block) => `${PRE_OPEN}${pres.push(preText(block)) - 1}${PRE_CLOSE}`)
+  const content = replaceSpans(html.replace(MARKERS_RE, ""), NON_CONTENT_OPEN_RE, () => "");
+  const marked = replaceSpans(
+    content,
+    PRE_OPEN_RE,
+    (block) => `${PRE_OPEN}${pres.push(preText(block)) - 1}${PRE_CLOSE}`,
+  )
     .replace(/\s+/g, " ") // source whitespace renders as one space
     .replace(PLACEHOLDER_RE, "\n$&\n")
-    .replace(CELL_END_BREAKS_RE, "")
+    .replace(CELL_END_BREAKS_RE, (run, cellClose?: string) => cellClose ?? run)
     .replace(LINE_BREAK_RE, "\n")
     .replace(BLOCK_BREAK_RE, "\n")
     .replace(CELL_BREAK_RE, "\t"); // one tab per cell, so empty cells keep their column
-  const text = inlineText(marked)
-    .replace(PADDING_RE, "")
-    .replace(/ *\t */g, "\t")
-    .replace(/ {2,}/g, " ") // collapse runs of spaces
+  const text = dropPadding(inlineText(marked))
+    .replace(/ {2,}/g, " ") // collapse runs of spaces (first, so the next step can't backtrack)
+    .replace(/ ?\t ?/g, "\t")
     .replace(/\t$/gm, "") // the separator after a row's last cell
     .replace(/^[\t ]+$/gm, "") // lines holding only empty (layout) cells
     .replace(/^ +| +$/gm, "") // trim spaces; leading tabs are empty cells
