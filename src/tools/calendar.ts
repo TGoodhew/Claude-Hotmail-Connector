@@ -1,12 +1,11 @@
 /**
- * MCP tool definitions for the calendar: list_events (read) plus create_event
- * and update_event (writes). Event times are local wall-clock + IANA zone.
- * Deletion (cancel_event) is intentionally omitted (see the note by
- * {@link calendarTools}).
+ * MCP tool definitions for the calendar: list_events (read), create_event and
+ * update_event (writes), and the guarded cancel_event (soft delete). Event times
+ * are local wall-clock + IANA zone.
  */
 
 import { z } from "zod";
-import { createEvent, listEvents, updateEvent } from "../graph/calendar.js";
+import { cancelEvent, createEvent, listEvents, updateEvent } from "../graph/calendar.js";
 import {
   defineTool,
   toolResult,
@@ -170,12 +169,57 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
   },
 });
 
-// NOTE: cancel_event (event deletion) is deliberately NOT implemented. Per the
-// spec it is a gated/destructive action requiring explicit owner approval, and
-// the kick-off prompt says to stop and ask before adding it.
+const cancelEventShape = {
+  id: z.string().min(1).describe("The event id to cancel (from list_events)."),
+  confirmSubject: z
+    .string()
+    .min(1)
+    .describe(
+      "The event's exact title, as confirmed with the user. Must match or nothing happens.",
+    ),
+  timeZone: z
+    .string()
+    .optional()
+    .describe("IANA time zone for the echoed times (defaults to the server's DEFAULT_TIMEZONE)."),
+};
+
+// Approved by the owner with guards (#55): soft delete only, title must match,
+// no meetings with attendees, no whole recurring series.
+export const cancelEventTool: ToolDefinition<typeof cancelEventShape> = defineTool({
+  name: "cancel_event",
+  title: "Cancel (delete) a calendar event",
+  description:
+    "DESTRUCTIVE: deletes a calendar event in the user's personal Outlook.com calendar (it moves to " +
+    "Outlook's Deleted Items). IMPORTANT: only call after the user has explicitly confirmed which " +
+    "event to delete. confirmSubject must be the event's exact title. Refuses events with attendees " +
+    "(deleting a meeting could email cancellations) and whole recurring series. Echo the removed " +
+    "event back to the user.",
+  inputShape: cancelEventShape,
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: true,
+    // Repeating the call removes nothing further (the event is already gone).
+    idempotentHint: true,
+    openWorldHint: true,
+  },
+  scopesAnyOf: ["Calendars.ReadWrite"],
+  async handler(input, ctx) {
+    const timeZone = input.timeZone ?? ctx.config.defaultTimeZone;
+    const event = await cancelEvent(ctx.graph, {
+      id: input.id,
+      confirmSubject: input.confirmSubject,
+      timeZone,
+    });
+    return toolResult(
+      `Cancelled event "${event.subject ?? input.id}" (moved to Outlook's Deleted Items).`,
+      { cancelled: event },
+    );
+  },
+});
 
 export const calendarTools: RegisteredTool[] = [
   toRegistered(listEventsTool),
   toRegistered(createEventTool),
   toRegistered(updateEventTool),
+  toRegistered(cancelEventTool),
 ];

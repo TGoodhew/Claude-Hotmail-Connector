@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import type { GraphClient } from "../graph/client.js";
-import { calendarTools, createEventTool, updateEventTool } from "./calendar.js";
+import { calendarTools, cancelEventTool, createEventTool, updateEventTool } from "./calendar.js";
 import type { ToolContext } from "./types.js";
 
 function ctxWith(graph: Partial<GraphClient>, defaultTimeZone = "Australia/Brisbane"): ToolContext {
@@ -13,8 +13,9 @@ type PostMock = (path: string, body: unknown, opts?: unknown) => Promise<unknown
 type PatchMock = (path: string, body: unknown, opts?: unknown) => Promise<unknown>;
 
 describe("create_event tool", () => {
-  it("registers three calendar tools and marks writes non-read-only + idempotent", () => {
+  it("registers four calendar tools and marks writes non-read-only + idempotent", () => {
     expect(calendarTools.map((t) => t.name).sort()).toEqual([
+      "cancel_event",
       "create_event",
       "list_events",
       "update_event",
@@ -93,5 +94,34 @@ describe("update_event tool", () => {
     const d = updateEventTool.description.toLowerCase();
     expect(d).toContain("confirm");
     expect(d).toContain("before and after");
+  });
+});
+
+describe("cancel_event tool", () => {
+  it("is destructive, needs Calendars.ReadWrite, and demands explicit confirmation", () => {
+    expect(cancelEventTool.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+    });
+    expect(cancelEventTool.scopesAnyOf).toEqual(["Calendars.ReadWrite"]);
+    const d = cancelEventTool.description.toLowerCase();
+    expect(d).toContain("destructive");
+    expect(d).toContain("explicitly confirmed");
+    expect(z.object(cancelEventTool.inputShape).safeParse({ id: "e1" }).success).toBe(false);
+  });
+
+  it("deletes after the checks and reports the removed event", async () => {
+    const get = vi.fn(async () => ({ id: "e1", subject: "Trip", attendees: [] }));
+    const del = vi.fn(async () => undefined);
+    const res = await cancelEventTool.handler(
+      { id: "e1", confirmSubject: "Trip" },
+      ctxWith({
+        get: get as unknown as GraphClient["get"],
+        delete: del as unknown as GraphClient["delete"],
+      }),
+    );
+    expect(del).toHaveBeenCalledWith("/me/events/e1");
+    expect(res.content[0]!.text).toContain('Cancelled event "Trip"');
+    expect(res.structuredContent?.cancelled).toMatchObject({ id: "e1", subject: "Trip" });
   });
 });

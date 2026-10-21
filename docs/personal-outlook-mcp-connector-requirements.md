@@ -55,8 +55,8 @@ personal accounts for mail and calendar when you use **your own** Entra app regi
   and support is community, best effort *(→ #77)*.
 - Use from claude.ai web/mobile or cloud sessions. That needs a remote mode, a future phase (§15, #58).
 - Contacts, OneDrive/Files, Teams, SharePoint.
-- Deleting or permanently destroying mail. **No hard-delete tools.** Calendar event deletion is gated and
-  undecided (§7.8, #55).
+- Deleting or permanently destroying mail. **No hard-delete tools.** Calendar events can only be
+  soft-deleted through the guarded `cancel_event` (§7.8).
 - Sending email. A future phase with explicit confirmation (#57).
 
 ---
@@ -235,9 +235,21 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 `get_event` (#50), all-day / recurring creation (#51), free/busy lookup (#52), mail folder awareness with
 Junk/Deleted excluded by default (#53), attachment text (#54).
 
-### 7.8 `cancel_event` — undecided, gated
-Not implemented. If approved (#55): `DELETE /me/events/{id}` (moves to Deleted Items),
-`destructiveHint: true`, explicit user confirmation, echo of the event removed.
+### 7.8 `cancel_event` — guarded soft delete
+Approved by the owner with guards (#55).
+- **Graph:** `GET /me/events/{id}` to check the live event, then `DELETE /me/events/{id}`, which moves
+  it to Deleted Items. Never `permanentDelete`.
+- **Inputs:** `id`, `confirmSubject` (required), `timeZone?` (for the echoed times).
+- **Guards:** nothing is deleted unless all of these hold:
+  - `confirmSubject` matches the event's title (trimmed, case-insensitive), as a guard against a wrong
+    or injected id;
+  - the event has **no attendees**, because deleting a meeting you organised emails cancellations
+    (the same send channel forbidden in §7.5);
+  - it isn't a **recurring series master**, which would remove every occurrence; a single
+    occurrence may be deleted.
+- **Output:** the removed event (id, subject, start/end, location, webLink), to echo back to the user.
+- Annotations: `destructiveHint: true`, `idempotentHint: true`. The description requires explicit
+  user confirmation. `Calendars.ReadWrite`.
 
 ---
 
@@ -501,8 +513,8 @@ Decided by the owner on 2026-10-21. Details and rationale are in #59.
 | D14 | Acceptance criteria | Mode A criteria (§13); remote criteria → §15 | — |
 | D15 | Runtime | Node 24 LTS | #45 |
 
-Still open, with the spec and implementation currently agreeing: default time zone (#34), error detail
-(#35), account audience (#62), `cancel_event` (#55).
+Later owner decisions (2026-10-21): `cancel_event` added with guards (#55); account audience defaults
+to personal accounts only (#62). Still open: default time zone (#34), error detail (#35).
 
 ---
 
