@@ -246,8 +246,8 @@ calendar / user modules), `src/tools` (zod schemas + thin handlers), `src/setup`
 
 The authoritative specifications live in [`docs/`](docs/):
 
-- [`docs/personal-outlook-mcp-connector-requirements.md`](docs/personal-outlook-mcp-connector-requirements.md) — the main build spec (tools, Graph, security, timezone).
-- [`docs/local-hosting-investigation-and-requirements.md`](docs/local-hosting-investigation-and-requirements.md) — why/how to host locally (Mode A stdio, chosen here).
+- [`docs/personal-outlook-mcp-connector-requirements.md`](docs/personal-outlook-mcp-connector-requirements.md) — the build spec, **v2** (tools, Graph, auth, security, timezone, packaging, decision log). Requirements not yet implemented link to their tracking issues.
+- [`docs/local-hosting-investigation-and-requirements.md`](docs/local-hosting-investigation-and-requirements.md) — the original local-hosting investigation (superseded by spec v2; kept for the record).
 - [`docs/installer.md`](docs/installer.md) — the packaged Windows installer: auto-config engine, one-time `register-app`, and the SEA/Inno build.
 
 ## License
