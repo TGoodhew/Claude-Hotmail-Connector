@@ -9,6 +9,8 @@
  * This keeps every request Graph-valid.
  */
 
+import { z } from "zod";
+import { GRAPH_BASE_URL } from "../config.js";
 import { htmlToText } from "../util/html.js";
 import { ValidationError } from "../util/errors.js";
 import type { GraphClient, ODataPage } from "./client.js";
@@ -120,6 +122,59 @@ function shapeSummary(m: GraphMessage): MessageSummary {
   };
 }
 
+// ── Paging cursor ────────────────────────────────────────────────────────────
+//
+// `nextPageToken` is an opaque cursor, never a raw URL (spec v2 §7.2, #30): it
+// holds the next page's path *relative to the Graph base* plus what later pages
+// need to behave like the first, i.e. the query mode (for the
+// eventual-consistency header) and any client-side date bounds (#31). A
+// relative path can only ever be resolved against Graph, and the Graph client
+// rejects absolute URLs outside it besides.
+
+const CursorSchema = z.object({
+  v: z.literal(1),
+  next: z
+    .string()
+    .min(1)
+    .refine((p) => /^[A-Za-z]/.test(p) && !p.includes("://") && !p.includes("\\"), {
+      message: "must be a relative Graph path",
+    }),
+  mode: z.enum(["search", "filter"]),
+  afterMs: z.number().finite().optional(),
+  beforeMs: z.number().finite().optional(),
+});
+type Cursor = z.infer<typeof CursorSchema>;
+
+const GRAPH_PREFIX = GRAPH_BASE_URL.replace(/\/?$/, "/");
+
+function encodeCursor(
+  nextLink: string | undefined,
+  mode: Cursor["mode"],
+  dates?: { afterMs?: number; beforeMs?: number },
+): string | undefined {
+  // Graph's own nextLinks live under the base; anything else is dropped, never followed.
+  if (!nextLink?.startsWith(GRAPH_PREFIX)) return undefined;
+  const cursor: Cursor = { v: 1, next: nextLink.slice(GRAPH_PREFIX.length), mode, ...dates };
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function decodeCursor(token: string): Cursor {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
+  } catch {
+    raw = undefined;
+  }
+  const parsed = CursorSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new ValidationError(
+      "pageToken is not a valid cursor. Pass the nextPageToken from a previous list_messages call " +
+        "unchanged (it is not a URL).",
+    );
+  }
+  return parsed.data;
+}
+
 function withinDateFilter(m: GraphMessage, f?: { afterMs?: number; beforeMs?: number }): boolean {
   if (!f || !m.receivedDateTime) return true;
   const t = Date.parse(m.receivedDateTime);
@@ -134,32 +189,41 @@ export async function listMessages(
   graph: GraphClient,
   input: ListMessagesInput,
 ): Promise<ListMessagesResult> {
-  // A pageToken is a full @odata.nextLink URL — follow it verbatim.
-  let page: ODataPage<GraphMessage>;
+  // With a pageToken, the cursor alone decides the request; other inputs are ignored.
+  let mode: Cursor["mode"];
+  let path: string;
+  let query: Record<string, string | number> | undefined;
   let clientDateFilter: { afterMs?: number; beforeMs?: number } | undefined;
 
   if (input.pageToken) {
-    page = (await graph.request<ODataPage<GraphMessage>>("GET", input.pageToken)).data;
+    const cursor = decodeCursor(input.pageToken);
+    mode = cursor.mode;
+    path = cursor.next;
+    if (cursor.afterMs !== undefined || cursor.beforeMs !== undefined) {
+      clientDateFilter = { afterMs: cursor.afterMs, beforeMs: cursor.beforeMs };
+    }
   } else {
     const built = buildMessagesQuery(input);
+    mode = built.mode;
+    path = "/me/messages";
+    query = built.query;
     clientDateFilter = built.clientDateFilter;
-    page = (
-      await graph.request<ODataPage<GraphMessage>>("GET", "/me/messages", {
-        query: built.query,
-        // $search on messages benefits from eventual consistency.
-        headers: built.mode === "search" ? { consistencylevel: "eventual" } : undefined,
-      })
-    ).data;
   }
+
+  const page = (
+    await graph.request<ODataPage<GraphMessage>>("GET", path, {
+      query,
+      // $search on messages benefits from eventual consistency.
+      headers: mode === "search" ? { consistencylevel: "eventual" } : undefined,
+    })
+  ).data;
 
   const messages = (page.value ?? [])
     .filter((m) => withinDateFilter(m, clientDateFilter))
     .map(shapeSummary);
+  const nextPageToken = encodeCursor(page["@odata.nextLink"], mode, clientDateFilter);
 
-  return {
-    messages,
-    ...(page["@odata.nextLink"] ? { nextPageToken: page["@odata.nextLink"] } : {}),
-  };
+  return { messages, ...(nextPageToken ? { nextPageToken } : {}) };
 }
 
 export interface GetMessageInput {

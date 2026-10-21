@@ -91,19 +91,88 @@ describe("listMessages", () => {
         hasAttachments: false,
       },
     ]);
-    expect(res.nextPageToken).toBe("https://graph.microsoft.com/v1.0/me/messages?$skip=10");
+    // An opaque cursor, never the raw URL (#30).
+    expect(res.nextPageToken).toBeTruthy();
+    expect(res.nextPageToken).not.toContain("https://");
+    expect(res.nextPageToken).toMatch(/^[A-Za-z0-9_-]+$/);
     // eventual consistency header is sent for $search.
     expect(request.mock.calls[0]![2]).toMatchObject({ headers: { consistencylevel: "eventual" } });
   });
 
-  it("follows a pageToken verbatim", async () => {
+  it("follows its own cursor as a path relative to Graph, keeping the search header", async () => {
     const request = vi.fn<RequestMock>(async () => ({
       status: 200,
-      data: { value: [] },
+      data: rawPage,
       headers: new Headers(),
     }));
-    await listMessages(graphWith(request), baseInput({ pageToken: "https://graph/next" }));
-    expect(request.mock.calls[0]![1]).toBe("https://graph/next");
+    const first = await listMessages(graphWith(request), baseInput({ query: "booking" }));
+    await listMessages(graphWith(request), baseInput({ pageToken: first.nextPageToken }));
+    const [, path, opts] = request.mock.calls[1]!;
+    expect(path).toBe("me/messages?$skip=10");
+    expect(opts).toMatchObject({ headers: { consistencylevel: "eventual" } });
+  });
+
+  it("keeps search date bounds on later pages (#31)", async () => {
+    const page = (ids: [string, string][], next?: string) => ({
+      status: 200,
+      data: {
+        value: ids.map(([id, receivedDateTime]) => ({ id, receivedDateTime })),
+        ...(next ? { "@odata.nextLink": next } : {}),
+      },
+      headers: new Headers(),
+    });
+    const request = vi
+      .fn<RequestMock>()
+      .mockResolvedValueOnce(
+        page(
+          [
+            ["p1-new", "2026-07-10T00:00:00Z"],
+            ["p1-old", "2026-06-01T00:00:00Z"],
+          ],
+          "https://graph.microsoft.com/v1.0/me/messages?$skiptoken=abc",
+        ),
+      )
+      .mockResolvedValueOnce(
+        page([
+          ["p2-new", "2026-07-11T00:00:00Z"],
+          ["p2-old", "2026-05-01T00:00:00Z"],
+        ]),
+      );
+    const input = baseInput({ query: "hotel", receivedAfter: "2026-07-01" });
+    const p1 = await listMessages(graphWith(request), input);
+    const p2 = await listMessages(graphWith(request), { ...input, pageToken: p1.nextPageToken });
+    expect(p1.messages.map((m) => m.id)).toEqual(["p1-new"]);
+    expect(p2.messages.map((m) => m.id)).toEqual(["p2-new"]);
+    expect(p2.nextPageToken).toBeUndefined();
+  });
+
+  it("rejects a pageToken that is a URL (prompt-injection channel, #30)", async () => {
+    const request = vi.fn<RequestMock>();
+    await expect(
+      listMessages(graphWith(request), baseInput({ pageToken: "https://evil.example/steal" })),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("rejects a forged cursor that points at an absolute URL", async () => {
+    const forged = Buffer.from(
+      JSON.stringify({ v: 1, next: "https://evil.example/steal", mode: "filter" }),
+    ).toString("base64url");
+    const request = vi.fn<RequestMock>();
+    await expect(
+      listMessages(graphWith(request), baseInput({ pageToken: forged })),
+    ).rejects.toThrow(/not a valid cursor/);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("drops a nextLink outside Graph instead of handing it back", async () => {
+    const request = vi.fn<RequestMock>(async () => ({
+      status: 200,
+      data: { value: [], "@odata.nextLink": "https://evil.example/next" },
+      headers: new Headers(),
+    }));
+    const res = await listMessages(graphWith(request), baseInput());
+    expect(res.nextPageToken).toBeUndefined();
   });
 
   it("applies the client-side date filter for search + dates", async () => {

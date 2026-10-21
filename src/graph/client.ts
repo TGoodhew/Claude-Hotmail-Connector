@@ -10,7 +10,7 @@
  */
 
 import type { MicrosoftAuth } from "../auth/microsoft.js";
-import { GraphError, TimeoutError } from "../util/errors.js";
+import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
 import { createLogger, type Logger } from "../util/log.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -84,15 +84,42 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function buildUrl(
+/**
+ * Resolve a request target against the Graph base URL.
+ *
+ * A full URL (e.g. an `@odata.nextLink`) is only accepted if it is https, on
+ * the Graph origin, and under the base path (e.g. `/v1.0/`). The access token is
+ * attached to every request, so anything else could hand it to a third party
+ * (spec v2 §9.2, T1). This is enforced here so no caller can bypass it.
+ */
+export function buildUrl(
   baseUrl: string,
   pathOrUrl: string,
   query?: GraphRequestOptions["query"],
 ): string {
-  // A full URL (e.g. an @odata.nextLink) is used verbatim.
-  const url = /^https?:\/\//i.test(pathOrUrl)
-    ? new URL(pathOrUrl)
-    : new URL(baseUrl.replace(/\/$/, "") + "/" + pathOrUrl.replace(/^\//, ""));
+  const base = new URL(baseUrl.replace(/\/?$/, "/"));
+  let url: URL;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(pathOrUrl) || pathOrUrl.startsWith("//")) {
+    try {
+      url = new URL(pathOrUrl);
+    } catch {
+      throw new ValidationError("Refusing a malformed request URL.");
+    }
+    if (
+      url.protocol !== "https:" ||
+      url.origin !== base.origin ||
+      !url.pathname.startsWith(base.pathname)
+    ) {
+      throw new ValidationError(
+        "Refusing to send a request outside Microsoft Graph (the access token would be exposed).",
+      );
+    }
+  } else {
+    url = new URL(base.href + pathOrUrl.replace(/^\/+/, ""));
+    if (url.origin !== base.origin) {
+      throw new ValidationError("Refusing to send a request outside Microsoft Graph.");
+    }
+  }
   if (query) {
     for (const [k, v] of Object.entries(query)) {
       if (v !== undefined) url.searchParams.set(k, String(v));
