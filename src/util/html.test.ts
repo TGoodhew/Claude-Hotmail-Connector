@@ -177,6 +177,30 @@ describe("htmlToText structure (#32)", () => {
       "L\tin\n\n\tR",
     );
   });
+
+  it("keeps a row together when a cell's last break sits inside inline tags (Copilot review on #109)", () => {
+    expect(htmlToText("<table><tr><td><span>Total<br></span></td><td>240</td></tr></table>")).toBe(
+      "Total\t240",
+    );
+    expect(htmlToText("<table><tr><td><b><p>A</p></b><td><font>B<br></font></table>")).toBe("A\tB");
+    // A break between content inside a cell still counts.
+    expect(htmlToText("<table><tr><td><span>A<br></span>B</td></tr></table>")).toBe("A\nB");
+  });
+
+  it("isn't fooled by tag-like text inside another tag's attribute (Copilot review on #109)", () => {
+    expect(htmlToText('<a title="<!--">Keep me</a><!-- footer -->')).toBe("Keep me");
+    expect(htmlToText('<table><tr><td><a title="</td>">A</a></td><td>B</td></tr></table>')).toBe(
+      "A\tB",
+    );
+    expect(htmlToText('<img alt="<style>">Visible')).toBe("Visible");
+    expect(htmlToText('<a title="<pre>  x</pre>">Link</a> text')).toBe("Link text");
+    expect(htmlToText("<p data-x='</p><p>'>One</p>Two")).toBe("One\nTwo");
+  });
+
+  it("shows a `<` that doesn't start a tag as text", () => {
+    expect(htmlToText("<p>1 < 2 and 3 > 2</p>")).toBe("1 < 2 and 3 > 2");
+    expect(htmlToText("I <3 mail")).toBe("I <3 mail");
+  });
 });
 
 // Mail is untrusted and conversion is synchronous: none of these may be
@@ -197,6 +221,10 @@ describe("htmlToText stays fast on hostile input", () => {
     "mixed quotes": `<a '"<b "'`.repeat(100_000),
     "implied table cells": "<tr><td>x<td>".repeat(100_000),
     "nested table opens": "<table><td>".repeat(100_000),
+    "unclosed declarations": "<!x".repeat(100_000),
+    "comment openers in attributes": '<a title="<!--">k</a>'.repeat(100_000),
+    "nested <pre> openers": "<pre>".repeat(100_000) + "</pre>",
+    "inline-wrapped cell breaks": "<td><span>x<br></span>".repeat(100_000),
   };
   for (const [name, html] of Object.entries(cases)) {
     it(name, () => {

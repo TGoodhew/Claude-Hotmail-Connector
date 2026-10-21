@@ -6,36 +6,14 @@
  * it drops markup, comments and non-content elements, turns block and table
  * elements into line/column breaks, and decodes entities. It is not a full HTML
  * renderer, and it never throws on malformed input (#32).
+ *
+ * The markup is read by one left-to-right scan (see `render`): each complete
+ * tag, quoted attribute values included, or comment is consumed before anything
+ * is decided, so text inside an attribute can't start a comment, end a table
+ * cell or break a tag. Mail is untrusted and conversion is synchronous, so every
+ * search runs forward and a closer found missing isn't looked for again: the
+ * scan stays linear on hostile input.
  */
-
-// Removed with their content, in one left-to-right scan (replaceSpans), so
-// whichever starts first wins: a `<!--` inside a <style> can't swallow the text
-// after it, and a <style> inside a comment goes with the comment. Outlook's
-// conditional comments (`<!--[if mso]>…<![endif]-->`) are comments.
-// A tag's attributes. Quoted values may hold `<` or `>` (`title="A < B"`), so
-// they're skipped whole; outside quotes the pattern stops at the next `<`, so a
-// stray `<` costs only the text up to the next one, and malformed mail can't
-// make a scan quadratic.
-const ATTRS = String.raw`(?:[^<>"']|"[^"]*"|'[^']*')*`;
-const tagRe = (source: string, flags = "gi") => new RegExp(source, flags);
-
-const NON_CONTENT_OPEN_RE = tagRe(String.raw`<!--|<(script|style|head|title)\b${ATTRS}>`);
-// Preformatted blocks keep their own spacing (see htmlToText).
-const PRE_OPEN_RE = tagRe(String.raw`<(pre)\b${ATTRS}>`);
-const LINE_BREAK_RE = tagRe(String.raw`<(br|hr)\b${ATTRS}>`);
-const BLOCK_BREAK_RE =
-  /<\/(p|div|li|caption|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd|pre)\s*>/gi;
-// Cells and rows: see layoutTables.
-const TABLE_TAG_RE = tagRe(String.raw`<(\/?)(td|th|tr|table)\b${ATTRS}>`);
-// Breaks that end a cell's content (`<td><p>Total</p></td>`, or before the next
-// cell or row when the close is left out) would split a row across lines, so
-// they're dropped; breaks between blocks inside a cell stay. Each run of break
-// tags is matched once, with the table tag (if any) captured rather than looked
-// ahead for, so a long run outside a table stays linear.
-const CELL_END_BREAKS_RE = tagRe(
-  String.raw`(?:\s*(?:<\/(?:p|div|li|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd)\s*>|<br\b${ATTRS}>))+\s*(<\/?(?:td|th|tr)\b${ATTRS}>|<\/table\s*>)?`,
-);
-const TAG_RE = tagRe(String.raw`<(?:[^<>"']|"[^"]*"|'[^']*')+>`, "g");
 
 const ENTITY_RE = /&(?:#(\d+)|#x([0-9a-f]+)|([a-z][a-z0-9]*));/gi;
 
@@ -129,96 +107,219 @@ const PRE_CLOSE = ch(PRE_CLOSE_CODE);
 const MARKERS_RE = new RegExp(`[${PRE_OPEN}${PRE_CLOSE}]`, "g");
 const PLACEHOLDER_RE = new RegExp(`${PRE_OPEN}(\\d+)${PRE_CLOSE}`, "g");
 
-/** Markup to text: line breaks kept, tags stripped, entities decoded, invisibles dropped. */
-function inlineText(html: string): string {
-  return decodeEntities(html.replace(LINE_BREAK_RE, "\n").replace(TAG_RE, ""))
-    .replace(/\r\n?/g, "\n")
-    .replace(ALWAYS_INVISIBLE_RE, "")
-    .replace(NBSP_RE, " ");
+// ── Scanner ──────────────────────────────────────────────────────────────────
+
+const TAG_NAME_RE = /[A-Za-z][A-Za-z0-9:-]*/y;
+const WHITESPACE_RUN_RE = /\s+/g;
+
+/** Removed with their content. */
+const NON_CONTENT = new Set(["script", "style", "head", "title"]);
+/** Their end starts a new line. */
+const BLOCKS = new Set([
+  "p", "div", "li", "caption", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote",
+  "section", "article", "header", "footer", "ul", "ol", "dl", "dt", "dd", "pre",
+]); // prettier-ignore
+/** Cells end in a tab and rows in a line break (see `render`). */
+const TABLE_PARTS = new Set(["td", "th", "tr", "table"]);
+
+interface Tag {
+  name: string;
+  close: boolean;
+  /** Index just after the tag's `>`. */
+  end: number;
 }
 
 /**
- * Replace each span from an opener matched by `openRe` (group 1 names the
- * element; no group means a comment) to its closer, scanning once from the
- * left. An opener without a closer is left in place as text, and a closer found
- * missing isn't searched for again, so malformed mail stays linear time.
+ * What one scan has learnt is missing from the current position on (a quote
+ * character, `-->`, `>`, or an element's closing tag). Searches only run
+ * forward, so a miss stays a miss and isn't searched for again.
  */
-function replaceSpans(html: string, openRe: RegExp, replace: (span: string) => string): string {
-  const closers = new Map<string, RegExp | null>(); // null: none from here on
-  let out = "";
-  let pos = 0;
-  openRe.lastIndex = 0;
-  for (let m = openRe.exec(html); m; m = openRe.exec(html)) {
-    const kind = m[1]?.toLowerCase() ?? "--";
-    let close = closers.get(kind);
-    if (close === undefined) {
-      close = kind === "--" ? /-->/g : new RegExp(`</${kind}\\s*>`, "gi");
-      closers.set(kind, close);
+type Missing = Set<string>;
+
+/**
+ * Read the tag that starts at `i` (where `html[i]` is `<`), or null if it isn't
+ * one: no name, or no `>` before the next unquoted `<` or the end. Quoted
+ * attribute values may contain `<` and `>`.
+ */
+function readTag(html: string, i: number, missing: Missing): Tag | null {
+  let j = i + 1;
+  const close = html[j] === "/";
+  if (close) j += 1;
+  TAG_NAME_RE.lastIndex = j;
+  const name = TAG_NAME_RE.exec(html)?.[0];
+  if (!name) return null;
+  for (j += name.length; j < html.length; j += 1) {
+    const c = html[j];
+    if (c === ">") return { name: name.toLowerCase(), close, end: j + 1 };
+    if (c === "<") return null;
+    if (c === '"' || c === "'") {
+      const q = missing.has(c) ? -1 : html.indexOf(c, j + 1);
+      if (q < 0) {
+        missing.add(c);
+        return null;
+      }
+      j = q;
     }
-    if (close === null) continue;
-    close.lastIndex = openRe.lastIndex;
-    const found = close.exec(html);
-    if (!found) {
-      closers.set(kind, null);
-      continue;
-    }
-    const end = found.index + found[0].length;
-    out += html.slice(pos, m.index) + replace(html.slice(m.index, end));
-    pos = end;
-    openRe.lastIndex = end;
   }
-  return out + html.slice(pos);
+  return null;
+}
+
+/** The index just after the closing tag of `name` from `from`, or -1 (remembered). */
+function findClose(html: string, name: string, from: number, missing: Missing): number {
+  const key = `</${name}`;
+  if (missing.has(key)) return -1;
+  const re = new RegExp(`</${name}\\s*>`, "gi");
+  re.lastIndex = from;
+  const m = re.exec(html);
+  if (!m) {
+    missing.add(key);
+    return -1;
+  }
+  return m.index + m[0].length;
+}
+
+interface TableState {
+  cell: boolean;
+  row: boolean;
 }
 
 /**
- * End each table cell with a tab and each row with a line break. HTML lets
- * `</td>`, `</th>` and `</tr>` be left out (the next cell or row ends them), so
- * the open cell and row are tracked per table, nested tables included, rather
- * than relying on closing tags. A close that's present ends a cell only once.
+ * Render markup as text with `\n` line breaks, `\t` after each table cell and
+ * `<pre>` blocks as placeholders (their text goes into `pres`). With `pre`, the
+ * markup is a <pre> block's inside: spacing is kept and only <br> breaks lines.
+ *
+ * Block ends and <br> owe a line break that is written only when more text
+ * follows, so breaks that end a table cell's content (`<td><p>Total</p></td>`,
+ * `<td><span>Total<br></span><td>`) are dropped instead of splitting the row.
+ *
+ * HTML lets `</td>`, `</th>` and `</tr>` be left out (the next cell or row ends
+ * them), so the open cell and row are tracked per table, nested tables
+ * included, rather than relying on closing tags.
  */
-function layoutTables(html: string): string {
-  type Table = { cell: boolean; row: boolean };
-  const outer: Table[] = [];
-  let table: Table = { cell: false, row: false };
-  return html.replace(TABLE_TAG_RE, (_tag, close: string, tagName: string) => {
-    const name = tagName.toLowerCase();
-    let out = "";
-    const endCell = () => {
-      if (table.cell) out += "\t";
-      table.cell = false;
-    };
-    const endRow = () => {
-      endCell();
-      if (table.row) out += "\n";
-      table.row = false;
-    };
+function render(html: string, pre: boolean, pres: string[]): string {
+  const missing: Missing = new Set();
+  const out: string[] = [];
+  let owed = 0; // line breaks owed by block ends and <br>
+  const outer: TableState[] = [];
+  let table: TableState = { cell: false, row: false };
+
+  const write = (s: string) => {
+    if (owed > 0) out.push(owed > 1 ? "\n\n" : "\n");
+    owed = 0;
+    out.push(s);
+  };
+  const text = (raw: string) => {
+    if (pre) return void out.push(decodeEntities(raw));
+    const t = raw.replace(WHITESPACE_RUN_RE, " ");
+    if (t === "" || (t === " " && owed > 0)) return; // spacing before a break
+    write(decodeEntities(t));
+  };
+  const endCell = () => {
+    if (table.cell) out.push("\t");
+    table.cell = false;
+  };
+  const endRow = () => {
+    endCell();
+    if (table.row) out.push("\n");
+    table.row = false;
+  };
+  const tablePart = (name: string, close: boolean) => {
     if (name === "table") {
       if (!close) {
+        write(""); // breaks before the table are kept
         outer.push(table);
         table = { cell: false, row: false };
-        return "";
+        return;
       }
+      owed = 0; // breaks ending the last cell's content
       endRow();
       table = outer.pop() ?? { cell: false, row: false };
-      return `${out}\n`;
+      out.push("\n");
+      return;
     }
+    owed = 0; // breaks ending a cell's content
     if (name === "tr") {
       endRow();
       table.row = !close;
-      return out;
+      return;
     }
     endCell(); // td/th: a new cell ends the open one
     if (!close) table.cell = table.row = true;
-    return out;
-  });
+  };
+
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0) {
+      text(html.slice(i));
+      break;
+    }
+    if (lt > i) text(html.slice(i, lt));
+    i = lt;
+
+    if (html.startsWith("<!--", i)) {
+      const end = missing.has("-->") ? -1 : html.indexOf("-->", i + 4);
+      if (end < 0) {
+        missing.add("-->");
+        text("<!--"); // unclosed: kept as text
+        i += 4;
+      } else {
+        i = end + 3;
+      }
+      continue;
+    }
+    if (html[i + 1] === "!" || html[i + 1] === "?") {
+      // <!DOCTYPE>, <![if !mso]>, <![endif]>, <?xml?>: dropped.
+      const gt = missing.has(">") ? -1 : html.indexOf(">", i + 2);
+      if (gt < 0) {
+        missing.add(">");
+        text("<");
+        i += 1;
+      } else {
+        i = gt + 1;
+      }
+      continue;
+    }
+
+    const tag = readTag(html, i, missing);
+    if (!tag) {
+      text("<"); // not a tag (`a < b`, an unclosed quote): it's text
+      i += 1;
+      continue;
+    }
+    i = tag.end;
+    const { name, close } = tag;
+
+    if (!close && (NON_CONTENT.has(name) || (name === "pre" && !pre))) {
+      const end = findClose(html, name, i, missing);
+      if (end < 0) continue; // unclosed: only the opening tag is dropped
+      if (name === "pre") {
+        const inner = html.slice(i, html.lastIndexOf("<", end - 1));
+        write(`\n${PRE_OPEN}${pres.push(preText(inner, pres)) - 1}${PRE_CLOSE}\n`);
+      }
+      i = end;
+      continue;
+    }
+    if (name === "br" || name === "hr") {
+      if (pre) out.push("\n");
+      else owed += 1;
+      continue;
+    }
+    if (pre) continue; // inside <pre>, other markup only affects style
+    if (TABLE_PARTS.has(name)) tablePart(name, close);
+    else if (close && BLOCKS.has(name)) owed += 1;
+  }
+  return out.join("");
 }
 
-const PRE_TAG_RE = tagRe(String.raw`^<pre\b${ATTRS}>`, "i");
+/** Line endings, invisible characters and no-break spaces, after decoding. */
+function tidy(text: string): string {
+  return text.replace(/\r\n?/g, "\n").replace(ALWAYS_INVISIBLE_RE, "").replace(NBSP_RE, " ");
+}
 
 /** A <pre> block's text, with its spacing and line breaks as written. */
-function preText(block: string): string {
-  const inner = block.replace(PRE_TAG_RE, "").replace(/<\/pre\s*>$/i, "");
-  return inlineText(inner)
+function preText(inner: string, pres: string[]): string {
+  return tidy(render(inner, true, pres))
     .replace(/^\n/, "") // HTML ignores a newline straight after <pre>
     .trimEnd();
 }
@@ -227,19 +328,7 @@ function preText(block: string): string {
 export function htmlToText(html: string): string {
   if (!html) return "";
   const pres: string[] = [];
-  const content = replaceSpans(html.replace(MARKERS_RE, ""), NON_CONTENT_OPEN_RE, () => "");
-  const marked = replaceSpans(
-    content,
-    PRE_OPEN_RE,
-    (block) => `${PRE_OPEN}${pres.push(preText(block)) - 1}${PRE_CLOSE}`,
-  )
-    .replace(/\s+/g, " ") // source whitespace renders as one space
-    .replace(PLACEHOLDER_RE, "\n$&\n")
-    .replace(CELL_END_BREAKS_RE, (run, tableTag?: string) => tableTag ?? run)
-    .replace(LINE_BREAK_RE, "\n")
-    .replace(BLOCK_BREAK_RE, "\n");
-  // One tab per cell, so empty cells keep their column.
-  const text = dropPadding(inlineText(layoutTables(marked)))
+  const text = dropPadding(tidy(render(html.replace(MARKERS_RE, ""), false, pres)))
     .replace(/ {2,}/g, " ") // collapse runs of spaces (first, so the next step can't backtrack)
     .replace(/ ?\t ?/g, "\t")
     .replace(/\t$/gm, "") // the separator after a row's last cell
