@@ -1,8 +1,24 @@
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SCOPES, loadConfig, MISSING_CLIENT_ID_MESSAGE } from "./config.js";
+import { DEFAULT_SCOPES, dotenvPath, loadConfig, MISSING_CLIENT_ID_MESSAGE } from "./config.js";
 import { ConfigError } from "./util/errors.js";
 
 const base = { MICROSOFT_CLIENT_ID: "11111111-2222-3333-4444-555555555555" };
+
+describe("dotenvPath (#41)", () => {
+  it("is the connector checkout root, derived from the entry script, not the CWD", () => {
+    const repo = resolve("/work/Claude-Hotmail-Connector");
+    expect(dotenvPath(join(repo, "dist", "index.js"))).toBe(join(repo, ".env"));
+    // An extension bundle: <ext>/server/index.cjs -> <ext>/.env (none shipped).
+    const ext = resolve("/ext/hotmail");
+    expect(dotenvPath(join(ext, "server", "index.cjs"))).toBe(join(ext, ".env"));
+    expect(dotenvPath(join(repo, "dist", "index.js"))).not.toBe(join(process.cwd(), ".env"));
+  });
+
+  it("is undefined without an entry script", () => {
+    expect(dotenvPath(undefined)).toBeUndefined();
+  });
+});
 
 describe("loadConfig", () => {
   it("requires a client id: there is no bundled shared default", () => {

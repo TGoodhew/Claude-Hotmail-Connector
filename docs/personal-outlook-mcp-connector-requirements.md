@@ -296,8 +296,8 @@ signed in to that tenant. Registration settings:
   30 s cooldown, so automatic retries can't loop on the user. Startup never signs in, and CLI
   diagnostics (`whoami`) stay non-interactive. MCP URL-mode elicitation MAY be added where clients
   support it.
-- A loopback request with a wrong `state` MUST be rejected **without** aborting the pending sign-in
-  *(→ #41)*.
+- A loopback request with a missing or wrong `state` is answered 400 and ignored. It neither aborts
+  nor completes the pending sign-in, and an `error=` callback counts only if its `state` matches.
 - Token requests MUST have a timeout *(→ #37)*.
 
 ### 8.3 Token handling
@@ -326,8 +326,10 @@ signed in to that tenant. Registration settings:
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir | Token cache location. |
 
-`.env` is a **development** convenience. The installed server MUST NOT pick up a `.env` from whatever
-directory it was launched in, because Claude Code launches servers in project folders *(→ #41)*.
+`.env` is a **development** convenience, read only from the connector checkout's root, found from the
+entry script's path (`<repo>/dist/index.js` → `<repo>/.env`). It is never read from the directory the
+server was launched in, because Claude Code launches servers in project folders, so a project's `.env`
+can't swap the client id, tenant, scopes or cache dir. Extension installs have no `.env`.
 
 ---
 
@@ -375,9 +377,9 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | T6 | **Data planted in the calendar.** Mail contents copied into event bodies, visible to anyone the calendar is shared with. | Writes require confirmation, and the created event is echoed. Residual risk if the calendar is shared or published (see residual risks). | Partial |
 | T7 | **Phishing presented as genuine.** A fake "booking" in Junk is read as real. | Exclude Junk/Deleted by default and report each message's folder (#53). | *→ #53* |
 | T8 | **Context flooding.** A huge newsletter fills the model's context and pushes out the user's instructions. | Result caps on lists; body truncation with a `truncated` flag. | *→ #38* |
-| T9 | **Hostile launch environment.** A repo's `.env` swaps the client id, tenant, cache dir or scopes. | `.env` is dev-only / loaded from a fixed path (*→ #41*). Scope override can only narrow (§6). | Partial (✅ #70) |
+| T9 | **Hostile launch environment.** A repo's `.env` swaps the client id, tenant, cache dir or scopes. | `.env` is read only from the checkout root, never the CWD (§8.4). Scope override can only narrow (§6). | ✅ #41, #70 |
 | T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; *→ #83* |
-| T11 | **Interference with the loopback sign-in.** A stray or hostile local request hits the redirect port. | Random `state`, checked in constant time. A mismatch must not abort the pending sign-in (*→ #41*). | Partial |
+| T11 | **Interference with the loopback sign-in.** A stray or hostile local request hits the redirect port. | Random `state`, checked in constant time. Mismatched requests get a 400 and neither abort nor complete the sign-in (§8.2). | ✅ #41 |
 | T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. Tool descriptions SHOULD say so explicitly, and results SHOULD mark message/event text as untrusted third-party content (*→ #88*). | *→ #88* |
 
 **Rules (normative)**
