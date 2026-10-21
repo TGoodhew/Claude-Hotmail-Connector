@@ -17,8 +17,11 @@ import type { GraphClient } from "../graph/client.js";
 export interface ToolContext {
   graph: GraphClient;
   config: AppConfig;
-  /** Account actions not done through Graph (e.g. `sign_out`). */
-  auth?: Pick<MicrosoftAuth, "signOut">;
+  /**
+   * Account actions not done through Graph (e.g. `sign_out`). `signOutEpoch`
+   * lets the server bind each tool call's Graph requests to one sign-out epoch.
+   */
+  auth?: Pick<MicrosoftAuth, "signOut"> & Partial<Pick<MicrosoftAuth, "signOutEpoch">>;
 }
 
 /** MCP behaviour hints surfaced to the client/model. */

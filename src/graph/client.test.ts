@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
-import { buildUrl, createGraphClient, retryAfterMs } from "./client.js";
+import { buildUrl, createGraphClient, retryAfterMs, scopeToOperation } from "./client.js";
 
 const BASE = "https://graph.microsoft.com/v1.0";
 
@@ -118,6 +118,23 @@ describe("createGraphClient token acquisition", () => {
     await client.get("/me");
     expect(auth.signOutEpoch).toHaveBeenCalledOnce(); // taken once, at the start
     expect(auth.getAccessToken.mock.calls.map(([o]) => o?.signOutEpoch)).toEqual([7, 7]);
+  });
+
+  it("scopeToOperation pins every request (and page) to the given epoch", async () => {
+    let epoch = 1;
+    const auth = { ...makeAuth(), signOutEpoch: vi.fn(() => epoch) };
+    const fetchImpl = fetchMock()
+      .mockResolvedValueOnce(json({ value: [1], "@odata.nextLink": `${BASE}/me/messages?p=2` }))
+      .mockResolvedValueOnce(json({ value: [2] }))
+      .mockResolvedValueOnce(json({ ok: true }));
+    const scoped = scopeToOperation(
+      createGraphClient({ auth, baseUrl: BASE, fetchImpl: fetchImpl as never }),
+      1,
+    );
+    await scoped.getAllPages("/me/messages");
+    epoch = 2; // signed out between this operation's requests
+    await scoped.patch("/me/events/e", {});
+    expect(auth.getAccessToken.mock.calls.map(([o]) => o?.signOutEpoch)).toEqual([1, 1, 1]);
   });
 
   it("is non-interactive by default (CLI diagnostics never open a browser)", async () => {

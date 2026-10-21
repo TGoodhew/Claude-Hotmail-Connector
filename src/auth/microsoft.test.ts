@@ -851,6 +851,49 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     expect(store.current).toBeNull();
   });
 
+  it("paging stops at the next page if the user signed out during the first", async () => {
+    const store = memoryStore({
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000_000_000,
+      scopes: config.scopes,
+    });
+    const openBrowser = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    let releaseFirstPage!: () => void;
+    const firstPageGate = new Promise<void>((r) => (releaseFirstPage = r));
+    let graphCalls = 0;
+    const graph = createGraphClient({
+      auth,
+      baseUrl: "https://graph.microsoft.com/v1.0",
+      fetchImpl: (async () => {
+        graphCalls += 1;
+        await firstPageGate; // the first page is slow, but succeeds…
+        return jsonResponse({
+          value: [1],
+          "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/calendarView?$skip=1",
+        });
+      }) as unknown as typeof fetch,
+      interactiveSignIn: { waitMs: 5_000 },
+    });
+    const listing = graph.getAllPages("/me/calendarView").then(
+      () => new Error("expected paging to stop"),
+      (e: unknown) => e as Error,
+    );
+    await until(() => graphCalls === 1);
+    await auth.signOut(); // …while the user signs out.
+    releaseFirstPage();
+    expect(await listing).toBeInstanceOf(SignedOutError); // page 2 doesn't sign in again
+    expect(graphCalls).toBe(1);
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
   it("a save already writing when the user signs out is removed by the cleanup", async () => {
     let releaseSave!: () => void;
     const saveGate = new Promise<void>((r) => (releaseSave = r));

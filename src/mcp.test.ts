@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 import type { GraphClient } from "./graph/client.js";
 import { allTools, createMcpServer, toolsForScopes } from "./mcp.js";
-import type { ToolContext } from "./tools/types.js";
+import type { RegisteredTool, ToolContext } from "./tools/types.js";
 
 describe("toolsForScopes", () => {
   const names = (scopes: string[]) =>
@@ -60,6 +60,42 @@ function testCtx(): ToolContext {
   } as unknown as GraphClient;
   return { graph, config };
 }
+
+describe("tool calls are bound to one sign-out epoch", () => {
+  it("every Graph request of a call carries the epoch from the call's start", async () => {
+    let epoch = 3;
+    const seen: unknown[] = [];
+    const graph = {
+      get: vi.fn(async (_path: string, opts?: { signOutEpoch?: number }) => {
+        seen.push(opts?.signOutEpoch);
+        epoch = 4; // a sign-out happens between this call's requests
+        return {};
+      }),
+    } as unknown as GraphClient;
+    const twoRequests: RegisteredTool = {
+      name: "two_requests",
+      description: "test tool",
+      inputShape: {},
+      scopesAnyOf: ["openid"],
+      handler: async (_input, ctx) => {
+        await ctx.graph.get("/a");
+        await ctx.graph.get("/b");
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    };
+    const server = createMcpServer(
+      { graph, config, auth: { signOut: async () => undefined, signOutEpoch: () => epoch } },
+      [twoRequests],
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    await client.callTool({ name: "two_requests", arguments: {} });
+    expect(seen).toEqual([3, 3]); // not 3 then 4
+    await client.close();
+  });
+});
 
 describe("createMcpServer (in-memory transport)", () => {
   it("advertises all eight tools with input schemas", async () => {
