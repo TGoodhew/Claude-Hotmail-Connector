@@ -31,6 +31,19 @@ describe("buildUrl origin guard (#30, spec v2 §9.2 T1)", () => {
     }
   });
 
+  it("refuses relative paths that climb out of the base path (literal or percent-encoded)", () => {
+    for (const bad of [
+      "me/../../beta/me/messages",
+      "../beta/me",
+      "me/%2e%2e/%2e%2e/beta/me/messages",
+      "me/.%2E/.%2e/beta/me",
+    ]) {
+      expect(() => buildUrl(BASE, bad), bad).toThrow(ValidationError);
+    }
+    // Staying inside the base is fine.
+    expect(buildUrl(BASE, "me/x/../messages")).toBe(`${BASE}/me/messages`);
+  });
+
   it("is enforced on the request path (no fetch for a foreign URL)", async () => {
     const fetchImpl = vi.fn();
     const client = createGraphClient({

@@ -98,27 +98,24 @@ export function buildUrl(
   query?: GraphRequestOptions["query"],
 ): string {
   const base = new URL(baseUrl.replace(/\/?$/, "/"));
+  const absolute = /^[a-z][a-z0-9+.-]*:/i.test(pathOrUrl) || pathOrUrl.startsWith("//");
   let url: URL;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(pathOrUrl) || pathOrUrl.startsWith("//")) {
-    try {
-      url = new URL(pathOrUrl);
-    } catch {
-      throw new ValidationError("Refusing a malformed request URL.");
-    }
-    if (
-      url.protocol !== "https:" ||
-      url.origin !== base.origin ||
-      !url.pathname.startsWith(base.pathname)
-    ) {
-      throw new ValidationError(
-        "Refusing to send a request outside Microsoft Graph (the access token would be exposed).",
-      );
-    }
-  } else {
-    url = new URL(base.href + pathOrUrl.replace(/^\/+/, ""));
-    if (url.origin !== base.origin) {
-      throw new ValidationError("Refusing to send a request outside Microsoft Graph.");
-    }
+  try {
+    url = absolute ? new URL(pathOrUrl) : new URL(base.href + pathOrUrl.replace(/^\/+/, ""));
+  } catch {
+    throw new ValidationError("Refusing a malformed request URL.");
+  }
+  // Checked on the *parsed* URL for both forms: parsing normalises dot
+  // segments, including percent-encoded ones, so a relative `me/../../beta/…`
+  // can't climb out of the base path either.
+  if (
+    url.protocol !== "https:" ||
+    url.origin !== base.origin ||
+    !url.pathname.startsWith(base.pathname)
+  ) {
+    throw new ValidationError(
+      "Refusing to send a request outside Microsoft Graph (the access token would be exposed).",
+    );
   }
   if (query) {
     for (const [k, v] of Object.entries(query)) {

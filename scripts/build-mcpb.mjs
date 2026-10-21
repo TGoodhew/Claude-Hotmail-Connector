@@ -24,6 +24,14 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const stageDir = join(root, "build", "mcpb");
 const outFile = join(root, "build", "hotmail-connector.mcpb");
 
+// One source of truth for the minimum Node: package.json engines (also needed by
+// dependencies such as `open`). Claude Desktop checks the manifest against its own
+// bundled Node, so the manifest must not claim older runtimes than we support.
+const nodeRange = pkg.engines.node;
+const nodeMajor = /([0-9]+)/.exec(nodeRange)?.[1];
+if (!nodeMajor)
+  throw new Error(`Cannot read a Node major version from engines.node "${nodeRange}"`);
+
 function run(cmd, args) {
   console.log(`$ ${cmd} ${args.join(" ")}`);
   // A shell resolves `npx` (a .cmd on Windows); arguments here contain no spaces.
@@ -40,7 +48,7 @@ run("npx", [
   "--bundle",
   "--platform=node",
   "--format=cjs",
-  "--target=node18",
+  `--target=node${nodeMajor}`,
   "--outfile=build/mcpb/server/index.cjs",
 ]);
 copyFileSync(join(root, "LICENSE"), join(stageDir, "LICENSE"));
@@ -97,7 +105,7 @@ const manifest = {
   ],
   compatibility: {
     platforms: ["win32", "darwin", "linux"],
-    runtimes: { node: ">=18.0.0" },
+    runtimes: { node: nodeRange },
   },
 };
 writeFileSync(join(stageDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");

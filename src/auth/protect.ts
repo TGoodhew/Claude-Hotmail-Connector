@@ -15,6 +15,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { win32 } from "node:path";
 
 /** Wraps/unwraps a small secret (the AES key) with an OS-protected mechanism. */
 export interface KeyProtector {
@@ -44,11 +45,22 @@ function dpapiCommand(op: "Protect" | "Unprotect"): string {
   ].join("; ");
 }
 
-/** Default runner: `powershell.exe` (Windows PowerShell 5.1, always present on Windows). */
+/**
+ * Absolute path to Windows PowerShell 5.1 (always present on Windows). Never
+ * spawn it by bare name: Windows would search the current directory (e.g. the
+ * project folder Claude Code launched us in) before PATH, and a planted
+ * `powershell.exe` there would receive the key on stdin.
+ */
+export function powershellPath(env: NodeJS.ProcessEnv = process.env): string {
+  const systemRoot = env.SystemRoot || env.windir || "C:\\Windows";
+  return win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+/** Default runner: Windows PowerShell, by absolute path. */
 export const runPowerShell: PowerShellRunner = (command, stdin) =>
   new Promise((resolve, reject) => {
     const child = spawn(
-      "powershell.exe",
+      powershellPath(),
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
       { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] },
     );
