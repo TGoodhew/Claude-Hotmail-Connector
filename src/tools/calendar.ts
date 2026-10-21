@@ -138,8 +138,9 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
   description:
     "Update an existing calendar event's time, location, subject, or body. Only the fields you " +
     "provide are changed, and they are OVERWRITTEN in place (Outlook keeps no history). Times use " +
-    "LOCAL wall-clock + IANA time zone. IMPORTANT: confirm the change with the user BEFORE " +
-    "calling. The result lists each changed field's before and after value; show it to the user.",
+    "LOCAL wall-clock + IANA time zone. Refuses events with attendees (changing a meeting could " +
+    "email them an update). IMPORTANT: confirm the change with the user BEFORE calling. The " +
+    "result lists each changed field's before and after value; show it to the user.",
   inputShape: updateEventShape,
   annotations: {
     readOnlyHint: false,
@@ -184,7 +185,7 @@ const cancelEventShape = {
 };
 
 // Approved by the owner with guards (#55): soft delete only, title must match,
-// no meetings with attendees, no whole recurring series.
+// no meetings with attendees, nothing recurring.
 export const cancelEventTool: ToolDefinition<typeof cancelEventShape> = defineTool({
   name: "cancel_event",
   title: "Cancel (delete) a calendar event",
@@ -192,7 +193,7 @@ export const cancelEventTool: ToolDefinition<typeof cancelEventShape> = defineTo
     "DESTRUCTIVE: deletes a calendar event in the user's personal Outlook.com calendar (it moves to " +
     "Outlook's Deleted Items). IMPORTANT: only call after the user has explicitly confirmed which " +
     "event to delete. confirmSubject must be the event's exact title. Refuses events with attendees " +
-    "(deleting a meeting could email cancellations) and whole recurring series. Echo the removed " +
+    "(deleting a meeting could email cancellations) and recurring events. Echo the removed " +
     "event back to the user.",
   inputShape: cancelEventShape,
   annotations: {

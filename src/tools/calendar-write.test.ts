@@ -112,7 +112,7 @@ describe("cancel_event tool", () => {
 
   it("deletes after the checks and reports the removed event", async () => {
     const get = vi.fn(async () => ({ id: "e1", subject: "Trip", attendees: [] }));
-    const del = vi.fn(async () => undefined);
+    const del = vi.fn(async (_path: string, _opts?: unknown) => undefined);
     const res = await cancelEventTool.handler(
       { id: "e1", confirmSubject: "Trip" },
       ctxWith({
@@ -120,7 +120,7 @@ describe("cancel_event tool", () => {
         delete: del as unknown as GraphClient["delete"],
       }),
     );
-    expect(del).toHaveBeenCalledWith("/me/events/e1");
+    expect(del.mock.calls[0]![0]).toBe("/me/events/e1");
     expect(res.content[0]!.text).toContain('Cancelled event "Trip"');
     expect(res.structuredContent?.cancelled).toMatchObject({ id: "e1", subject: "Trip" });
   });

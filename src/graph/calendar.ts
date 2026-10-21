@@ -8,7 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { ValidationError } from "../util/errors.js";
+import { GraphError, ValidationError } from "../util/errors.js";
 import { htmlToText } from "../util/html.js";
 import {
   assertValidTimeZone,
@@ -56,6 +56,8 @@ interface GraphEvent {
   attendees?: unknown[];
   /** singleInstance | occurrence | exception | seriesMaster */
   type?: string;
+  /** Version tag; sent back as `If-Match` so writes apply only to the checked version. */
+  "@odata.etag"?: string;
 }
 
 function shapeTime(t?: { dateTime?: string; timeZone?: string }): EventTime | null {
@@ -308,6 +310,26 @@ function fieldValue(e: GraphEvent, field: UpdatableField): unknown {
   }
 }
 
+/** `If-Match` for the version that was checked, so a write can't hit a changed event. */
+function ifMatch(e: GraphEvent): Record<string, string> {
+  return e["@odata.etag"] ? { "if-match": e["@odata.etag"] } : {};
+}
+
+/** Graph answers 412 when `If-Match` no longer matches: the event changed after it was checked. */
+async function onCheckedVersion<T>(write: () => Promise<T>, outcome: string): Promise<T> {
+  try {
+    return await write();
+  } catch (e) {
+    if (e instanceof GraphError && e.status === 412) {
+      throw new ValidationError(
+        `The event changed after it was checked, so nothing was ${outcome}. Read it again ` +
+          "(list_events) and confirm with the user.",
+      );
+    }
+    throw e;
+  }
+}
+
 /**
  * Update an existing event with a partial patch (only provided fields).
  *
@@ -316,6 +338,11 @@ function fieldValue(e: GraphEvent, field: UpdatableField): unknown {
  * Both requests use the same `Prefer: outlook.timezone` (the zone of the new
  * start/end), so before/after times are directly comparable. Reading first also
  * means a stale id fails before anything is written.
+ *
+ * Events with attendees are refused: changing a meeting you organised emails
+ * the attendees an update, which is a send channel the connector forbids (spec
+ * v2 §7.5, §9.2). The PATCH carries `If-Match` for the checked version, so an
+ * event that changed in between (e.g. gained attendees) is not overwritten.
  */
 export async function updateEvent(
   graph: GraphClient,
@@ -342,16 +369,29 @@ export async function updateEvent(
   const path = `/me/events/${encodeURIComponent(input.id)}`;
 
   const before = await graph.get<GraphEvent>(path, {
-    query: { $select: ["id", ...fields].join(",") },
+    query: { $select: ["id", "attendees", ...fields].join(",") },
     headers,
   });
-  const updated = await graph.patch<GraphEvent>(path, patch, { headers });
+  if ((before.attendees?.length ?? 0) > 0) {
+    throw new ValidationError(
+      "This event has attendees, so changing it could email them an update. The connector " +
+        "doesn't send mail; change it in Outlook instead. Nothing was changed.",
+    );
+  }
+  // Prepare the report's "before" side now: a failure here must not happen
+  // after the write, where it would hide a change that was actually made.
+  const beforeValues = fields.map((field) => fieldValue(before, field));
+
+  const updated = await onCheckedVersion(
+    () => graph.patch<GraphEvent>(path, patch, { headers: { ...headers, ...ifMatch(before) } }),
+    "changed",
+  );
 
   return {
     event: shapeWrite(updated),
-    changes: fields.map((field) => ({
+    changes: fields.map((field, i) => ({
       field,
-      before: fieldValue(before, field),
+      before: beforeValues[i],
       after: fieldValue(updated, field),
     })),
   };
@@ -373,8 +413,11 @@ export interface CancelEventInput {
  *  - `confirmSubject` must match its title;
  *  - events with attendees are refused: deleting a meeting you organised
  *    emails cancellations, which is a send channel the connector forbids (#61);
- *  - a recurring series master is refused: deleting it removes every
- *    occurrence (a single occurrence may be deleted).
+ *  - anything recurring is refused: deleting a series master removes every
+ *    occurrence, and deleting an occurrence removes it from its series rather
+ *    than moving it to Deleted Items, so neither fits the soft-delete promise.
+ * The DELETE carries `If-Match` for the checked version, so an event that
+ * changed in between (e.g. gained attendees) is not deleted.
  * Returns the removed event so it can be echoed to the user.
  */
 export async function cancelEvent(
@@ -403,11 +446,17 @@ export async function cancelEvent(
   }
   if (event.type === "seriesMaster") {
     throw new ValidationError(
-      "This is a whole recurring series; deleting it would remove every occurrence. Cancel a " +
-        "single occurrence, or delete the series in Outlook. Nothing was deleted.",
+      "This is a whole recurring series; deleting it would remove every occurrence. Manage the " +
+        "series in Outlook instead. Nothing was deleted.",
+    );
+  }
+  if (event.type === "occurrence" || event.type === "exception") {
+    throw new ValidationError(
+      "This is one occurrence of a recurring series; deleting it removes it from the series " +
+        "instead of moving it to Deleted Items. Cancel it in Outlook instead. Nothing was deleted.",
     );
   }
 
-  await graph.delete(path);
+  await onCheckedVersion(() => graph.delete(path, { headers: ifMatch(event) }), "deleted");
   return shapeWrite(event);
 }
