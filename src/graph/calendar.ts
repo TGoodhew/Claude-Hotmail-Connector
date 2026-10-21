@@ -53,6 +53,9 @@ interface GraphEvent {
   body?: { contentType?: string; content?: string };
   isReminderOn?: boolean;
   reminderMinutesBeforeStart?: number;
+  attendees?: unknown[];
+  /** singleInstance | occurrence | exception | seriesMaster */
+  type?: string;
 }
 
 function shapeTime(t?: { dateTime?: string; timeZone?: string }): EventTime | null {
@@ -352,4 +355,59 @@ export async function updateEvent(
       after: fieldValue(updated, field),
     })),
   };
+}
+
+export interface CancelEventInput {
+  id: string;
+  /** Must match the event's title (case-insensitive): guards against a wrong id. */
+  confirmSubject: string;
+  /** IANA zone for the echoed start/end. */
+  timeZone: string;
+}
+
+/**
+ * Cancel (delete) an event: `DELETE /me/events/{id}`, which moves it to
+ * Deleted Items (recoverable in Outlook; not `permanentDelete`).
+ *
+ * Guards (spec v2 §7.8), checked against the live event before deleting:
+ *  - `confirmSubject` must match its title;
+ *  - events with attendees are refused: deleting a meeting you organised
+ *    emails cancellations, which is a send channel the connector forbids (#61);
+ *  - a recurring series master is refused: deleting it removes every
+ *    occurrence (a single occurrence may be deleted).
+ * Returns the removed event so it can be echoed to the user.
+ */
+export async function cancelEvent(
+  graph: GraphClient,
+  input: CancelEventInput,
+): Promise<EventWriteResult> {
+  assertValidTimeZone(input.timeZone);
+  const path = `/me/events/${encodeURIComponent(input.id)}`;
+  const event = await graph.get<GraphEvent>(path, {
+    query: { $select: "id,subject,start,end,location,webLink,attendees,type" },
+    headers: { prefer: preferTimeZoneHeader(input.timeZone) },
+  });
+
+  const title = (event.subject ?? "").trim();
+  if (title.toLowerCase() !== input.confirmSubject.trim().toLowerCase()) {
+    throw new ValidationError(
+      `confirmSubject "${input.confirmSubject}" does not match the event's title "${title}". ` +
+        "Nothing was deleted. Check the id with list_events and confirm with the user.",
+    );
+  }
+  if ((event.attendees?.length ?? 0) > 0) {
+    throw new ValidationError(
+      "This event has attendees, so deleting it could email them a cancellation. The connector " +
+        "doesn't send mail; cancel it in Outlook instead. Nothing was deleted.",
+    );
+  }
+  if (event.type === "seriesMaster") {
+    throw new ValidationError(
+      "This is a whole recurring series; deleting it would remove every occurrence. Cancel a " +
+        "single occurrence, or delete the series in Outlook. Nothing was deleted.",
+    );
+  }
+
+  await graph.delete(path);
+  return shapeWrite(event);
 }

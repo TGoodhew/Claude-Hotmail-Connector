@@ -3,6 +3,7 @@ import { ValidationError } from "../util/errors.js";
 import type { GraphClient } from "./client.js";
 import {
   assertWritableEventPayload,
+  cancelEvent,
   createEvent,
   updateEvent,
   WRITABLE_EVENT_FIELDS,
@@ -183,6 +184,70 @@ describe("updateEvent", () => {
       updateEvent(graphWith({ get, patch }), { id: "gone", subject: "x" }),
     ).rejects.toThrow("404");
     expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("cancelEvent (guarded soft delete, #55)", () => {
+  type DeleteMock = (path: string) => Promise<void>;
+  const trip = {
+    id: "evt-1",
+    subject: "Travel to Bundaberg",
+    start: { dateTime: "2026-07-20T09:00:00.0000000", timeZone: "Australia/Brisbane" },
+    end: { dateTime: "2026-07-20T10:00:00.0000000", timeZone: "Australia/Brisbane" },
+    type: "singleInstance",
+    attendees: [],
+  };
+  const input = {
+    id: "evt-1",
+    confirmSubject: "travel to bundaberg ",
+    timeZone: "Australia/Brisbane",
+  };
+
+  function graph(event: object) {
+    const get = vi.fn<GetMock>(async () => event);
+    const del = vi.fn<DeleteMock>(async () => undefined);
+    return { get, del, client: { get, delete: del } as unknown as GraphClient };
+  }
+
+  it("checks the live event, then deletes it and returns it for the echo", async () => {
+    const g = graph(trip);
+    const removed = await cancelEvent(g.client, input);
+    const [path, opts] = g.get.mock.calls[0]! as [string, ReqOpts];
+    expect(path).toBe("/me/events/evt-1");
+    expect(opts.query.$select).toContain("attendees");
+    expect(opts.headers?.prefer).toBe('outlook.timezone="Australia/Brisbane"');
+    expect(g.del).toHaveBeenCalledWith("/me/events/evt-1");
+    expect(removed).toMatchObject({ id: "evt-1", subject: "Travel to Bundaberg" });
+  });
+
+  it("refuses when confirmSubject doesn't match the title (nothing deleted)", async () => {
+    const g = graph(trip);
+    await expect(cancelEvent(g.client, { ...input, confirmSubject: "Dentist" })).rejects.toThrow(
+      /does not match the event's title "Travel to Bundaberg"/,
+    );
+    expect(g.del).not.toHaveBeenCalled();
+  });
+
+  it("refuses events with attendees (deleting a meeting can email cancellations)", async () => {
+    const g = graph({ ...trip, attendees: [{ emailAddress: { address: "a@example.com" } }] });
+    await expect(cancelEvent(g.client, input)).rejects.toThrow(/has attendees/);
+    expect(g.del).not.toHaveBeenCalled();
+  });
+
+  it("refuses a whole recurring series but allows a single occurrence", async () => {
+    const series = graph({ ...trip, type: "seriesMaster" });
+    await expect(cancelEvent(series.client, input)).rejects.toThrow(/whole recurring series/);
+    expect(series.del).not.toHaveBeenCalled();
+
+    const occurrence = graph({ ...trip, type: "occurrence" });
+    await cancelEvent(occurrence.client, input);
+    expect(occurrence.del).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a non-IANA time zone before calling Graph", async () => {
+    const g = graph(trip);
+    await expect(cancelEvent(g.client, { ...input, timeZone: "Not/AZone" })).rejects.toThrow();
+    expect(g.get).not.toHaveBeenCalled();
   });
 });
 

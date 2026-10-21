@@ -28,6 +28,7 @@ describe("toolsForScopes", () => {
 
   it("drops mail tools without Mail.Read, and whoami without User.Read", () => {
     expect(names(["openid", "offline_access", "Calendars.ReadWrite"])).toEqual([
+      "cancel_event",
       "create_event",
       "list_events",
       "update_event",
@@ -40,6 +41,7 @@ describe("toolsForScopes", () => {
 });
 
 const EXPECTED_TOOLS = [
+  "cancel_event",
   "create_event",
   "get_message",
   "list_events",
@@ -58,7 +60,7 @@ function testCtx(): ToolContext {
 }
 
 describe("createMcpServer (in-memory transport)", () => {
-  it("advertises all six tools with input schemas", async () => {
+  it("advertises all seven tools with input schemas", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createMcpServer(testCtx());
     await server.connect(serverTransport);
@@ -133,7 +135,7 @@ function stringEnv(): Record<string, string> {
 
 describe("built server subprocess", () => {
   it.runIf(existsSync(distPath))(
-    "lists all six tools over a real stdio handshake",
+    "lists all seven tools over a real stdio handshake",
     async () => {
       const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
       const transport = new StdioClientTransport({

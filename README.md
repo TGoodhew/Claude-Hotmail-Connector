@@ -39,10 +39,17 @@ phase ([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58)).
 | `list_events`   | Read the calendar over a date range                 | `Calendars.Read`      |
 | `create_event`  | Add a calendar event (timezone-correct, idempotent) | `Calendars.ReadWrite` |
 | `update_event`  | Edit a calendar event (destructive: overwrites)     | `Calendars.ReadWrite` |
+| `cancel_event`  | Delete an event, guarded (see below)                | `Calendars.ReadWrite` |
 
-Mail is **read-only** (no `Mail.Send`). There is **no hard-delete** tool, and calendar writes never add
-attendees or send invitations. `cancel_event` (event deletion) is undecided and gated
-([#55](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/55)). Full tool contracts are in spec v2 §7.
+Mail is **read-only** (no `Mail.Send`), and calendar writes never add attendees or send invitations.
+There is **no hard-delete**. `cancel_event` moves an event to Outlook's Deleted Items, and only after
+three checks:
+
+- you've confirmed it and the event's exact title matches;
+- the event has no attendees, since deleting a meeting could email cancellations;
+- it isn't a whole recurring series.
+
+Full tool contracts are in spec v2 §7.
 
 ## Install (Windows)
 
