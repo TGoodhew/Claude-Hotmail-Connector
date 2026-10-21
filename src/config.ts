@@ -30,7 +30,13 @@ export const DEFAULT_SCOPES = [
   "Calendars.ReadWrite",
 ] as const;
 
-export const DEFAULT_TENANT = "common";
+/**
+ * Personal Microsoft accounts only (spec v2 §8.1, #62): this connector exists
+ * for hotmail/outlook/live accounts. Work/school accounts use Claude's official
+ * M365 connector. Set `MICROSOFT_TENANT=common` with a multitenant registration
+ * to allow them anyway.
+ */
+export const DEFAULT_TENANT = "consumers";
 export const DEFAULT_TIMEZONE = "Australia/Brisbane";
 export const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 export const LOOPBACK_HOST = "127.0.0.1";
@@ -61,9 +67,9 @@ const EnvSchema = z.object({
 export interface AppConfig {
   /** Entra app registration (public client) id. */
   microsoftClientId: string;
-  /** Tenant segment; `common` enables personal + work/school accounts. */
+  /** Tenant segment: `consumers` (personal accounts, default) or `common` (+ work/school). */
   microsoftTenant: string;
-  /** Full authority base, e.g. https://login.microsoftonline.com/common */
+  /** Full authority base, e.g. https://login.microsoftonline.com/consumers */
   authority: string;
   /** Default IANA time zone for calendar reads/writes. */
   defaultTimeZone: string;

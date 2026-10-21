@@ -61,7 +61,7 @@ describe("generatePkce", () => {
 });
 
 describe("buildAuthorizeUrl", () => {
-  it("targets the common authority with PKCE and required params", () => {
+  it("targets the default consumers authority with PKCE and required params", () => {
     const url = new URL(
       buildAuthorizeUrl({
         authority: config.authority,
@@ -73,7 +73,7 @@ describe("buildAuthorizeUrl", () => {
       }),
     );
     expect(url.origin + url.pathname).toBe(
-      "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+      "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
     );
     expect(url.searchParams.get("client_id")).toBe("client-abc");
     expect(url.searchParams.get("response_type")).toBe("code");

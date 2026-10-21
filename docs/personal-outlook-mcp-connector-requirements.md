@@ -264,8 +264,12 @@ signed in to that tenant. Registration settings:
 - **Redirect URI:** `http://localhost` (Microsoft allows any loopback port for native clients).
 - **No client secret.** A secret cannot be kept safe on a user's PC; PKCE replaces it.
 - **Delegated permissions:** as §6. Personal accounts consent at first sign-in; no admin consent.
-- **Supported account types:** currently *multitenant + personal* with authority `common`. Under review:
-  **personal accounts only** with authority `consumers` *(→ #62)*.
+- **Supported account types:** **personal Microsoft accounts only** (`PersonalMicrosoftAccount`, v2
+  access tokens), with the default authority `consumers` (owner decision on #62). This is the
+  product's purpose; work/school accounts are served by Claude's official M365 connector, and
+  restricting the audience narrows who can sign in. Advanced: a *multitenant + personal* registration
+  with `MICROSOFT_TENANT=common` also admits work/school accounts. `register-app.ps1 -Audience
+  Multitenant` creates one. Existing multitenant registrations keep working with `consumers`.
 - **Supplying the client id.** `setup --client-id <id>` (run by the installer from its client-id page,
   or `/CLIENTID=` when silent) validates the GUID and saves it to `settings.json` in the cache
   directory. `MICROSOFT_CLIENT_ID` (env / `.env` / an MCPB setting) takes precedence over the saved
@@ -310,7 +314,7 @@ signed in to that tenant. Registration settings:
 | Variable | Default | Notes |
 |---|---|---|
 | `MICROSOFT_CLIENT_ID` | the id saved by `setup` (§8.1) | The user's Entra app client id; required if none is saved. |
-| `MICROSOFT_TENANT` | `common` | `consumers` under review (#62). |
+| `MICROSOFT_TENANT` | `consumers` | Personal accounts only; `common` with a multitenant registration (§8.1). |
 | `DEFAULT_TIMEZONE` | `Australia/Brisbane` | Under review (§9.5, #34). MUST be validated at startup. |
 | `MICROSOFT_SCOPES` | §6 default set | Narrowing only (§6). |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |

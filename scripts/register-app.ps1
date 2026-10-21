@@ -14,12 +14,21 @@
     - Permission to create app registrations in that tenant (you have it in your own tenant).
 
   Usage:
-    pwsh ./scripts/register-app.ps1 [-DisplayName "Claude Hotmail Connector"]
+    pwsh ./scripts/register-app.ps1 [-DisplayName "Claude Hotmail Connector"] [-Audience Personal|Multitenant]
+
+  -Audience Personal (default): personal Microsoft accounts only (hotmail/outlook/live), signed in via
+  the `consumers` endpoint, the connector's default. Work/school accounts are already served by
+  Claude's official Microsoft 365 connector.
+  -Audience Multitenant: also allow work/school accounts; then set MICROSOFT_TENANT=common.
 #>
 [CmdletBinding()]
 param(
-  [string]$DisplayName = "Claude Hotmail Connector"
+  [string]$DisplayName = "Claude Hotmail Connector",
+  [ValidateSet("Personal", "Multitenant")]
+  [string]$Audience = "Personal"
 )
+
+$signInAudience = if ($Audience -eq "Personal") { "PersonalMicrosoftAccount" } else { "AzureADandPersonalMicrosoftAccount" }
 
 $ErrorActionPreference = "Stop"
 
@@ -48,10 +57,12 @@ $rra = @(
 $rraFile = New-TemporaryFile
 $rra | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $rraFile -Encoding utf8
 
-Write-Host "Creating public-client app registration '$DisplayName'..." -ForegroundColor Cyan
+Write-Host "Creating public-client app registration '$DisplayName' ($Audience accounts)..." -ForegroundColor Cyan
+# Personal-account apps require v2 access tokens; harmless for multitenant ones.
 $app = az ad app create `
   --display-name $DisplayName `
-  --sign-in-audience AzureADandPersonalMicrosoftAccount `
+  --sign-in-audience $signInAudience `
+  --requested-access-token-version 2 `
   --is-fallback-public-client true `
   --public-client-redirect-uris "http://localhost" `
   --required-resource-accesses "@$rraFile" | ConvertFrom-Json
@@ -70,3 +81,6 @@ Write-Host "         (from a source checkout: node dist/index.js setup --client-
 Write-Host "  2. Sign in once:  hotmail-connector.exe login   (or the Start-menu 'Sign in' shortcut)"
 Write-Host "  3. If sign-in fails, confirm under Authentication: 'Allow public client flows' = Yes,"
 Write-Host "     and the 'Mobile and desktop applications' redirect URI is http://localhost."
+if ($Audience -eq "Multitenant") {
+  Write-Host "  4. Multitenant registration: set MICROSOFT_TENANT=common so work/school accounts can sign in."
+}
