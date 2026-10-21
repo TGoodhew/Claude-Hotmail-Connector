@@ -232,7 +232,11 @@ Not implemented. If approved (#55): `DELETE /me/events/{id}` (moves to Deleted I
 ## 8. Identity & authorization (upstream Microsoft)
 
 ### 8.1 Entra app registration
-Each user creates **their own** registration (`scripts/register-app.ps1` automates it) *(→ #68)*:
+Each user creates **their own** registration *(→ #68)*. Registering an app requires a **Microsoft
+Entra tenant**; a personal account has none by default, so the user first creates a free tenant
+(typically via a free Azure account). `scripts/register-app.ps1` automates the registration with the
+Azure CLI signed in to that tenant; its header currently describes it as maintainer-only and must be
+updated under #68. Registration settings:
 - **Platform:** *Mobile and desktop applications* (**public client**). "Allow public client flows" = Yes.
 - **Redirect URI:** `http://localhost` (Microsoft allows any loopback port for native clients).
 - **No client secret.** A secret cannot be kept safe on a user's PC; PKCE replaces it.

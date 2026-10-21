@@ -1,7 +1,7 @@
 {
   "name": "claude-hotmail-connector",
   "version": "0.1.0",
-  "description": "Locally hosted MCP server giving Claude read email + read/write calendar access to a personal Microsoft (Hotmail/Outlook.com) account via Microsoft Graph.",
+  "description": "Local (stdio) MCP server giving Claude read-only email and read/write calendar access to your personal Microsoft account (Outlook.com / Hotmail / Live) via Microsoft Graph.",
   "license": "MIT",
   "author": "Tony Goodhew",
   "type": "module",
