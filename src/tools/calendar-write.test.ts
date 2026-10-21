@@ -55,13 +55,28 @@ describe("create_event tool", () => {
 });
 
 describe("update_event tool", () => {
-  it("passes through only provided fields", async () => {
+  it("passes through only provided fields and returns the before/after changes", async () => {
+    const get = vi.fn(async () => ({ id: "e1", subject: "Original" }));
     const patch = vi.fn<PatchMock>(async () => ({ id: "e1", subject: "Renamed" }));
     const res = await updateEventTool.handler(
       { id: "e1", subject: "Renamed" },
-      ctxWith({ patch: patch as unknown as GraphClient["patch"] }),
+      ctxWith({
+        get: get as unknown as GraphClient["get"],
+        patch: patch as unknown as GraphClient["patch"],
+      }),
     );
     expect(patch.mock.calls[0]![1]).toEqual({ subject: "Renamed" });
     expect(res.content[0]!.text).toContain("Updated event");
+    expect(res.content[0]!.text).toContain("changed: subject");
+    expect(res.structuredContent?.changes).toEqual([
+      { field: "subject", before: "Original", after: "Renamed" },
+    ]);
+  });
+
+  it("is marked destructive and tells the model to confirm and show the changes", () => {
+    expect(updateEventTool.annotations?.destructiveHint).toBe(true);
+    const d = updateEventTool.description.toLowerCase();
+    expect(d).toContain("confirm");
+    expect(d).toContain("before and after");
   });
 });

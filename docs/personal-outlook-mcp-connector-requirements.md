@@ -218,8 +218,12 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Same time rules as §7.5. If only one of `start` / `end` changes, the result MUST still have end > start
   *(→ #33)*.
 - Classified as a **destructive write**: it overwrites the event in place with no undo. Annotations:
-  `destructiveHint: true`, `idempotentHint: true`. The tool MUST return before/after values of the
-  changed fields *(→ #71)*, and the description instructs the model to confirm the change first.
+  `destructiveHint: true`, `idempotentHint: true`. The description instructs the model to confirm
+  the change first and to show the result.
+- **Before/after report.** Before the PATCH, the server reads the current values of just the fields
+  being changed (same `Prefer: outlook.timezone` as the update, so times are comparable). The tool
+  returns `changes: [{ field, before, after }]`, with bodies as plain text capped at 500 characters.
+  A stale id therefore fails before anything is written.
 - Same attendee prohibition as §7.5. `Calendars.ReadWrite`.
 
 ### 7.7 Planned read tools (optional)
