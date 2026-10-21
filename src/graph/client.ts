@@ -28,6 +28,12 @@ export interface GraphRequestOptions {
   timeoutMs?: number;
   /** External cancellation. */
   signal?: AbortSignal;
+  /**
+   * Sign-out epoch of the operation this request belongs to (see
+   * `MicrosoftAuth.signOutEpoch`). Set by {@link scopeToOperation} so every
+   * request of one tool call (pages, follow-ups) stops if the user signed out.
+   */
+  signOutEpoch?: number;
 }
 
 export interface GraphResponse<T> {
@@ -65,7 +71,7 @@ export interface GraphClient {
 }
 
 export interface GraphClientDeps {
-  auth: Pick<MicrosoftAuth, "getAccessToken">;
+  auth: Pick<MicrosoftAuth, "getAccessToken"> & Partial<Pick<MicrosoftAuth, "signOutEpoch">>;
   baseUrl: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -244,6 +250,9 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
     const url = buildUrl(deps.baseUrl, pathOrUrl, opts.query);
     let attempt = 0;
     let refreshed = false;
+    // One epoch for the whole request, retries included: a retry or 401
+    // recovery that outlives a sign-out must stop, not sign in again.
+    const signOutEpoch = opts.signOutEpoch ?? deps.auth.signOutEpoch?.();
 
     for (;;) {
       const token = await deps.auth.getAccessToken({
@@ -251,6 +260,7 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
         ...(deps.interactiveSignIn ? { interactiveWaitMs: deps.interactiveSignIn.waitMs } : {}),
         // Force a refresh after a 401 (token may be revoked despite our clock).
         ...(refreshed ? { minTtlMs: Number.MAX_SAFE_INTEGER } : {}),
+        ...(signOutEpoch !== undefined ? { signOutEpoch } : {}),
       });
 
       let res: RawResponse;
@@ -321,10 +331,15 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       // carries an @odata.nextLink (or a self-referential link) cannot loop forever.
       let pages = 0;
       const maxPages = cap + MAX_EXTRA_PAGES;
+      // Every page belongs to the same operation: page 2 after a sign-out stops.
+      const signOutEpoch = opts.signOutEpoch ?? deps.auth.signOutEpoch?.();
+      const epochOpt = signOutEpoch !== undefined ? { signOutEpoch } : {};
       do {
         // On the first request send the full opts; for nextLink pages keep the
         // headers (e.g. Prefer: outlook.timezone) but not the baked-in query.
-        const pageOptsToSend: GraphRequestOptions = first ? opts : { headers: opts.headers };
+        const pageOptsToSend: GraphRequestOptions = first
+          ? { ...opts, ...epochOpt }
+          : { headers: opts.headers, ...epochOpt };
         const { data } = await request<ODataPage<T>>("GET", target, pageOptsToSend);
         if (data.value) items.push(...data.value);
         const next = data["@odata.nextLink"] ?? "";
@@ -336,6 +351,27 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       } while (target && items.length < cap && pages < maxPages);
       return items.slice(0, cap);
     },
+  };
+}
+
+/**
+ * A view of `graph` whose every request belongs to one operation (e.g. one
+ * tool call) with the given sign-out epoch: pages, follow-up requests and
+ * retries all stop if the user signs out mid-operation, rather than starting a
+ * new sign-in for a call made before it.
+ */
+export function scopeToOperation(graph: GraphClient, signOutEpoch: number): GraphClient {
+  const scoped = (opts?: GraphRequestOptions): GraphRequestOptions => ({
+    signOutEpoch,
+    ...opts,
+  });
+  return {
+    request: (method, pathOrUrl, opts) => graph.request(method, pathOrUrl, scoped(opts)),
+    get: (pathOrUrl, opts) => graph.get(pathOrUrl, scoped(opts)),
+    post: (path, body, opts) => graph.post(path, body, scoped(opts)),
+    patch: (path, body, opts) => graph.patch(path, body, scoped(opts)),
+    delete: (path, opts) => graph.delete(path, scoped(opts)),
+    getAllPages: (path, opts, pageOpts) => graph.getAllPages(path, scoped(opts), pageOpts),
   };
 }
 

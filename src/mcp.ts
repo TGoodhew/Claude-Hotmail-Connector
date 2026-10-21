@@ -10,6 +10,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { scopeToOperation } from "./graph/client.js";
 import { calendarTools } from "./tools/calendar.js";
 import { mailTools } from "./tools/mail.js";
 import type { RegisteredTool, ToolContext } from "./tools/types.js";
@@ -70,7 +71,12 @@ export function createMcpServer(
       },
       async (args: Record<string, unknown>): Promise<CallToolResult> => {
         try {
-          const result = await tool.handler(args ?? {}, ctx);
+          // Bind this call's Graph requests to the sign-out epoch at its start, so
+          // a follow-up request after a sign-out stops instead of signing in again.
+          const epoch = ctx.auth?.signOutEpoch?.();
+          const callCtx =
+            epoch === undefined ? ctx : { ...ctx, graph: scopeToOperation(ctx.graph, epoch) };
+          const result = await tool.handler(args ?? {}, callCtx);
           return result as CallToolResult;
         } catch (err) {
           log.error("Tool handler failed", {

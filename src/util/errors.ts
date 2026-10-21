@@ -50,6 +50,19 @@ export class AuthError extends AppError {
 export class SignInRequiredError extends AuthError {}
 
 /**
+ * The user signed out while this request (a sign-in, refresh or tool call) was
+ * in progress. It must stop: no fallback sign-in, nothing saved.
+ */
+export class SignedOutError extends SignInRequiredError {
+  constructor() {
+    super(
+      "You were signed out while this request was in progress, so it wasn't completed. " +
+        "Ask me again if you want to sign in.",
+    );
+  }
+}
+
+/**
  * The explicit sign-in path, appended to user-facing auth messages. Extension
  * installs sign in on demand only; source checkouts also have `login`.
  */

@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 import type { GraphClient } from "./graph/client.js";
 import { allTools, createMcpServer, SERVER_INSTRUCTIONS, toolsForScopes } from "./mcp.js";
-import type { ToolContext } from "./tools/types.js";
+import type { RegisteredTool, ToolContext } from "./tools/types.js";
 
 describe("toolsForScopes", () => {
   const names = (scopes: string[]) =>
@@ -22,7 +22,7 @@ describe("toolsForScopes", () => {
 
   it("drops the calendar write tools when narrowed to Calendars.Read", () => {
     expect(names(["openid", "offline_access", "User.Read", "Mail.Read", "Calendars.Read"])).toEqual(
-      ["get_message", "list_events", "list_messages", "whoami"],
+      ["get_message", "list_events", "list_messages", "sign_out", "whoami"],
     );
   });
 
@@ -31,6 +31,7 @@ describe("toolsForScopes", () => {
       "cancel_event",
       "create_event",
       "list_events",
+      "sign_out",
       "update_event",
     ]);
   });
@@ -52,6 +53,7 @@ const EXPECTED_TOOLS = [
   "get_message",
   "list_events",
   "list_messages",
+  "sign_out",
   "update_event",
   "whoami",
 ];
@@ -65,8 +67,44 @@ function testCtx(): ToolContext {
   return { graph, config };
 }
 
+describe("tool calls are bound to one sign-out epoch", () => {
+  it("every Graph request of a call carries the epoch from the call's start", async () => {
+    let epoch = 3;
+    const seen: unknown[] = [];
+    const graph = {
+      get: vi.fn(async (_path: string, opts?: { signOutEpoch?: number }) => {
+        seen.push(opts?.signOutEpoch);
+        epoch = 4; // a sign-out happens between this call's requests
+        return {};
+      }),
+    } as unknown as GraphClient;
+    const twoRequests: RegisteredTool = {
+      name: "two_requests",
+      description: "test tool",
+      inputShape: {},
+      scopesAnyOf: ["openid"],
+      handler: async (_input, ctx) => {
+        await ctx.graph.get("/a");
+        await ctx.graph.get("/b");
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    };
+    const server = createMcpServer(
+      { graph, config, auth: { signOut: async () => undefined, signOutEpoch: () => epoch } },
+      [twoRequests],
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    await client.callTool({ name: "two_requests", arguments: {} });
+    expect(seen).toEqual([3, 3]); // not 3 then 4
+    await client.close();
+  });
+});
+
 describe("createMcpServer (in-memory transport)", () => {
-  it("advertises all seven tools with input schemas", async () => {
+  it("advertises all eight tools with input schemas", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createMcpServer(testCtx());
     await server.connect(serverTransport);
@@ -155,7 +193,7 @@ function stringEnv(): Record<string, string> {
 
 describe("built server subprocess", () => {
   it.runIf(existsSync(distPath))(
-    "lists all seven tools over a real stdio handshake",
+    "lists all eight tools over a real stdio handshake",
     async () => {
       const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
       const transport = new StdioClientTransport({

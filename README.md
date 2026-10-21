@@ -41,6 +41,7 @@ phase ([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58)).
 | `create_event`  | Add a calendar event (timezone-correct, idempotent) | `Calendars.ReadWrite` |
 | `update_event`  | Edit a calendar event (destructive: overwrites)     | `Calendars.ReadWrite` |
 | `cancel_event`  | Delete an event, guarded (see below)                | `Calendars.ReadWrite` |
+| `sign_out`      | Remove the saved sign-in from this computer         | (none)                |
 
 Mail is **read-only** (no `Mail.Send`), and calendar writes never add attendees or send invitations.
 There is **no hard-delete**. `cancel_event` moves an event to Outlook's Deleted Items, and only after
@@ -158,7 +159,7 @@ never from the folder you launch from):
 ```bash
 node dist/index.js login     # browser sign-in, caches the token
 node dist/index.js whoami    # prints your name and account, e.g. Jane Doe <jane@outlook.com>
-node dist/index.js logout    # clears the cached token
+node dist/index.js logout    # removes the saved sign-in (token cache and key)
 ```
 
 ### Configuration
