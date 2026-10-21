@@ -1,0 +1,26 @@
+# Dependency updates (#44).
+#
+# Version updates wait out a 14-day cooldown: brand-new releases are where
+# compromised packages tend to appear, so nothing is proposed until it has
+# been public for two weeks. Security updates are raised regardless.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    groups:
+      # Batch tooling (lint/format/test/build) into one PR; runtime deps stay separate.
+      dev-tooling:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14

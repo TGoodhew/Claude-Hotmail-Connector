@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 import type { GraphClient } from "./graph/client.js";
-import { allTools, createMcpServer, toolsForScopes } from "./mcp.js";
+import { allTools, createMcpServer, SERVER_INSTRUCTIONS, toolsForScopes } from "./mcp.js";
 import type { RegisteredTool, ToolContext } from "./tools/types.js";
 
 describe("toolsForScopes", () => {
@@ -112,6 +112,20 @@ describe("createMcpServer (in-memory transport)", () => {
       expect(t.description).toBeTruthy();
       expect(t.inputSchema).toBeTruthy();
     }
+
+    await client.close();
+    await server.close();
+  });
+
+  it("tells the client, at initialization, that mail and calendar content is untrusted (#88)", async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createMcpServer(testCtx());
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+
+    expect(client.getInstructions()).toBe(SERVER_INSTRUCTIONS);
+    expect(SERVER_INSTRUCTIONS).toMatch(/untrusted/);
 
     await client.close();
     await server.close();

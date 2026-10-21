@@ -39,7 +39,7 @@ export const signOutTool: ToolDefinition<typeof signOutShape> = defineTool({
   name: "sign_out",
   title: "Sign out of the Microsoft account",
   description:
-    "Sign out of the user's personal Microsoft (Outlook.com/Hotmail) account on this computer: " +
+    "Sign out of the user's personal Outlook.com / Hotmail account on this computer: " +
     "deletes the connector's saved sign-in (token cache and its encryption key). Only call this " +
     "when the user asks to sign out or to remove the connector's data. The next request that " +
     "needs the account will open a Microsoft sign-in in the browser.",
