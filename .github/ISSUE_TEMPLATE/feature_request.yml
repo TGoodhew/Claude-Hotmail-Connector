@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest an improvement or a new capability.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the roadmap first: the Spec v2 epic (#66) and the open issues may already cover it.
+        Features that broaden access (e.g. sending mail, deleting data) need a clear safety story; see the spec's threat model.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: The use case, ideally as something you'd ask Claude to do.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What the tool or command should do. Mention any extra Microsoft Graph permission it would need.
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to implement this (please comment on the issue before starting a PR).

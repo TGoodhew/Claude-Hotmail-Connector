@@ -1,0 +1,56 @@
+name: Bug report
+description: Something isn't working as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project is community-supported on a best-effort basis (see SUPPORT.md).
+        **Security vulnerabilities:** don't file them here. Use SECURITY.md (private reporting).
+        **Redact** email addresses, message content and anything that looks like a token before posting.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Connector version
+      placeholder: e.g. v0.2.0, or a commit SHA if built from source
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is it installed?
+      options:
+        - Windows installer (HotmailConnectorSetup.exe)
+        - Portable exe (hotmail-connector.exe)
+        - From source (node dist/index.js)
+    validations:
+      required: true
+  - type: dropdown
+    id: client
+    attributes:
+      label: MCP client
+      options:
+        - Claude Desktop
+        - Claude Code
+        - VS Code
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: e.g. Windows 11 24H2
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (redacted)
+      description: Run with `LOG_LEVEL=debug` and paste the relevant stderr lines. Redact personal data first.
+      render: text

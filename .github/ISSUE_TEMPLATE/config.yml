@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/TGoodhew/Claude-Hotmail-Connector/security/advisories/new
+    about: Please report vulnerabilities privately, not as public issues.
+  - name: Support policy and troubleshooting
+    url: https://github.com/TGoodhew/Claude-Hotmail-Connector/blob/main/SUPPORT.md
+    about: Community-supported, best effort. Start with the README troubleshooting section.

@@ -245,7 +245,8 @@ with no duplicates if it retries.
 - **Timezone-correct writes:** events are sent as local wall-clock time + an IANA time zone (never a
   UTC `Z` with a named zone), so they land at the intended local time.
 
-Known security issues are tracked under the `area:security` label.
+Known security issues are tracked under the `area:security` label. To report a vulnerability, use
+private reporting as described in [SECURITY.md](SECURITY.md); please don't open a public issue.
 
 ## Troubleshooting
 
@@ -302,6 +303,13 @@ Layout (tests are colocated as `src/**/*.test.ts`):
   `register-app`, and the SEA/Inno build.
 - **Roadmap:** the [Spec v2 epic (#66)](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66)
   orders all open work: spec decisions → security fixes → correctness → CI/tests → features.
+
+## Support & contributing
+
+This is a personal, open-source tool, **community-supported on a best-effort basis** with no SLA and
+no hosted service. You run your own copy with your own Microsoft app registration. See
+[SUPPORT.md](SUPPORT.md) for how to get help, [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR,
+and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 ## License
 
