@@ -73,7 +73,7 @@ async function run(): Promise<void> {
     baseUrl: config.graphBaseUrl,
     interactiveSignIn: { waitMs: ON_DEMAND_SIGN_IN_WAIT_MS },
   });
-  const server = createMcpServer({ graph: toolGraph, config });
+  const server = createMcpServer({ graph: toolGraph, config, auth });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info("MCP server ready on stdio.", { account });

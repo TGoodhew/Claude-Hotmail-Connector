@@ -614,6 +614,58 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     expect(openBrowser).not.toHaveBeenCalled();
   });
 
+  it("a sign-in still pending when the user signs out is discarded, not saved (#43)", async () => {
+    const store = memoryStore(null);
+    let authorizeUrl = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      openBrowser: async (url) => {
+        authorizeUrl = url;
+      },
+      now: () => 1_000,
+    });
+    const pending = auth.signIn();
+    await until(() => authorizeUrl !== "");
+    await auth.signOut(); // user signs out while the browser flow is open…
+    await redirectBack(authorizeUrl, { code: "CODE" }); // …then finishes it anyway
+    await expect(pending).rejects.toThrow(/signed out while this Microsoft sign-in/);
+    expect(store.current).toBeNull(); // the sign-out stands
+  });
+
+  it("a refresh in flight when the user signs out doesn't re-save tokens", async () => {
+    const store = memoryStore({ accessToken: "OLD", refreshToken: "RT", expiresAt: 0, scopes: [] });
+    let releaseRefresh!: () => void;
+    const gate = new Promise<void>((r) => (releaseRefresh = r));
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => {
+        await gate;
+        return tokenReply();
+      }) as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    const refreshing = auth.getAccessToken({ interactive: false });
+    await new Promise((r) => setTimeout(r, 10));
+    await auth.signOut();
+    releaseRefresh();
+    await expect(refreshing).rejects.toBeInstanceOf(AuthError);
+    expect(store.current).toBeNull();
+  });
+
+  it("signOut clears the cache including the key", async () => {
+    const clear = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store: { load: async () => null, save: async () => undefined, clear },
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    });
+    await auth.signOut();
+    expect(clear).toHaveBeenCalledWith({ includeKey: true });
+  });
+
   it("cools down after a cancelled sign-in instead of reopening the browser", async () => {
     let clock = 1_000;
     const openBrowser = vi.fn(async (url: string) => {

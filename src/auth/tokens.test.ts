@@ -89,6 +89,18 @@ describe("createFileTokenStore", () => {
     expect(await store.load()).toBeNull();
   });
 
+  it("clear({ includeKey }) also removes the key file, and a new sign-in starts afresh", async () => {
+    const store = createFileTokenStore(file);
+    await store.save(sample);
+    const key = join(dir, "token-cache.key");
+    expect(existsSync(key)).toBe(true);
+    await store.clear({ includeKey: true });
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(key)).toBe(false);
+    await store.save(sample); // same store, no stale cached key
+    await expect(createFileTokenStore(file).load()).resolves.toEqual(sample);
+  });
+
   it("clear() is a no-op when nothing is stored", async () => {
     const store = createFileTokenStore(file);
     await expect(store.clear()).resolves.toBeUndefined();

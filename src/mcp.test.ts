@@ -22,7 +22,7 @@ describe("toolsForScopes", () => {
 
   it("drops the calendar write tools when narrowed to Calendars.Read", () => {
     expect(names(["openid", "offline_access", "User.Read", "Mail.Read", "Calendars.Read"])).toEqual(
-      ["get_message", "list_events", "list_messages", "whoami"],
+      ["get_message", "list_events", "list_messages", "sign_out", "whoami"],
     );
   });
 
@@ -31,6 +31,7 @@ describe("toolsForScopes", () => {
       "cancel_event",
       "create_event",
       "list_events",
+      "sign_out",
       "update_event",
     ]);
   });
@@ -46,6 +47,7 @@ const EXPECTED_TOOLS = [
   "get_message",
   "list_events",
   "list_messages",
+  "sign_out",
   "update_event",
   "whoami",
 ];
@@ -60,7 +62,7 @@ function testCtx(): ToolContext {
 }
 
 describe("createMcpServer (in-memory transport)", () => {
-  it("advertises all seven tools with input schemas", async () => {
+  it("advertises all eight tools with input schemas", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createMcpServer(testCtx());
     await server.connect(serverTransport);
@@ -135,7 +137,7 @@ function stringEnv(): Record<string, string> {
 
 describe("built server subprocess", () => {
   it.runIf(existsSync(distPath))(
-    "lists all seven tools over a real stdio handshake",
+    "lists all eight tools over a real stdio handshake",
     async () => {
       const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
       const transport = new StdioClientTransport({

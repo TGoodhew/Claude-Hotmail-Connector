@@ -258,11 +258,16 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   // token twice — the loser gets `invalid_grant` and their `store.save()` could
   // clobber the freshly-rotated set. Concurrent callers await the same promise.
   let inflightRefresh: Promise<TokenSet> | null = null;
+  // Bumped by signOut(): a refresh or sign-in that was in flight when the user
+  // signed out must not save its tokens and silently undo the sign-out.
+  let signOuts = 0;
   function refreshAndSave(current: TokenSet): Promise<TokenSet> {
     if (!inflightRefresh) {
       inflightRefresh = (async () => {
+        const epoch = signOuts;
         try {
           const refreshed = await refresh(current);
+          if (signOuts !== epoch) throw new AuthError("Signed out during a token refresh.");
           await store.save(refreshed);
           return refreshed;
         } finally {
@@ -403,15 +408,25 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   function signInAndSave(): Promise<TokenSet> {
     if (!inflightSignIn) {
       const attempt = (async () => {
+        const epoch = signOuts;
+        let signedOutMeanwhile = false;
         try {
           const tokens = await interactiveSignIn();
+          if (signOuts !== epoch) {
+            signedOutMeanwhile = true;
+            throw new SignInRequiredError(
+              "You signed out while this Microsoft sign-in was still pending, so it wasn't saved. " +
+                "Ask me to try again if you want to sign in.",
+            );
+          }
           await store.save(tokens);
           lastSignInFailureAt = undefined;
           lastSignedIn = tokens;
           signInsCompleted += 1;
           return tokens;
         } catch (e) {
-          lastSignInFailureAt = now();
+          // A deliberate sign-out isn't a failed attempt, so it doesn't trigger the cooldown.
+          if (!signedOutMeanwhile) lastSignInFailureAt = now();
           throw e;
         } finally {
           inflightSignIn = null;
@@ -517,7 +532,10 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     },
 
     async signOut(): Promise<void> {
-      await store.clear();
+      signOuts += 1;
+      lastSignedIn = undefined;
+      // Cache and key: nothing of the sign-in stays on disk.
+      await store.clear({ includeKey: true });
     },
 
     async getAccount(): Promise<string | undefined> {

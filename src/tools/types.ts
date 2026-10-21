@@ -11,11 +11,14 @@
 
 import { z, type ZodRawShape } from "zod";
 import type { AppConfig } from "../config.js";
+import type { MicrosoftAuth } from "../auth/microsoft.js";
 import type { GraphClient } from "../graph/client.js";
 
 export interface ToolContext {
   graph: GraphClient;
   config: AppConfig;
+  /** Account actions not done through Graph (e.g. `sign_out`). */
+  auth?: Pick<MicrosoftAuth, "signOut">;
 }
 
 /** MCP behaviour hints surfaced to the client/model. */

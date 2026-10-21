@@ -41,7 +41,8 @@ The connector signs in to Microsoft through an Entra app registration that **you
    in your browser. Finish it and that request carries on, or ask again if it took longer than about
    45 seconds.
 
-Uninstall or disable it from **Settings → Extensions**.
+Uninstall or disable it from **Settings → Extensions**. Removing the extension doesn't delete the
+saved sign-in, so to leave nothing behind, first ask Claude to **sign out** (the `sign_out` tool).
 
 ### Upgrading from v0.1.0 (Windows installer)
 
@@ -76,9 +77,10 @@ Inspect a bundle with `npx mcpb info build/hotmail-connector.mcpb`, or unpack it
 - **Node runtime:** Claude Desktop's bundled Node version isn't documented, so the bundle targets the
   same minimum as `package.json` `engines.node` (Node 20+), which the manifest declares in
   `compatibility.runtimes.node`.
-- **Sign-out:** an extension has no command line. Removing the extension doesn't clear the cached
-  sign-in in `%LOCALAPPDATA%\claude-hotmail-connector` (or `~/.claude-hotmail-connector`). Tracked in
-  [#43](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/43).
+- **Sign-out:** an extension has no command line, so ask Claude to sign out (`sign_out`). That
+  deletes the token cache and its key in `%LOCALAPPDATA%\claude-hotmail-connector` (or
+  `~/.claude-hotmail-connector`). Removing the extension alone doesn't (Claude Desktop runs no
+  uninstall hook).
 - **Key protection:** Windows uses DPAPI (#42); macOS/Linux use a plain owner-only key file for now
   ([#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83)).
 - **Signing:** bundles are currently unsigned (`mcpb sign` is available if that changes).

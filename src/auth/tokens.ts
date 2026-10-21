@@ -60,8 +60,11 @@ export interface TokenStore {
   load(): Promise<TokenSet | null>;
   /** Encrypt and persist the tokens. */
   save(tokens: TokenSet): Promise<void>;
-  /** Remove the cached tokens (used on sign-out or corruption). */
-  clear(): Promise<void>;
+  /**
+   * Remove the cached tokens (on corruption, or sign-out). With `includeKey`,
+   * also remove the encryption key, leaving nothing of the sign-in on disk.
+   */
+  clear(options?: { includeKey?: boolean }): Promise<void>;
 }
 
 interface Container {
@@ -342,12 +345,16 @@ export function createFileTokenStore(
       await writeAtomic(tokenCacheFile, JSON.stringify(container));
     },
 
-    async clear(): Promise<void> {
-      try {
-        await unlink(tokenCacheFile);
-      } catch (e) {
-        if (isErrnoException(e) && e.code !== "ENOENT") throw e;
+    async clear(options: { includeKey?: boolean } = {}): Promise<void> {
+      const files = options.includeKey ? [tokenCacheFile, resolvedKeyFile] : [tokenCacheFile];
+      for (const path of files) {
+        try {
+          await unlink(path);
+        } catch (e) {
+          if (isErrnoException(e) && e.code !== "ENOENT") throw e;
+        }
       }
+      if (options.includeKey) cached = null;
     },
   };
 }

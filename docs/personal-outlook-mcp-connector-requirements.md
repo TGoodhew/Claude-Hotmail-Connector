@@ -153,6 +153,14 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 ### 7.1 `whoami` — diagnostics
 - **Graph:** `GET /me` → `displayName`, `mail` / `userPrincipalName`. Read-only. `User.Read`.
 
+### 7.1a `sign_out` — remove the saved sign-in
+- Deletes the token cache **and** its encryption key on this computer. This is the extension's
+  sign-out, since it has no command line. No Graph call or scope is needed (always registered).
+- A sign-in or refresh still in flight when the user signs out is **discarded**, not saved, so it
+  can't silently undo the sign-out (in-process; cross-process coordination is #95).
+- Annotations: `destructiveHint: true` (local data), `idempotentHint: true`, `openWorldHint: false`.
+  The description says to call it only when the user asks. Misuse only means signing in again.
+
 ### 7.2 `list_messages` — search/list mail
 - **Graph:** `GET /me/messages`.
 - **Inputs:** `query?` (keywords), `from?`, `subjectContains?`, `receivedAfter?` / `receivedBefore?` (ISO 8601),
@@ -325,7 +333,8 @@ signed in to that tenant. Registration settings:
 - Cache location: `%LOCALAPPDATA%\claude-hotmail-connector` (Windows) or `~/.claude-hotmail-connector`,
   overridable with `CLAUDE_HOTMAIL_CACHE_DIR`.
 - Tokens are never logged, returned to the client, or committed. Users MUST have a way to sign out and
-  clear the cache. Removing the extension doesn't run any cleanup, so sign-out is needed *(→ #43)*.
+  clear the cache. Removing the extension runs no cleanup, so `sign_out` (§7.1a) removes the cache and
+  key (`logout` from a source checkout does the same).
 
 ### 8.4 Configuration
 | Variable | Default | Notes |
@@ -517,7 +526,7 @@ Claude-Hotmail-Connector/
 6. No tokens or secrets appear in logs or tool output.
 7. A prompt-injection email fixture cannot cause data exfiltration (§9.2).
 8. The extension installs, prompts for the client id, and serves all tools in Claude Desktop. Signing
-   out clears the token cache (#43).
+   out clears the token cache and key (`sign_out`).
 9. CI is green, including on Windows; the README reproduces setup on a fresh machine.
 
 ---
@@ -529,7 +538,7 @@ Claude-Hotmail-Connector/
 | Entra app not set up for personal accounts → AADSTS errors | Documented registration (§8.1), `register-app.ps1`; troubleshooting in README. |
 | Timezone drift (event an hour off) | Local wall-clock + IANA; `Prefer` header; reject `Z`/offsets; DST tests (§9.5). |
 | Duplicate events on retry | Deterministic `transactionId` (§7.5). |
-| Token theft from disk | OS-protected storage (§8.3); a sign-out path clears the cache (#43). |
+| Token theft from disk | OS-protected storage (§8.3); `sign_out` removes the cache and key (§7.1a). |
 | Token exfiltration via model-supplied URLs | Opaque cursors; access token only sent to the Graph origin (§7.2). |
 | Prompt injection via email | Threat model (§9.2): no URL fetching, no attendees, confirmation on writes, junk filtering, bounded output. |
 | Over-broad access | `Mail.Read` only; scope override narrowing-only (§6); no hard delete. |
