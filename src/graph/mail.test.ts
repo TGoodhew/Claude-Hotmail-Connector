@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../util/errors.js";
 import type { GraphClient } from "./client.js";
-import { buildMessagesQuery, getMessage, listMessages, type ListMessagesInput } from "./mail.js";
+import {
+  buildMessagesQuery,
+  DEFAULT_MAX_BODY_CHARS,
+  getMessage,
+  listMessages,
+  sliceBody,
+  type ListMessagesInput,
+} from "./mail.js";
 
 function baseInput(over: Partial<ListMessagesInput> = {}): ListMessagesInput {
   return { limit: 10, ...over };
@@ -218,7 +225,12 @@ describe("getMessage", () => {
       };
     });
     const msg = await getMessage(graphWith(undefined, get), { id: "m1", format: "text" });
-    expect(msg.body).toEqual({ contentType: "text", content: "Ref ABC123" });
+    expect(msg.body).toEqual({
+      contentType: "text",
+      content: "Ref ABC123",
+      truncated: false,
+      totalChars: 10,
+    });
     expect(msg.attachments).toEqual([
       { id: "a1", name: "ticket.pdf", contentType: "application/pdf", size: 1234, isInline: false },
     ]);
@@ -247,5 +259,99 @@ describe("getMessage", () => {
     }));
     await getMessage(graphWith(undefined, get), { id: "AA=BB/CC", format: "text" });
     expect(get.mock.calls[0]![0]).toContain(encodeURIComponent("AA=BB/CC"));
+  });
+});
+
+describe("body size cap (#38)", () => {
+  it("returns short bodies whole", () => {
+    expect(sliceBody("hello", "text")).toEqual({
+      contentType: "text",
+      content: "hello",
+      truncated: false,
+      totalChars: 5,
+    });
+  });
+
+  it("cuts long bodies at maxChars and says where to read on", () => {
+    const body = sliceBody("abcdefghij", "text", 4);
+    expect(body).toEqual({
+      contentType: "text",
+      content: "abcd",
+      truncated: true,
+      totalChars: 10,
+      nextStartChar: 4,
+    });
+    expect(sliceBody("abcdefghij", "text", 4, 8)).toEqual({
+      contentType: "text",
+      content: "ij",
+      truncated: false,
+      totalChars: 10,
+      startChar: 8,
+    });
+  });
+
+  it("defaults to 20,000 characters", () => {
+    const body = sliceBody("x".repeat(DEFAULT_MAX_BODY_CHARS + 5), "text");
+    expect(body.content).toHaveLength(DEFAULT_MAX_BODY_CHARS);
+    expect(body).toMatchObject({ truncated: true, nextStartChar: DEFAULT_MAX_BODY_CHARS });
+  });
+
+  it("never splits an emoji (surrogate pair) at either end", () => {
+    const smile = String.fromCodePoint(0x1f600); // two UTF-16 units
+    const text = `ab${smile}cd`; // a b [hi lo] c d
+    expect(sliceBody(text, "text", 3)).toMatchObject({ content: "ab", nextStartChar: 2 });
+    expect(sliceBody(text, "text", 3, 3)).toMatchObject({ content: `${smile}c`, startChar: 2 });
+    // Too small to back off: the whole pair is taken, so reading always advances.
+    expect(sliceBody(text, "text", 1, 2)).toMatchObject({ content: smile, nextStartChar: 4 });
+  });
+
+  it("isn't misled by a lone surrogate next to an emoji (Copilot review on #117)", () => {
+    const smile = String.fromCodePoint(0x1f600);
+    const lone = String.fromCharCode(0xdc00); // malformed: a low surrogate with no pair
+    const text = "a".repeat(998) + smile + lone + "tail";
+    const first = sliceBody(text, "text", 1_000);
+    // The cut at 1000 falls between the emoji and the lone unit, which isn't a pair.
+    expect(first.content.endsWith(smile)).toBe(true);
+    expect(first.nextStartChar).toBe(1_000);
+  });
+
+  it("reads any body back exactly, part by part", () => {
+    const smile = String.fromCodePoint(0x1f600);
+    const lone = String.fromCharCode(0xdc00);
+    const texts = [
+      "a".repeat(998) + smile + lone + "tail",
+      (smile + "x").repeat(700),
+      smile.repeat(1_500),
+      lone + smile + lone.repeat(3) + "z".repeat(2_500),
+    ];
+    for (const text of texts) {
+      for (const max of [1, 2, 3, 1_000]) {
+        let out = "";
+        let start = 0;
+        for (let guard = 0; guard < 10_000; guard += 1) {
+          const part = sliceBody(text, "text", max, start);
+          out += part.content;
+          if (!part.truncated) break;
+          expect(part.nextStartChar).toBeGreaterThan(start); // always advances
+          start = part.nextStartChar!;
+        }
+        expect(out).toBe(text);
+      }
+    }
+  });
+
+  it("caps get_message bodies after converting HTML to text", async () => {
+    const get = vi.fn(async () => ({
+      id: "big",
+      hasAttachments: false,
+      body: { contentType: "html", content: `<p>${"word ".repeat(10_000)}</p>` },
+    }));
+    const msg = await getMessage(graphWith(undefined, get), {
+      id: "big",
+      format: "text",
+      maxChars: 1_000,
+    });
+    expect(msg.body.content).toHaveLength(1_000);
+    expect(msg.body).toMatchObject({ truncated: true, totalChars: 49_999, nextStartChar: 1_000 });
   });
 });
