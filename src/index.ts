@@ -16,6 +16,7 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createMicrosoftAuth } from "./auth/microsoft.js";
+import { defaultKeyProtector } from "./auth/protect.js";
 import { createFileTokenStore } from "./auth/tokens.js";
 import { getConfig, MISSING_CLIENT_ID_MESSAGE, resolveCacheDir } from "./config.js";
 import { createGraphClient } from "./graph/client.js";
@@ -89,7 +90,7 @@ async function run(): Promise<void> {
 
   const log = createLogger({ name: "startup" });
   const config = getConfig();
-  const store = createFileTokenStore(config.tokenCacheFile);
+  const store = createFileTokenStore(config.tokenCacheFile, { protector: defaultKeyProtector() });
   const auth = createMicrosoftAuth({ config, store });
   const graph = createGraphClient({ auth, baseUrl: config.graphBaseUrl });
 

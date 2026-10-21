@@ -3,11 +3,17 @@
  *
  * The Microsoft **refresh token** is the long-lived secret that lets the
  * connector act on the account without re-prompting. It is stored encrypted
- * with AES-256-GCM in the user's profile directory, with the encryption key in
- * a sibling file created with owner-only permissions. This matches the
- * local-hosting spec's "encrypted file (never plaintext, never in the repo)"
- * requirement for Mode A. (An OS keychain backend can be added later behind the
- * same {@link TokenStore} interface.)
+ * with AES-256-GCM in the user's profile directory. The AES key lives in a
+ * sibling key file, **wrapped by the OS** (DPAPI on Windows, see
+ * `protect.ts`) so that copying the folder isn't enough to read the cache
+ * (spec v2 §8.3). Where no OS protector is available, or it fails, the key is
+ * stored as plain base64 in an owner-only file instead, and a warning is logged.
+ *
+ * Key file formats:
+ *  - legacy / fallback: the base64 key itself;
+ *  - protected: `{"v":2,"protection":"<protector>","key":"<base64 wrapped key>"}`.
+ * A legacy key is upgraded in place when a protector becomes available, so
+ * existing sign-ins survive the upgrade.
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
@@ -15,6 +21,8 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promi
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { AuthError } from "../util/errors.js";
+import { createLogger, type Logger } from "../util/log.js";
+import type { KeyProtector } from "./protect.js";
 
 const ALGO = "aes-256-gcm";
 const KEY_BYTES = 32;
@@ -88,6 +96,14 @@ function isErrnoException(e: unknown): e is NodeJS.ErrnoException {
   return e instanceof Error && "code" in e;
 }
 
+function safeJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
 async function bestEffortChmod(path: string, mode: number): Promise<void> {
   try {
     await chmod(path, mode);
@@ -97,35 +113,108 @@ async function bestEffortChmod(path: string, mode: number): Promise<void> {
   }
 }
 
+const ProtectedKeyFileSchema = z.object({
+  v: z.literal(2),
+  protection: z.string().min(1),
+  key: z.string().min(1),
+});
+
+export interface FileTokenStoreOptions {
+  /** Key file path; defaults to `token-cache.key` beside the cache. */
+  keyFile?: string;
+  /** OS protector for the key (see `defaultKeyProtector`); `null`/omitted = plain key file. */
+  protector?: KeyProtector | null;
+  logger?: Logger;
+}
+
 /**
  * File-backed, AES-256-GCM encrypted {@link TokenStore}.
  *
  * @param tokenCacheFile absolute path to the ciphertext file (e.g. token-cache.enc)
- * @param keyFile        optional key path; defaults to token-cache.key beside it
  */
-export function createFileTokenStore(tokenCacheFile: string, keyFile?: string): TokenStore {
+export function createFileTokenStore(
+  tokenCacheFile: string,
+  opts: FileTokenStoreOptions = {},
+): TokenStore {
   const dir = dirname(tokenCacheFile);
-  const resolvedKeyFile = keyFile ?? join(dir, "token-cache.key");
+  const resolvedKeyFile = opts.keyFile ?? join(dir, "token-cache.key");
+  const protector = opts.protector ?? null;
+  const log = opts.logger ?? createLogger({ name: "tokens" });
 
   async function ensureDir(): Promise<void> {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     await bestEffortChmod(dir, 0o700);
   }
 
-  async function loadOrCreateKey(): Promise<Buffer> {
-    await ensureDir();
-    try {
-      const b64 = (await readFile(resolvedKeyFile, "utf8")).trim();
-      const key = Buffer.from(b64, "base64");
-      if (key.length === KEY_BYTES) return key;
-      // Wrong size => treat as corrupt and regenerate (invalidates old cache).
-    } catch (e) {
-      if (isErrnoException(e) && e.code !== "ENOENT") throw e;
+  async function writeKeyFile(key: Buffer): Promise<void> {
+    let contents = key.toString("base64");
+    if (protector) {
+      try {
+        const wrapped = await protector.protect(key);
+        contents = JSON.stringify({
+          v: 2,
+          protection: protector.name,
+          key: wrapped.toString("base64"),
+        });
+      } catch (e) {
+        log.warn("OS key protection failed; storing the token-cache key unprotected", {
+          protection: protector.name,
+          error: (e as Error).message,
+        });
+      }
     }
-    const key = randomBytes(KEY_BYTES);
-    await writeFile(resolvedKeyFile, key.toString("base64"), { mode: 0o600 });
-    await bestEffortChmod(resolvedKeyFile, 0o600);
+    await writeAtomic(resolvedKeyFile, contents);
+  }
+
+  /** Read the key file: the key, or null if absent/unusable (caller regenerates). */
+  async function readKey(): Promise<Buffer | null> {
+    let raw: string;
+    try {
+      raw = (await readFile(resolvedKeyFile, "utf8")).trim();
+    } catch (e) {
+      if (isErrnoException(e) && e.code === "ENOENT") return null;
+      throw e;
+    }
+
+    if (raw.startsWith("{")) {
+      const parsed = ProtectedKeyFileSchema.safeParse(safeJson(raw));
+      if (!parsed.success || !protector || protector.name !== parsed.data.protection) {
+        log.warn("Token-cache key is protected in a way this machine can't unwrap; resetting it");
+        return null;
+      }
+      try {
+        const key = await protector.unprotect(Buffer.from(parsed.data.key, "base64"));
+        return key.length === KEY_BYTES ? key : null;
+      } catch (e) {
+        // e.g. copied from another user/machine: the cache can't be read here.
+        log.warn("Could not unwrap the token-cache key; resetting it", {
+          error: (e as Error).message,
+        });
+        return null;
+      }
+    }
+
+    const key = Buffer.from(raw, "base64");
+    if (key.length !== KEY_BYTES) return null; // corrupt => regenerate (invalidates old cache)
+    if (protector) await writeKeyFile(key); // upgrade a legacy plain key in place
     return key;
+  }
+
+  // Unwrapping may spawn a process (DPAPI), so do it once per store.
+  let keyPromise: Promise<Buffer> | null = null;
+  function loadOrCreateKey(): Promise<Buffer> {
+    keyPromise ??= (async () => {
+      await ensureDir();
+      const existing = await readKey();
+      if (existing) return existing;
+      const key = randomBytes(KEY_BYTES);
+      await writeKeyFile(key);
+      return key;
+    })().catch((e: unknown) => {
+      keyPromise = null;
+      throw e;
+    });
+    return keyPromise;
   }
 
   async function writeAtomic(path: string, contents: string): Promise<void> {

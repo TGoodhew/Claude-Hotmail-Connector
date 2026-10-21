@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthError } from "../util/errors.js";
+import { createDpapiProtector, type KeyProtector } from "./protect.js";
 import { createFileTokenStore, type TokenSet } from "./tokens.js";
 
 let dir: string;
@@ -91,4 +92,85 @@ describe("createFileTokenStore", () => {
     const keyMode = statSync(join(dir, "token-cache.key")).mode & 0o777;
     expect(keyMode & 0o077).toBe(0); // no group/other permissions
   });
+});
+
+describe("createFileTokenStore with an OS key protector", () => {
+  const MARK = Buffer.from("wrapped:");
+  /** Reversible stand-in for DPAPI that counts calls. */
+  function fakeProtector(overrides: Partial<KeyProtector> = {}) {
+    return {
+      name: "fake",
+      protect: vi.fn(async (d: Buffer) => Buffer.concat([MARK, Buffer.from(d).reverse()])),
+      unprotect: vi.fn(async (d: Buffer) => Buffer.from(d.subarray(MARK.length)).reverse()),
+      ...overrides,
+    };
+  }
+  const keyFile = () => join(dir, "token-cache.key");
+
+  it("writes only the wrapped key, and round-trips across store instances", async () => {
+    await createFileTokenStore(file, { protector: fakeProtector() }).save(sample);
+    const stored = JSON.parse(readFileSync(keyFile(), "utf8"));
+    expect(stored).toMatchObject({ v: 2, protection: "fake" });
+
+    const unwrapped = Buffer.from(stored.key, "base64").subarray(MARK.length).reverse();
+    expect(readFileSync(keyFile(), "utf8")).not.toContain(unwrapped.toString("base64"));
+
+    expect(await createFileTokenStore(file, { protector: fakeProtector() }).load()).toEqual(sample);
+  });
+
+  it("upgrades a legacy plain key in place, keeping the existing sign-in", async () => {
+    await createFileTokenStore(file).save(sample); // legacy: plain base64 key
+    expect(readFileSync(keyFile(), "utf8")).not.toContain("{");
+
+    const protector = fakeProtector();
+    expect(await createFileTokenStore(file, { protector }).load()).toEqual(sample);
+    expect(JSON.parse(readFileSync(keyFile(), "utf8")).protection).toBe("fake");
+    expect(protector.protect).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to a plain key file when protection fails", async () => {
+    const protector = fakeProtector({
+      protect: vi.fn(async () => {
+        throw new Error("DPAPI unavailable");
+      }),
+    });
+    const store = createFileTokenStore(file, { protector });
+    await store.save(sample);
+    expect(readFileSync(keyFile(), "utf8")).not.toContain("{");
+    expect(await store.load()).toEqual(sample);
+  });
+
+  it("resets the key when it can't be unwrapped (e.g. another user/machine)", async () => {
+    await createFileTokenStore(file, { protector: fakeProtector() }).save(sample);
+    const foreign = fakeProtector({
+      unprotect: vi.fn(async () => {
+        throw new Error("Key not valid for use in specified state.");
+      }),
+    });
+    // The old cache can no longer be decrypted: reported as unreadable (=> re-authenticate).
+    await expect(createFileTokenStore(file, { protector: foreign }).load()).rejects.toBeInstanceOf(
+      AuthError,
+    );
+  });
+
+  it("unwraps the key once per store, not on every load", async () => {
+    await createFileTokenStore(file, { protector: fakeProtector() }).save(sample);
+    const protector = fakeProtector();
+    const store = createFileTokenStore(file, { protector });
+    await store.load();
+    await store.load();
+    await store.save(sample);
+    expect(protector.unprotect).toHaveBeenCalledOnce();
+  });
+
+  it.runIf(process.platform === "win32")(
+    "works end to end with real Windows DPAPI",
+    async () => {
+      const dpapi = createDpapiProtector();
+      await createFileTokenStore(file, { protector: dpapi }).save(sample);
+      expect(JSON.parse(readFileSync(keyFile(), "utf8")).protection).toBe("dpapi");
+      expect(await createFileTokenStore(file, { protector: dpapi }).load()).toEqual(sample);
+    },
+    30_000,
+  );
 });
