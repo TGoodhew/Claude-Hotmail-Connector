@@ -257,6 +257,9 @@ export function createFileTokenStore(
         }
         const key = randomBytes(KEY_BYTES);
         if (read.status === "unusable") {
+          // Only reset the file we judged unusable: if another process replaced it
+          // meanwhile (e.g. while our unwrap was failing), adopt its key instead.
+          if ((await keyFileSignature()) !== before) continue;
           await writeKeyFile(key, false);
           return remember(key);
         }

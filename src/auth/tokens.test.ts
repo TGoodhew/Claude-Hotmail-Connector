@@ -218,17 +218,22 @@ describe("createFileTokenStore across processes (shared key file)", () => {
     // Pause the first unwrap; meanwhile another process resets the key and cache.
     let release!: () => void;
     const paused = new Promise<void>((r) => (release = r));
+    let entered!: () => void;
+    const inFirstUnwrap = new Promise<void>((r) => (entered = r));
     let calls = 0;
     const pausing: KeyProtector = {
       ...reversing,
       unprotect: async (d) => {
-        if (calls++ === 0) await paused;
+        if (calls++ === 0) {
+          entered();
+          await paused;
+        }
         return reversing.unprotect(d);
       },
     };
     const a = createFileTokenStore(file, { protector: pausing });
     const loading = a.load();
-    await new Promise((r) => setTimeout(r, 20));
+    await inFirstUnwrap; // a is now holding the old key file's contents
     writeFileSync(join(dir, "token-cache.key"), "corrupt");
     const b = createFileTokenStore(file, { protector: reversing });
     await b.save({ ...sample, account: "after-reset@example.com" });
@@ -242,6 +247,47 @@ describe("createFileTokenStore across processes (shared key file)", () => {
     await expect(createFileTokenStore(file, { protector: reversing }).load()).resolves.toEqual(
       sample,
     );
+  });
+
+  it("adopts a replacement key instead of resetting it when its own unwrap failed", async () => {
+    const reversing: KeyProtector = {
+      name: "slow",
+      protect: async (d) => Buffer.from(d).reverse(),
+      unprotect: async (d) => Buffer.from(d).reverse(),
+    };
+    await createFileTokenStore(file, { protector: reversing }).save(sample);
+
+    // a's first unwrap pauses, then fails (as if the key were foreign); meanwhile
+    // b resets the key and saves fresh tokens.
+    let release!: () => void;
+    const paused = new Promise<void>((r) => (release = r));
+    let entered!: () => void;
+    const inFirstUnwrap = new Promise<void>((r) => (entered = r));
+    let calls = 0;
+    const failingOnce: KeyProtector = {
+      ...reversing,
+      unprotect: async (d) => {
+        if (calls++ === 0) {
+          entered();
+          await paused;
+          throw new Error("Key not valid for use in specified state.");
+        }
+        return reversing.unprotect(d);
+      },
+    };
+    const a = createFileTokenStore(file, { protector: failingOnce });
+    const loading = a.load();
+    await inFirstUnwrap;
+    writeFileSync(join(dir, "token-cache.key"), "corrupt");
+    const b = createFileTokenStore(file, { protector: reversing });
+    await b.save({ ...sample, account: "fresh@example.com" });
+    release();
+
+    // a must not overwrite b's key: b's fresh tokens stay readable for everyone.
+    await expect(loading).resolves.toMatchObject({ account: "fresh@example.com" });
+    await expect(
+      createFileTokenStore(file, { protector: reversing }).load(),
+    ).resolves.toMatchObject({ account: "fresh@example.com" });
   });
 
   it("re-reads the key when another process replaced the key file", async () => {

@@ -14,6 +14,7 @@
  * over HTTP with an injected browser launcher.
  */
 
+import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { z } from "zod";
@@ -363,7 +364,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         log.info("Opening browser for Microsoft sign-in", { redirectUri });
         const launch = deps.openBrowser
           ? deps.openBrowser(authorizeUrl)
-          : import("open").then((m) => m.default(authorizeUrl).then(() => undefined));
+          : import("open").then((m) => m.default(authorizeUrl).then(launcherSucceeded));
         launch.catch((e: unknown) => {
           if (deps.printUrlIfBrowserFails) {
             log.warn("Could not open a browser automatically. Visit the URL printed on stderr.");
@@ -391,6 +392,11 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   // the same attempt rather than opening another window.
   let inflightSignIn: Promise<TokenSet> | null = null;
   let lastSignInFailureAt: number | undefined;
+  // Completed sign-ins in this process, with the latest result: lets a caller
+  // whose refresh failed notice that a sign-in finished meanwhile, even if its
+  // own cache read raced with that save.
+  let signInsCompleted = 0;
+  let lastSignedIn: TokenSet | undefined;
   function signInAndSave(): Promise<TokenSet> {
     if (!inflightSignIn) {
       const attempt = (async () => {
@@ -398,6 +404,8 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
           const tokens = await interactiveSignIn();
           await store.save(tokens);
           lastSignInFailureAt = undefined;
+          lastSignedIn = tokens;
+          signInsCompleted += 1;
           return tokens;
         } catch (e) {
           lastSignInFailureAt = now();
@@ -444,6 +452,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     async getAccessToken(options: GetAccessTokenOptions = {}): Promise<string> {
       const interactive = options.interactive ?? true;
       const minTtlMs = options.minTtlMs ?? DEFAULT_MIN_TTL_MS;
+      const signInsAtStart = signInsCompleted;
 
       let cached: TokenSet | null = null;
       try {
@@ -487,6 +496,15 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         const threshold = isNew ? Math.min(minTtlMs, DEFAULT_MIN_TTL_MS) : minTtlMs;
         if (latest.expiresAt - now() > threshold) return latest.accessToken;
       }
+      // That read may itself have been stale: if a sign-in in this process
+      // completed since we started, use its tokens rather than opening another.
+      if (
+        signInsCompleted !== signInsAtStart &&
+        lastSignedIn &&
+        lastSignedIn.expiresAt - now() > DEFAULT_MIN_TTL_MS
+      ) {
+        return lastSignedIn.accessToken;
+      }
 
       return signInOnDemand(options.interactiveWaitMs);
     },
@@ -507,6 +525,41 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       }
     },
   };
+}
+
+/** How long a launcher (xdg-open, `start`, `open`) gets to fail before we assume it worked. */
+const LAUNCHER_GRACE_MS = 5_000;
+
+/**
+ * `open()` resolves once the launcher process has *started*. A launcher can
+ * still fail afterwards, e.g. `xdg-open` with no browser configured. Treat a
+ * non-zero exit within the grace period as a failed launch. A launcher still
+ * running (or exiting 0) counts as success; never wait for the browser itself.
+ */
+export function launcherSucceeded(
+  child: Pick<ChildProcess, "once" | "exitCode">,
+  graceMs = LAUNCHER_GRACE_MS,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const fail = (code: number | null) =>
+      reject(new Error(`Browser launcher exited with code ${code}.`));
+    if (child.exitCode !== null) {
+      if (child.exitCode === 0) resolve();
+      else fail(child.exitCode);
+      return;
+    }
+    const timer = setTimeout(resolve, graceMs);
+    timer.unref?.();
+    child.once("exit", (code: number | null) => {
+      clearTimeout(timer);
+      if (code === 0 || code === null) resolve();
+      else fail(code);
+    });
+    child.once("error", (e: Error) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+  });
 }
 
 /** `p`'s value if it settles within `ms`, else `undefined` (rejections propagate). */
