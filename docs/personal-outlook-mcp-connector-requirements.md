@@ -146,9 +146,11 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Carry accurate MCP **annotations** (`readOnlyHint`, `destructiveHint`, `idempotentHint`,
   `openWorldHint`).
 - Describe themselves as operating on the user's **personal Microsoft (Outlook.com/Hotmail)** account,
-  so the model doesn't confuse them with other mail connectors *(→ #65)*.
+  so the model doesn't confuse them with other mail connectors *(#65)*.
 - Return **actionable** errors: say what went wrong (not found, permission/consent missing, invalid
-  input, not signed in plus how to sign in) without leaking secrets *(→ #35)*.
+  input, not signed in plus how to sign in) without leaking secrets. Each Graph status class has its
+  own message; Graph's own error text is never passed on, and its error code only when it is a plain
+  identifier *(#35)*.
 
 ### 7.1 `whoami` — diagnostics
 - **Graph:** `GET /me` → `displayName`, `mail` / `userPrincipalName`. Read-only. `User.Read`.
@@ -609,7 +611,7 @@ Decided by the owner on 2026-10-21. Details and rationale are in #59.
 | D15 | Runtime | Node 24 LTS | #45 |
 
 Later owner decisions (2026-10-21): `cancel_event` added with guards (#55); account audience defaults
-to personal accounts only (#62). Still open: default time zone (#34), error detail (#35).
+to personal accounts only (#62). Since resolved: the default time zone is the system zone (#34), and errors are specific (#35).
 
 ---
 
