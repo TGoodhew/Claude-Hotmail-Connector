@@ -154,6 +154,29 @@ describe("htmlToText structure (#32)", () => {
     expect(htmlToText("<p>Hi</p><style>x")).toBe("Hi\nx");
     expect(htmlToText("<p>Hi</p><!--x")).toBe("Hi\n<!--x");
   });
+
+  it("reads tags whose quoted attributes contain < or > (Copilot review on #109)", () => {
+    expect(
+      htmlToText('<style media="(width < 600px)">.hidden { display:none }</style>Visible'),
+    ).toBe("Visible");
+    expect(htmlToText('<a title="A < B" href="https://example.test/">Link</a>')).toBe("Link");
+    expect(htmlToText("<img alt='x > y'>After")).toBe("After");
+    expect(htmlToText('<p class="a">One<br data-x="<">Two</p>')).toBe("One\nTwo");
+  });
+
+  it("ends cells and rows whose closing tags are left out (Copilot review on #109)", () => {
+    expect(htmlToText("<table><tr><td>Check-in<td>Monday<tr><td>Total<td>&euro;240</table>")).toBe(
+      "Check-in\tMonday\nTotal\t€240",
+    );
+    // Mixed explicit and implied closes don't double up.
+    expect(htmlToText("<table><tr><td>a</td><td>b<tr><td>c</td></tr></table>")).toBe("a\tb\nc");
+    // Block-wrapped cells with implied closes stay on their row.
+    expect(htmlToText("<table><tr><td><p>x</p><td><p>y</p><tr><th>z</table>")).toBe("x\ty\nz");
+    // A nested table's rows sit inside the outer cell; the outer row then goes on.
+    expect(htmlToText("<table><tr><td>L<td><table><tr><td>in</table></td><td>R</tr></table>")).toBe(
+      "L\tin\n\n\tR",
+    );
+  });
 });
 
 // Mail is untrusted and conversion is synchronous: none of these may be
@@ -170,6 +193,10 @@ describe("htmlToText stays fast on hostile input", () => {
     "joiner padding": `${ZWNJ} `.repeat(100_000),
     "joiner run": ZWNJ.repeat(400_000) + "x",
     "long space run in <pre>": `<pre>${" ".repeat(400_000)}x</pre>`,
+    "unclosed attribute quotes": '<a title="x'.repeat(100_000),
+    "mixed quotes": `<a '"<b "'`.repeat(100_000),
+    "implied table cells": "<tr><td>x<td>".repeat(100_000),
+    "nested table opens": "<table><td>".repeat(100_000),
   };
   for (const [name, html] of Object.entries(cases)) {
     it(name, () => {

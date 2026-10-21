@@ -12,22 +12,30 @@
 // whichever starts first wins: a `<!--` inside a <style> can't swallow the text
 // after it, and a <style> inside a comment goes with the comment. Outlook's
 // conditional comments (`<!--[if mso]>…<![endif]-->`) are comments.
-const NON_CONTENT_OPEN_RE = /<!--|<(script|style|head|title)\b[^<>]*>/gi;
+// A tag's attributes. Quoted values may hold `<` or `>` (`title="A < B"`), so
+// they're skipped whole; outside quotes the pattern stops at the next `<`, so a
+// stray `<` costs only the text up to the next one, and malformed mail can't
+// make a scan quadratic.
+const ATTRS = String.raw`(?:[^<>"']|"[^"]*"|'[^']*')*`;
+const tagRe = (source: string, flags = "gi") => new RegExp(source, flags);
+
+const NON_CONTENT_OPEN_RE = tagRe(String.raw`<!--|<(script|style|head|title)\b${ATTRS}>`);
 // Preformatted blocks keep their own spacing (see htmlToText).
-const PRE_OPEN_RE = /<(pre)\b[^<>]*>/gi;
-// Tag patterns stop at the next `<` (`[^<>]`), so a stray `<` costs only the
-// text up to the next one, and malformed mail can't make the scan quadratic.
-const LINE_BREAK_RE = /<(br|hr)\b[^<>]*>/gi;
+const PRE_OPEN_RE = tagRe(String.raw`<(pre)\b${ATTRS}>`);
+const LINE_BREAK_RE = tagRe(String.raw`<(br|hr)\b${ATTRS}>`);
 const BLOCK_BREAK_RE =
-  /<\/(p|div|li|tr|table|thead|tbody|tfoot|caption|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd|pre)\s*>/gi;
-const CELL_BREAK_RE = /<\/(td|th)\s*>/gi;
-// Breaks that end a cell's content (`<td><p>Total</p></td>`) would split a row
-// across lines, so they're dropped; breaks between blocks inside a cell stay.
-// Each run of break tags is matched once, with the cell close (if any) captured
-// rather than looked ahead for, so a long run outside a table stays linear.
-const CELL_END_BREAKS_RE =
-  /(?:\s*(?:<\/(?:p|div|li|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd)\s*>|<br\b[^<>]*>))+\s*(<\/t[dh]\s*>)?/gi;
-const TAG_RE = /<[^<>]+>/g;
+  /<\/(p|div|li|caption|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd|pre)\s*>/gi;
+// Cells and rows: see layoutTables.
+const TABLE_TAG_RE = tagRe(String.raw`<(\/?)(td|th|tr|table)\b${ATTRS}>`);
+// Breaks that end a cell's content (`<td><p>Total</p></td>`, or before the next
+// cell or row when the close is left out) would split a row across lines, so
+// they're dropped; breaks between blocks inside a cell stay. Each run of break
+// tags is matched once, with the table tag (if any) captured rather than looked
+// ahead for, so a long run outside a table stays linear.
+const CELL_END_BREAKS_RE = tagRe(
+  String.raw`(?:\s*(?:<\/(?:p|div|li|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd)\s*>|<br\b${ATTRS}>))+\s*(<\/?(?:td|th|tr)\b${ATTRS}>|<\/table\s*>)?`,
+);
+const TAG_RE = tagRe(String.raw`<(?:[^<>"']|"[^"]*"|'[^']*')+>`, "g");
 
 const ENTITY_RE = /&(?:#(\d+)|#x([0-9a-f]+)|([a-z][a-z0-9]*));/gi;
 
@@ -162,9 +170,54 @@ function replaceSpans(html: string, openRe: RegExp, replace: (span: string) => s
   return out + html.slice(pos);
 }
 
+/**
+ * End each table cell with a tab and each row with a line break. HTML lets
+ * `</td>`, `</th>` and `</tr>` be left out (the next cell or row ends them), so
+ * the open cell and row are tracked per table, nested tables included, rather
+ * than relying on closing tags. A close that's present ends a cell only once.
+ */
+function layoutTables(html: string): string {
+  type Table = { cell: boolean; row: boolean };
+  const outer: Table[] = [];
+  let table: Table = { cell: false, row: false };
+  return html.replace(TABLE_TAG_RE, (_tag, close: string, tagName: string) => {
+    const name = tagName.toLowerCase();
+    let out = "";
+    const endCell = () => {
+      if (table.cell) out += "\t";
+      table.cell = false;
+    };
+    const endRow = () => {
+      endCell();
+      if (table.row) out += "\n";
+      table.row = false;
+    };
+    if (name === "table") {
+      if (!close) {
+        outer.push(table);
+        table = { cell: false, row: false };
+        return "";
+      }
+      endRow();
+      table = outer.pop() ?? { cell: false, row: false };
+      return `${out}\n`;
+    }
+    if (name === "tr") {
+      endRow();
+      table.row = !close;
+      return out;
+    }
+    endCell(); // td/th: a new cell ends the open one
+    if (!close) table.cell = table.row = true;
+    return out;
+  });
+}
+
+const PRE_TAG_RE = tagRe(String.raw`^<pre\b${ATTRS}>`, "i");
+
 /** A <pre> block's text, with its spacing and line breaks as written. */
 function preText(block: string): string {
-  const inner = block.replace(/^<pre\b[^>]*>/i, "").replace(/<\/pre\s*>$/i, "");
+  const inner = block.replace(PRE_TAG_RE, "").replace(/<\/pre\s*>$/i, "");
   return inlineText(inner)
     .replace(/^\n/, "") // HTML ignores a newline straight after <pre>
     .trimEnd();
@@ -182,11 +235,11 @@ export function htmlToText(html: string): string {
   )
     .replace(/\s+/g, " ") // source whitespace renders as one space
     .replace(PLACEHOLDER_RE, "\n$&\n")
-    .replace(CELL_END_BREAKS_RE, (run, cellClose?: string) => cellClose ?? run)
+    .replace(CELL_END_BREAKS_RE, (run, tableTag?: string) => tableTag ?? run)
     .replace(LINE_BREAK_RE, "\n")
-    .replace(BLOCK_BREAK_RE, "\n")
-    .replace(CELL_BREAK_RE, "\t"); // one tab per cell, so empty cells keep their column
-  const text = dropPadding(inlineText(marked))
+    .replace(BLOCK_BREAK_RE, "\n");
+  // One tab per cell, so empty cells keep their column.
+  const text = dropPadding(inlineText(layoutTables(marked)))
     .replace(/ {2,}/g, " ") // collapse runs of spaces (first, so the next step can't backtrack)
     .replace(/ ?\t ?/g, "\t")
     .replace(/\t$/gm, "") // the separator after a row's last cell
