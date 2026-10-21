@@ -113,6 +113,8 @@ const TAG_NAME_RE = /[A-Za-z][A-Za-z0-9:-]*/y;
 const WHITESPACE_RUN_RE = /\s+/g;
 // JS `\s` includes the no-break space and other Unicode spaces.
 const ONLY_SPACE_RE = /^\s*$/;
+// Characters that render as nothing (see ALWAYS_INVISIBLE_RE and JOINERS).
+const INVISIBLE_PADDING_RE = new RegExp(`[${ch(0xad, 0xfeff)}${JOINERS}]`, "g");
 
 /** Raw text, removed with their content (<head> is handled by the scan itself). */
 const NON_CONTENT = new Set(["script", "style", "title"]);
@@ -225,9 +227,12 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
   const text = (raw: string) => {
     if (inHead) return;
     if (preText) return void preText.push(decodeEntities(raw));
-    // Decoded first, so encoded spacing (`&nbsp;`, `&#32;`) counts as spacing.
+    // Decoded first, so encoded spacing (`&nbsp;`, `&#32;`) counts as spacing,
+    // and invisible padding (soft hyphens, joiners) too: none of it is content
+    // that should settle a pending break. The text itself is kept as is.
     const t = decodeEntities(raw.replace(WHITESPACE_RUN_RE, " "));
-    if (t === "" || (owed > 0 && ONLY_SPACE_RE.test(t))) return; // spacing before a break
+    if (t === "") return;
+    if (owed > 0 && ONLY_SPACE_RE.test(t.replace(INVISIBLE_PADDING_RE, ""))) return;
     write(t);
   };
   const endCell = () => {
@@ -264,7 +269,11 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
       return;
     }
     endCell(); // td/th: a new cell ends the open one
-    if (!close) table.cell = table.row = true;
+    if (close) return;
+    // Breaks still owed here come from before the cell (a caption, say), not
+    // from its content: write them now, so an empty cell can't cancel them.
+    write("");
+    table.cell = table.row = true;
   };
 
   let i = 0;

@@ -188,7 +188,8 @@ describe("htmlToText structure (#32)", () => {
   });
 
   it("treats encoded spacing like spacing before a cell's end (Copilot review on #109)", () => {
-    for (const space of ["&nbsp;", "&#160;", "&#32;", "&#xA0;"]) {
+    const padding = ["&shy;", "&zwnj;&nbsp;", "&zwnj;&nbsp;&#847;&zwnj;&shy;", "&#xFEFF;"];
+    for (const space of ["&nbsp;", "&#160;", "&#32;", "&#xA0;", ...padding]) {
       expect(
         htmlToText(`<table><tr><td>Total<br>${space}</td><td>240</td></tr></table>`),
         space,
@@ -203,6 +204,13 @@ describe("htmlToText structure (#32)", () => {
     expect(htmlToText("<table><caption>Booking</caption><tr><td>Date<td>Mon</table>")).toBe(
       "Booking\nDate\tMon",
     );
+    // An empty first cell keeps the caption's break (Copilot review on #109).
+    expect(
+      htmlToText("<table><caption>Booking</caption><tr><td></td><td>Mon</td></tr></table>"),
+    ).toBe("Booking\n\tMon");
+    // A joiner that sits between inline tags inside a word is still kept.
+    const zwj = String.fromCharCode(0x200d);
+    expect(htmlToText(`<p><b>a</b>&zwj;<b>b</b></p>`)).toBe(`a${zwj}b`);
     expect(htmlToText("<table><tr><td>a</td></tr><p>Note</p></table>After")).toBe(
       "a\nNote\n\nAfter",
     );
