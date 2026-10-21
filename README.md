@@ -247,6 +247,8 @@ npm run lint            # eslint
 npm run format          # prettier --write   (format:check in CI)
 npm run check:text      # reject raw control characters in tracked files (CI)
 npm test                # vitest (unit + in-memory + built-subprocess smoke)
+npm run test:coverage   # the same, failing below the coverage thresholds (CI)
+npm run test:live       # opt-in: real Graph, your account (after `node dist/index.js login`)
 npm run build:mcpb      # Claude Desktop extension -> build/hotmail-connector.mcpb
 ```
 
@@ -259,7 +261,7 @@ Layout (tests are colocated as `src/**/*.test.ts`):
 - `src/graph`: Graph client (auth, retries, paging) plus the mail / calendar / user modules.
 - `src/tools`: zod schemas and thin tool handlers.
 - `src/util`: time zones, HTML-to-text, logging, errors.
-- `scripts/`: `build-mcpb.mjs` (extension), `check-text.mjs`, `register-app.ps1`.
+- `scripts/`: `build-mcpb.mjs` (extension), `check-text.mjs`, `test-live.mjs`, `register-app.ps1`.
 
 ## Requirements, design & roadmap
 

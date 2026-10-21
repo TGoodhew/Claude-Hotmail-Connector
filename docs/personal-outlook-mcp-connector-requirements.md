@@ -222,7 +222,8 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
     explicit `transactionId`;
   - body/reminder differences are not part of the key.
 
-  Graph's response to a repeated id MUST be verified and documented *(→ #48)*.
+  Graph's response to a repeated id MUST be verified and documented. The live test (§12) asserts
+  that a repeat returns the same event; record its result here once it has been run *(→ #48)*.
 - **No attendees.** Attendees and invitations MUST NOT be sendable, because invitations send email.
   Three layers enforce this:
   - tool input schemas have no attendee fields, and unknown arguments are stripped;
@@ -512,7 +513,7 @@ Claude-Hotmail-Connector/
 - **Live integration (opt-in), required.** Behind an env flag with a signed-in cache, run
   `list_messages` → `get_message` → `create_event` → `list_events` against a throwaway event. Assert the
   local time is preserved, verify `transactionId` dedupe behavior, and clean up. Excluded from CI by
-  default *(→ #48)*.
+  default: `src/live.test.ts`, run with `npm run test:live` after `node dist/index.js login` *(#48)*.
 - **Manual:** MCP Inspector (`npx @modelcontextprotocol/inspector`) and a Claude Desktop / Claude Code
   session exercising each tool.
 
