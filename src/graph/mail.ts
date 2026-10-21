@@ -331,6 +331,9 @@ export async function getMessage(
   if (input.format === "text" && rawType === "html") {
     content = htmlToText(rawContent);
   }
+  // What the content really is (#35): HTML only if it was HTML and HTML was
+  // asked for. A plain-text message stays text even when format=html.
+  const contentType = rawType === "html" && input.format === "html" ? "html" : "text";
 
   let attachments: AttachmentMeta[] = [];
   if (msg.hasAttachments) {
@@ -353,7 +356,7 @@ export async function getMessage(
     from: ea ? { name: ea.name, address: ea.address } : null,
     receivedDateTime: msg.receivedDateTime ?? null,
     webLink: msg.webLink ?? null,
-    body: sliceBody(content, input.format, input.maxChars, input.startChar),
+    body: sliceBody(content, contentType, input.maxChars, input.startChar),
     hasAttachments: Boolean(msg.hasAttachments),
     attachments,
   };
