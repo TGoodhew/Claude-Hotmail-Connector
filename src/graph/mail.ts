@@ -261,15 +261,19 @@ export function sliceBody(
   maxChars = DEFAULT_MAX_BODY_CHARS,
   startChar = 0,
 ): MessageBody {
-  const isLow = (i: number) => {
-    const c = content.charCodeAt(i);
-    return c >= 0xdc00 && c <= 0xdfff;
+  // True when `i` falls between the two units of a real pair. A lone surrogate
+  // (malformed mail) isn't a pair, so it never moves a cut.
+  const splitsPair = (i: number) => {
+    if (i <= 0 || i >= content.length) return false;
+    const hi = content.charCodeAt(i - 1);
+    const lo = content.charCodeAt(i);
+    return hi >= 0xd800 && hi <= 0xdbff && lo >= 0xdc00 && lo <= 0xdfff;
   };
   let start = Math.min(Math.max(0, startChar), content.length);
-  if (start > 0 && isLow(start)) start -= 1; // don't begin halfway through a pair
+  if (splitsPair(start)) start -= 1; // don't begin halfway through a pair
   let end = Math.min(start + maxChars, content.length);
   // Nor end halfway: back off, or take the whole pair if that would leave nothing.
-  if (end < content.length && isLow(end)) end = end - 1 > start ? end - 1 : end + 1;
+  if (splitsPair(end)) end = end - 1 > start ? end - 1 : end + 1;
   const truncated = end < content.length;
   return {
     contentType,

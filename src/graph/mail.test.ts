@@ -305,6 +305,41 @@ describe("body size cap (#38)", () => {
     expect(sliceBody(text, "text", 1, 2)).toMatchObject({ content: smile, nextStartChar: 4 });
   });
 
+  it("isn't misled by a lone surrogate next to an emoji (Copilot review on #117)", () => {
+    const smile = String.fromCodePoint(0x1f600);
+    const lone = String.fromCharCode(0xdc00); // malformed: a low surrogate with no pair
+    const text = "a".repeat(998) + smile + lone + "tail";
+    const first = sliceBody(text, "text", 1_000);
+    // The cut at 1000 falls between the emoji and the lone unit, which isn't a pair.
+    expect(first.content.endsWith(smile)).toBe(true);
+    expect(first.nextStartChar).toBe(1_000);
+  });
+
+  it("reads any body back exactly, part by part", () => {
+    const smile = String.fromCodePoint(0x1f600);
+    const lone = String.fromCharCode(0xdc00);
+    const texts = [
+      "a".repeat(998) + smile + lone + "tail",
+      (smile + "x").repeat(700),
+      smile.repeat(1_500),
+      lone + smile + lone.repeat(3) + "z".repeat(2_500),
+    ];
+    for (const text of texts) {
+      for (const max of [1, 2, 3, 1_000]) {
+        let out = "";
+        let start = 0;
+        for (let guard = 0; guard < 10_000; guard += 1) {
+          const part = sliceBody(text, "text", max, start);
+          out += part.content;
+          if (!part.truncated) break;
+          expect(part.nextStartChar).toBeGreaterThan(start); // always advances
+          start = part.nextStartChar!;
+        }
+        expect(out).toBe(text);
+      }
+    }
+  });
+
   it("caps get_message bodies after converting HTML to text", async () => {
     const get = vi.fn(async () => ({
       id: "big",
