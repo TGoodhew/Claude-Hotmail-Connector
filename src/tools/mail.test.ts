@@ -126,7 +126,7 @@ describe("prompt-injection fixture: instructions in a message (#88)", () => {
       hasAttachments: false,
     }));
     const res = await getMessageTool.handler(
-      { id: "evil-2", format: "text" },
+      { id: "evil-2", format: "text", maxChars: 20_000, startChar: 0 },
       ctxWith({ get: get as unknown as GraphClient["get"] }),
     );
     const [summary, payload] = res.content[0]!.text.split("\n\n");
