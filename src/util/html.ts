@@ -112,8 +112,8 @@ const PLACEHOLDER_RE = new RegExp(`${PRE_OPEN}(\\d+)${PRE_CLOSE}`, "g");
 const TAG_NAME_RE = /[A-Za-z][A-Za-z0-9:-]*/y;
 const WHITESPACE_RUN_RE = /\s+/g;
 
-/** Removed with their content. */
-const NON_CONTENT = new Set(["script", "style", "head", "title"]);
+/** Raw text, removed with their content (<head> is handled by the scan itself). */
+const NON_CONTENT = new Set(["script", "style", "title"]);
 /** Their end starts a new line. */
 const BLOCKS = new Set([
   "p", "div", "li", "caption", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote",
@@ -185,8 +185,11 @@ interface TableState {
 
 /**
  * Render markup as text with `\n` line breaks, `\t` after each table cell and
- * `<pre>` blocks as placeholders (their text goes into `pres`). With `pre`, the
- * markup is a <pre> block's inside: spacing is kept and only <br> breaks lines.
+ * `<pre>` blocks as placeholders (their text goes into `pres`). Inside <pre>,
+ * spacing is kept and only <br> breaks lines; <head> content is dropped. Both
+ * hold ordinary markup, so they end at a real `</pre>` / `</head>` tag found by
+ * this same scan, never at one inside an attribute or comment. Only <script>,
+ * <style> and <title> are raw text, ended (as browsers do) at the first closer.
  *
  * Block ends and <br> owe a line break that is written only when more text
  * follows, so breaks that end a table cell's content (`<td><p>Total</p></td>`,
@@ -196,20 +199,44 @@ interface TableState {
  * them), so the open cell and row are tracked per table, nested tables
  * included, rather than relying on closing tags.
  */
-function render(html: string, pre: boolean, pres: string[]): string {
+function render(html: string, pres: string[]): string {
   const missing: Missing = new Set();
   const out: string[] = [];
   let owed = 0; // line breaks owed by block ends and <br>
   const outer: TableState[] = [];
   let table: TableState = { cell: false, row: false };
+  let preText: string[] | null = null; // inside <pre>: its text so far
+  let inHead = false;
+  let headEndAt = -2; // where a `</head>` or `<body` was last found (-1: none left)
 
   const write = (s: string) => {
     if (owed > 0) out.push(owed > 1 ? "\n\n" : "\n");
     owed = 0;
     out.push(s);
   };
+  const endPre = (parts: string[]) => {
+    preText = null;
+    const block = tidy(parts.join(""))
+      .replace(/^\n/, "") // HTML ignores a newline straight after <pre>
+      .trimEnd();
+    write(`\n${PRE_OPEN}${pres.push(block) - 1}${PRE_CLOSE}\n`);
+  };
+  /**
+   * Whether a <head> opened at `from` is ever ended. If not, only the opening
+   * tag is dropped, so a stray <head> can't hide the message. The last search
+   * result is reused while it lies ahead, keeping repeated checks linear.
+   */
+  const headEnds = (from: number): boolean => {
+    if (headEndAt === -1) return false;
+    if (headEndAt >= from) return true;
+    const re = /<\/head\s*>|<body\b/gi;
+    re.lastIndex = from;
+    headEndAt = re.exec(html)?.index ?? -1;
+    return headEndAt >= 0;
+  };
   const text = (raw: string) => {
-    if (pre) return void out.push(decodeEntities(raw));
+    if (inHead) return;
+    if (preText) return void preText.push(decodeEntities(raw));
     const t = raw.replace(WHITESPACE_RUN_RE, " ");
     if (t === "" || (t === " " && owed > 0)) return; // spacing before a break
     write(decodeEntities(t));
@@ -290,25 +317,31 @@ function render(html: string, pre: boolean, pres: string[]): string {
     i = tag.end;
     const { name, close } = tag;
 
-    if (!close && (NON_CONTENT.has(name) || (name === "pre" && !pre))) {
+    if (!close && NON_CONTENT.has(name)) {
       const end = findClose(html, name, i, missing);
-      if (end < 0) continue; // unclosed: only the opening tag is dropped
-      if (name === "pre") {
-        const inner = html.slice(i, html.lastIndexOf("<", end - 1));
-        write(`\n${PRE_OPEN}${pres.push(preText(inner, pres)) - 1}${PRE_CLOSE}\n`);
-      }
-      i = end;
+      if (end >= 0) i = end; // unclosed: only the opening tag is dropped
+      continue;
+    }
+    if (inHead) {
+      if ((close && name === "head") || (!close && name === "body")) inHead = false;
       continue;
     }
     if (name === "br" || name === "hr") {
-      if (pre) out.push("\n");
+      if (preText) preText.push("\n");
       else owed += 1;
       continue;
     }
-    if (pre) continue; // inside <pre>, other markup only affects style
-    if (TABLE_PARTS.has(name)) tablePart(name, close);
+    if (preText) {
+      // Inside <pre>, other markup only affects style; a real </pre> ends it.
+      if (close && name === "pre") endPre(preText);
+      continue;
+    }
+    if (!close && name === "head") inHead = headEnds(i);
+    else if (!close && name === "pre") preText = [];
+    else if (TABLE_PARTS.has(name)) tablePart(name, close);
     else if (close && BLOCKS.has(name)) owed += 1;
   }
+  if (preText) endPre(preText); // an unclosed <pre> runs to the end, as in a browser
   return out.join("");
 }
 
@@ -317,18 +350,11 @@ function tidy(text: string): string {
   return text.replace(/\r\n?/g, "\n").replace(ALWAYS_INVISIBLE_RE, "").replace(NBSP_RE, " ");
 }
 
-/** A <pre> block's text, with its spacing and line breaks as written. */
-function preText(inner: string, pres: string[]): string {
-  return tidy(render(inner, true, pres))
-    .replace(/^\n/, "") // HTML ignores a newline straight after <pre>
-    .trimEnd();
-}
-
 /** Convert an HTML string to readable plain text. */
 export function htmlToText(html: string): string {
   if (!html) return "";
   const pres: string[] = [];
-  const text = dropPadding(tidy(render(html.replace(MARKERS_RE, ""), false, pres)))
+  const text = dropPadding(tidy(render(html.replace(MARKERS_RE, ""), pres)))
     .replace(/ {2,}/g, " ") // collapse runs of spaces (first, so the next step can't backtrack)
     .replace(/ ?\t ?/g, "\t")
     .replace(/\t$/gm, "") // the separator after a row's last cell

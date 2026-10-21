@@ -201,6 +201,20 @@ describe("htmlToText structure (#32)", () => {
     expect(htmlToText("<p>1 < 2 and 3 > 2</p>")).toBe("1 < 2 and 3 > 2");
     expect(htmlToText("I <3 mail")).toBe("I <3 mail");
   });
+
+  it("ends <pre> and <head> only at a real closing tag (Copilot review on #109)", () => {
+    // A </pre> inside an attribute or a comment doesn't end the block.
+    expect(htmlToText('<pre><a title="</pre>">  A    B</a></pre>')).toBe("  A    B");
+    expect(htmlToText("<pre>  x<!-- </pre> -->  y</pre>After")).toBe("  x  y\nAfter");
+    // Nor does a </head> inside an attribute or a comment end the head early.
+    expect(htmlToText('<head><meta content="</head>"></head><p>Body</p>')).toBe("Body");
+    expect(htmlToText("<head><!-- </head> --><style>x{}</style></head><p>Body</p>")).toBe("Body");
+    // The head also ends where the body starts, and an unended <head> hides nothing.
+    expect(htmlToText("<head><title>T</title><body><p>Body</p>")).toBe("Body");
+    expect(htmlToText("<head><p>Visible</p>")).toBe("Visible");
+    // An unclosed <pre> keeps its spacing to the end, as in a browser.
+    expect(htmlToText("<p>Hi</p><pre>  a\n    b")).toBe("Hi\n\n  a\n    b");
+  });
 });
 
 // Mail is untrusted and conversion is synchronous: none of these may be
@@ -224,6 +238,8 @@ describe("htmlToText stays fast on hostile input", () => {
     "unclosed declarations": "<!x".repeat(100_000),
     "comment openers in attributes": '<a title="<!--">k</a>'.repeat(100_000),
     "nested <pre> openers": "<pre>".repeat(100_000) + "</pre>",
+    "repeated <head> openers": "<head>".repeat(100_000) + "</head>x",
+    "unended <head> openers": "<head>x".repeat(100_000),
     "inline-wrapped cell breaks": "<td><span>x<br></span>".repeat(100_000),
   };
   for (const [name, html] of Object.entries(cases)) {
