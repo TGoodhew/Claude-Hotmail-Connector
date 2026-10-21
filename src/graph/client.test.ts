@@ -1,8 +1,47 @@
 import { describe, expect, it, vi } from "vitest";
-import { GraphError, TimeoutError } from "../util/errors.js";
-import { createGraphClient, retryAfterMs } from "./client.js";
+import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
+import { buildUrl, createGraphClient, retryAfterMs } from "./client.js";
 
 const BASE = "https://graph.microsoft.com/v1.0";
+
+describe("buildUrl origin guard (#30, spec v2 §9.2 T1)", () => {
+  it("resolves relative paths under the Graph base", () => {
+    expect(buildUrl(BASE, "/me/messages")).toBe(`${BASE}/me/messages`);
+    expect(buildUrl(BASE, "me/messages?$skip=10")).toBe(`${BASE}/me/messages?$skip=10`);
+  });
+
+  it("accepts Graph's own absolute nextLinks", () => {
+    expect(buildUrl(BASE, `${BASE}/me/messages?$skiptoken=x`)).toBe(
+      `${BASE}/me/messages?$skiptoken=x`,
+    );
+  });
+
+  it("refuses anything that would send the token elsewhere", () => {
+    for (const bad of [
+      "https://evil.example/steal",
+      "http://graph.microsoft.com/v1.0/me", // not https
+      "https://graph.microsoft.com.evil.example/v1.0/me", // lookalike host
+      "https://graph.microsoft.com@evil.example/v1.0/me", // userinfo trick
+      "https://graph.microsoft.com/beta/me", // outside the base path
+      "//evil.example/v1.0/me", // scheme-relative
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+    ]) {
+      expect(() => buildUrl(BASE, bad), bad).toThrow(ValidationError);
+    }
+  });
+
+  it("is enforced on the request path (no fetch for a foreign URL)", async () => {
+    const fetchImpl = vi.fn();
+    const client = createGraphClient({
+      auth: { getAccessToken: async () => "AT" },
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+    });
+    await expect(client.get("https://evil.example/x")).rejects.toBeInstanceOf(ValidationError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
 
 function json(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}) {
   return new Response(body === undefined ? "" : JSON.stringify(body), {
