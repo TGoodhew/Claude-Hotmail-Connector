@@ -550,9 +550,12 @@ export function launcherSucceeded(
     }
     const timer = setTimeout(resolve, graceMs);
     timer.unref?.();
-    child.once("exit", (code: number | null) => {
+    child.once("exit", (code: number | null, signal?: string | null) => {
       clearTimeout(timer);
-      if (code === 0 || code === null) resolve();
+      // Only a clean exit counts; a null code means it was killed by a signal.
+      if (code === 0) resolve();
+      else if (code === null)
+        reject(new Error(`Browser launcher was terminated (${signal ?? "signal"}).`));
       else fail(code);
     });
     child.once("error", (e: Error) => {

@@ -37,6 +37,13 @@ describe("launcherSucceeded (browser launcher exit status)", () => {
     await expect(p).rejects.toThrow(/exited with code 3/);
   });
 
+  it("fails when the launcher is killed by a signal (exit code null)", async () => {
+    const c = child();
+    const p = launcherSucceeded(c as never, 1_000);
+    c.emit("exit", null);
+    await expect(p).rejects.toThrow(/terminated/);
+  });
+
   it("fails for a launcher that had already exited non-zero", async () => {
     await expect(launcherSucceeded(child(1) as never, 1_000)).rejects.toThrow(/code 1/);
   });
