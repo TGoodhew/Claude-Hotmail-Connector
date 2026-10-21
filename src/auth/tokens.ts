@@ -305,23 +305,30 @@ export function createFileTokenStore(
 
   return {
     async load(): Promise<TokenSet | null> {
-      let raw: string;
-      try {
-        raw = await readFile(tokenCacheFile, "utf8");
-      } catch (e) {
-        if (isErrnoException(e) && e.code === "ENOENT") return null;
-        throw e;
-      }
-      try {
-        const container = JSON.parse(raw) as Container;
-        const key = await loadOrCreateKey();
-        const plaintext = decrypt(key, container);
-        return TokenSetSchema.parse(JSON.parse(plaintext));
-      } catch (e) {
-        throw new AuthError(
-          "Token cache is unreadable (corrupt, tampered, or key mismatch). Re-authenticate to reset it.",
-          e,
-        );
+      // Another process may replace the key *and* the cache between our reading
+      // the ciphertext and getting the key. The pair then doesn't match even though
+      // both files are fine, so read both again once before calling it corrupt
+      // (which makes the caller clear the cache and lose the fresh tokens).
+      for (let attempt = 0; ; attempt++) {
+        let raw: string;
+        try {
+          raw = await readFile(tokenCacheFile, "utf8");
+        } catch (e) {
+          if (isErrnoException(e) && e.code === "ENOENT") return null;
+          throw e;
+        }
+        try {
+          const container = JSON.parse(raw) as Container;
+          const key = await loadOrCreateKey();
+          const plaintext = decrypt(key, container);
+          return TokenSetSchema.parse(JSON.parse(plaintext));
+        } catch (e) {
+          if (attempt === 0) continue;
+          throw new AuthError(
+            "Token cache is unreadable (corrupt, tampered, or key mismatch). Re-authenticate to reset it.",
+            e,
+          );
+        }
       }
     },
 

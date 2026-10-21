@@ -227,13 +227,15 @@ describe("createFileTokenStore across processes (shared key file)", () => {
       },
     };
     const a = createFileTokenStore(file, { protector: pausing });
-    const loading = a.load().catch((e: unknown) => e);
+    const loading = a.load();
     await new Promise((r) => setTimeout(r, 20));
     writeFileSync(join(dir, "token-cache.key"), "corrupt");
     const b = createFileTokenStore(file, { protector: reversing });
     await b.save({ ...sample, account: "after-reset@example.com" });
     release();
-    await loading;
+    // The paused load re-reads the replacement cache rather than calling it corrupt
+    // (which would make auth clear the fresh tokens).
+    await expect(loading).resolves.toMatchObject({ account: "after-reset@example.com" });
 
     // `a` must now hold b's key: what it saves is readable by a fresh process.
     await a.save(sample);
