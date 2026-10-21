@@ -1,5 +1,10 @@
 # Local Hosting — Investigation & Requirements (Personal Outlook.com MCP Connector)
 
+> **⚠️ Superseded (2026-10-21).** This investigation's recommendation (Mode A, local stdio) was adopted and
+> folded into [the v2 spec](personal-outlook-mcp-connector-requirements.md): architecture §4, sign-in §8,
+> packaging §11. Mode B (tunnel) and the hosted option now live in its §15 "Future phase: remote mode"
+> (#58). This document is kept unchanged below as the record of the investigation.
+
 **Companion to:** `personal-outlook-mcp-connector-requirements.md` (the "main spec")
 **Document type:** Investigation + requirements
 **Version:** 1.0 · **Date:** 2026-07-19 · **Owner:** Tony Goodhew
