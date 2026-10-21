@@ -200,6 +200,28 @@ describe("htmlToText structure (#32)", () => {
     }
   });
 
+  it("keeps a <pre> inside a table cell on its row (Copilot review on #109)", () => {
+    const row = (cells: string) => htmlToText(`<table><tr>${cells}</tr></table>`);
+    expect(row("<td><pre>Total</pre></td><td>240</td>")).toBe("Total\t240");
+    expect(row("<td>Total</td><td><pre>240</pre></td>")).toBe("Total\t240");
+    expect(row("<td></td><td><pre>x</pre></td>")).toBe("\tx");
+    // Its own spacing and line breaks, and content around it in the cell, stay.
+    expect(row("<td>A<pre>  b\n  c</pre>D</td><td>E</td>")).toBe("A\n  b\n  c\nD\tE");
+  });
+
+  it("treats encoded tabs and newlines as spacing, not table structure (Copilot review on #109)", () => {
+    expect(htmlToText("<table><tr><td>Check&#9;in</td><td>Mon</td></tr></table>")).toBe(
+      "Check in\tMon",
+    );
+    expect(htmlToText("<table><tr><td>Check&#10;in</td><td>Mon</td></tr></table>")).toBe(
+      "Check in\tMon",
+    );
+    // A BOM vanishes the same way whether literal or encoded.
+    const bom = String.fromCharCode(0xfeff);
+    expect(htmlToText(`a${bom}b`)).toBe("ab");
+    expect(htmlToText("a&#xFEFF;b")).toBe("ab");
+  });
+
   it("keeps breaks owed outside a cell, such as after a caption (Copilot review on #109)", () => {
     expect(htmlToText("<table><caption>Booking</caption><tr><td>Date<td>Mon</table>")).toBe(
       "Booking\nDate\tMon",

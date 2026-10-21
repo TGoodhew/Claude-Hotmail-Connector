@@ -211,10 +211,12 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
   let table: TableState = { cell: false, row: false };
   let preText: string[] | null = null; // inside <pre>: its text so far
   let inHead = false;
+  let cellEmpty = false; // an open cell has had no content yet
 
   const write = (s: string) => {
     if (owed > 0) out.push(owed > 1 ? "\n\n" : "\n");
     owed = 0;
+    if (s !== "") cellEmpty = false;
     out.push(s);
   };
   const endPre = (parts: string[]) => {
@@ -222,15 +224,21 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
     const block = tidy(parts.join(""))
       .replace(/^\n/, "") // HTML ignores a newline straight after <pre>
       .trimEnd();
-    write(`\n${PRE_OPEN}${pres.push(block) - 1}${PRE_CLOSE}\n`);
+    // A <pre> is a block: a line break before it (none at the start of a cell)
+    // and one owed after it, which ending the cell cancels like any other.
+    if (!(table.cell && cellEmpty)) owed += 1;
+    write(`${PRE_OPEN}${pres.push(block) - 1}${PRE_CLOSE}`);
+    owed = 1;
   };
   const text = (raw: string) => {
     if (inHead) return;
     if (preText) return void preText.push(decodeEntities(raw));
-    // Decoded first, so encoded spacing (`&nbsp;`, `&#32;`) counts as spacing,
-    // and invisible padding (soft hyphens, joiners) too: none of it is content
-    // that should settle a pending break. The text itself is kept as is.
-    const t = decodeEntities(raw.replace(WHITESPACE_RUN_RE, " "));
+    // Decoded first, then invisibles dropped, then whitespace collapsed: an
+    // encoded tab or newline (`&#9;`, `&#10;`) is spacing, as in a browser, not a
+    // column or line break, and a BOM vanishes whether literal or encoded.
+    // Spacing and invisible padding (soft hyphens, joiners) don't settle a
+    // pending break; the padding itself is kept for the final cleanup.
+    const t = decodeEntities(raw).replace(ALWAYS_INVISIBLE_RE, "").replace(WHITESPACE_RUN_RE, " ");
     if (t === "") return;
     if (owed > 0 && ONLY_SPACE_RE.test(t.replace(INVISIBLE_PADDING_RE, ""))) return;
     write(t);
@@ -274,6 +282,7 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
     // from its content: write them now, so an empty cell can't cancel them.
     write("");
     table.cell = table.row = true;
+    cellEmpty = true;
   };
 
   let i = 0;
