@@ -48,7 +48,7 @@ export interface BuildEntryOptions {
   command: string;
   /** Args to pass (e.g. the built `dist/index.js` for a node launcher; []). */
   args?: string[];
-  /** Client id to pass via env; omit to rely on the bundled default. */
+  /** Client id to pass via env; omit to rely on the saved settings file. */
   clientId?: string;
 }
 

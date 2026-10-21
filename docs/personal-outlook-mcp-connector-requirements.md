@@ -51,8 +51,8 @@ personal accounts for mail and calendar when you use **your own** Entra app regi
 
 ### Non-goals (v2)
 - **Being anyone's host or support desk.** Others may use the connector, but each user brings
-  **their own** Entra app registration and runs it themselves. Builds do not embed a shared client id
-  *(→ #68)*, and support is community, best effort *(→ #77)*.
+  **their own** Entra app registration and runs it themselves. Builds do not embed a shared client id,
+  and support is community, best effort *(→ #77)*.
 - Use from claude.ai web/mobile or cloud sessions. That needs a remote mode, a future phase (§15, #58).
 - Contacts, OneDrive/Files, Teams, SharePoint.
 - Deleting or permanently destroying mail. **No hard-delete tools.** Calendar event deletion is gated and
@@ -233,19 +233,22 @@ Not implemented. If approved (#55): `DELETE /me/events/{id}` (moves to Deleted I
 ## 8. Identity & authorization (upstream Microsoft)
 
 ### 8.1 Entra app registration
-Each user creates **their own** registration *(→ #68)*. Registering an app requires a **Microsoft
-Entra tenant**; a personal account has none by default, so the user first creates a free tenant
-(typically via a free Azure account). `scripts/register-app.ps1` automates the registration with the
-Azure CLI signed in to that tenant; its header currently describes it as maintainer-only and must be
-updated under #68. Registration settings:
+Each user creates **their own** registration. Registering an app requires a **Microsoft Entra
+tenant**; a personal account has none by default, so the user first creates a free tenant (typically
+via a free Azure account). `scripts/register-app.ps1` automates the registration with the Azure CLI
+signed in to that tenant. Registration settings:
 - **Platform:** *Mobile and desktop applications* (**public client**). "Allow public client flows" = Yes.
 - **Redirect URI:** `http://localhost` (Microsoft allows any loopback port for native clients).
 - **No client secret.** A secret cannot be kept safe on a user's PC; PKCE replaces it.
 - **Delegated permissions:** as §6. Personal accounts consent at first sign-in; no admin consent.
 - **Supported account types:** currently *multitenant + personal* with authority `common`. Under review:
   **personal accounts only** with authority `consumers` *(→ #62)*.
-- The client id is supplied via `MICROSOFT_CLIENT_ID` (installer prompt / MCPB setting / `.env`).
-  Builds MUST NOT embed a shared client id *(→ #68; currently a bundled default exists)*.
+- **Supplying the client id.** `setup --client-id <id>` (run by the installer from its client-id page,
+  or `/CLIENTID=` when silent) validates the GUID and saves it to `settings.json` in the cache
+  directory. `MICROSOFT_CLIENT_ID` (env / `.env` / an MCPB setting) takes precedence over the saved
+  value. With neither, every command except `setup` / `unsetup` fails with an actionable error.
+- Builds MUST NOT embed a shared client id. The maintainer's former shared registration (used by
+  v0.1.0) is retired after the next release *(→ #68)*.
 
 ### 8.2 Sign-in
 - **Flow:** authorization code + **PKCE (S256)** against
@@ -272,7 +275,7 @@ updated under #68. Registration settings:
 ### 8.4 Configuration
 | Variable | Default | Notes |
 |---|---|---|
-| `MICROSOFT_CLIENT_ID` | — (required, §8.1) | The user's Entra app client id. |
+| `MICROSOFT_CLIENT_ID` | the id saved by `setup` (§8.1) | The user's Entra app client id; required if none is saved. |
 | `MICROSOFT_TENANT` | `common` | `consumers` under review (#62). |
 | `DEFAULT_TIMEZONE` | `Australia/Brisbane` | Under review (§9.5, #34). MUST be validated at startup. |
 | `MICROSOFT_SCOPES` | §6 default set | Narrowing only (§6). |
@@ -353,7 +356,7 @@ Claude-Hotmail-Connector/
   exe's `setup` / `unsetup` commands add or remove the server in `claude_desktop_config.json` (standalone
   and Microsoft Store paths). Windows only; unsigned by design. Developer path: `npm run build` +
   `node dist/index.js`.
-- The installer MUST collect the user's client id (§8.1) *(→ #68)* and clean up on uninstall *(→ #43)*.
+- The installer collects the user's client id (§8.1). It MUST clean up on uninstall *(→ #43)*.
   `setup` MUST tolerate a UTF-8 BOM and write configs atomically *(→ #40)*.
 - **Intended direction: MCPB.** Claude Desktop's Desktop Extension format would provide one-click install,
   a settings UI for the client id (sensitive values in OS secure storage), Claude Desktop's own Node

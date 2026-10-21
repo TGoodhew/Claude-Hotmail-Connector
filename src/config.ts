@@ -2,14 +2,17 @@
  * Runtime configuration for the connector.
  *
  * Values come from environment variables (optionally seeded from a local
- * `.env` file, which is git-ignored). {@link loadConfig} is a pure function of
- * its `env` argument so it can be unit-tested without mutating `process.env`.
+ * `.env` file, which is git-ignored) and, for the client id, the persisted
+ * user settings file (see `settings.ts`). {@link loadConfig} is a pure function
+ * of its `env` and `settings` arguments so it can be unit-tested without
+ * mutating `process.env` or touching the filesystem.
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
+import { readSettings, type UserSettings } from "./settings.js";
 import { ConfigError } from "./util/errors.js";
 
 // Seed process.env from a local .env if present. Real environment wins.
@@ -33,17 +36,16 @@ export const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 export const LOOPBACK_HOST = "127.0.0.1";
 
 /**
- * Bundled shared **public client** id (the maintainer's multitenant Entra app
- * registration). This is NOT a secret: a public/native client authenticates
- * with PKCE and no client secret, so the id is safe to ship. It lets an
- * installed build work with **no configuration** — the user just signs in. An
- * explicit `MICROSOFT_CLIENT_ID` env var (e.g. a "bring your own registration"
- * setup) always overrides it.
+ * Shown when no client id is configured. Each user brings their own Entra app
+ * registration (spec v2 §8.1); builds deliberately ship without a shared one.
  */
-export const DEFAULT_CLIENT_ID = "f5b05303-171f-4645-87bf-f2761166bf9c";
+export const MISSING_CLIENT_ID_MESSAGE =
+  "No Microsoft app registration is configured. Create your own Entra app registration " +
+  '(see "Register a Microsoft Entra application" in the README, or run scripts/register-app.ps1), ' +
+  "then run `setup --client-id <Application (client) ID>` or set MICROSOFT_CLIENT_ID.";
 
 const EnvSchema = z.object({
-  // Optional: falls back to the bundled shared public client (DEFAULT_CLIENT_ID).
+  // Optional here: falls back to the saved settings; loadConfig errors if neither is set.
   MICROSOFT_CLIENT_ID: z
     .string()
     .trim()
@@ -79,7 +81,8 @@ export interface AppConfig {
   logLevel: "debug" | "info" | "warn" | "error";
 }
 
-function defaultCacheDir(env: NodeJS.ProcessEnv): string {
+/** Directory for the token cache and settings file (honours `CLAUDE_HOTMAIL_CACHE_DIR`). */
+export function resolveCacheDir(env: NodeJS.ProcessEnv): string {
   if (env.CLAUDE_HOTMAIL_CACHE_DIR) return env.CLAUDE_HOTMAIL_CACHE_DIR;
   if (process.platform === "win32" && env.LOCALAPPDATA) {
     return join(env.LOCALAPPDATA, "claude-hotmail-connector");
@@ -99,10 +102,15 @@ function parseScopes(raw: string | undefined): string[] {
 }
 
 /**
- * Build a validated {@link AppConfig} from an environment object.
- * Throws {@link ConfigError} with a friendly, aggregated message on failure.
+ * Build a validated {@link AppConfig} from an environment object and the saved
+ * user settings. `MICROSOFT_CLIENT_ID` wins over `settings.clientId`.
+ * Throws {@link ConfigError} with a friendly, aggregated message on failure,
+ * including when no client id is configured at all.
  */
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  settings: UserSettings = {},
+): AppConfig {
   const parsed = EnvSchema.safeParse(env);
   if (!parsed.success) {
     const details = parsed.error.issues
@@ -112,10 +120,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   const e = parsed.data;
-  const cacheDir = defaultCacheDir(env);
+  const cacheDir = resolveCacheDir(env);
+  const clientId = e.MICROSOFT_CLIENT_ID ?? settings.clientId;
+  if (!clientId) throw new ConfigError(MISSING_CLIENT_ID_MESSAGE);
 
   return {
-    microsoftClientId: e.MICROSOFT_CLIENT_ID ?? DEFAULT_CLIENT_ID,
+    microsoftClientId: clientId,
     microsoftTenant: e.MICROSOFT_TENANT,
     authority: `https://login.microsoftonline.com/${e.MICROSOFT_TENANT}`,
     defaultTimeZone: e.DEFAULT_TIMEZONE,
@@ -130,9 +140,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
 let cached: AppConfig | undefined;
 
-/** Memoised config built from `process.env`. Use in application code. */
+/** Memoised config built from `process.env` and the saved settings. Use in application code. */
 export function getConfig(): AppConfig {
-  cached ??= loadConfig(process.env);
+  cached ??= loadConfig(process.env, readSettings(resolveCacheDir(process.env)));
   return cached;
 }
 

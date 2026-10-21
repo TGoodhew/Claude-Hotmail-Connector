@@ -46,7 +46,7 @@ describe("buildServerEntry", () => {
       env: { MICROSOFT_CLIENT_ID: "cid" },
     });
   });
-  it("omits env when no client id is given (uses the bundled default)", () => {
+  it("omits env when no client id is given (the server then uses the saved settings)", () => {
     const entry = buildServerEntry({ command: "app.exe" });
     expect(entry).toEqual({ type: "stdio", command: "app.exe", args: [] });
   });

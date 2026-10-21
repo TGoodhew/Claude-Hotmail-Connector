@@ -1,63 +1,68 @@
 # Installer & packaging (Windows)
 
-This connector ships as a **self-contained Windows package** so a non-technical user can install it
-without Node, without registering anything in Azure, and without editing any JSON. This document
-covers the end-user experience, the maintainer's one-time setup, and how the artifacts are built.
+The connector ships as a **self-contained Windows package**: you can install it without Node and
+without editing any JSON. You **do** need your own Microsoft Entra app registration (see below); the
+connector deliberately doesn't ship a shared one (spec v2 §8.1, decision D3). This document covers the
+user experience, the app registration, and how the artifacts are built.
 
-Tracked in [#25](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/25).
+Originally tracked in [#25](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/25); the
+bring-your-own registration change is [#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68).
 
-## What the user gets
+## What you get
 
 Two downloads (both from the same single-exe build):
 
-| Artifact                    | For          | Experience                                                            |
-| --------------------------- | ------------ | -------------------------------------------------------------------- |
-| `HotmailConnectorSetup.exe` | most people  | Guided Next → Finish installer, Start-menu entry, uninstaller        |
-| `hotmail-connector.exe`     | advanced     | Portable single exe, no install step                                 |
+| Artifact                    | For         | Experience                                                    |
+| --------------------------- | ----------- | ------------------------------------------------------------- |
+| `HotmailConnectorSetup.exe` | most people | Guided Next → Finish installer, Start-menu entry, uninstaller |
+| `hotmail-connector.exe`     | advanced    | Portable single exe, no install step                          |
 
-### End-user journey (zero portal, zero config)
+## Before you install: your own app registration
 
-1. Download and run the installer.
-2. Windows shows an **"unknown publisher"** SmartScreen warning (the build is unsigned — see below).
+The connector signs in to Microsoft through an Entra app registration that **you** own. It's a
+**public/native** client (PKCE, no secret), so its **Application (client) ID** is not a secret.
+
+1. **Get a Microsoft Entra tenant.** A personal Microsoft account (`hotmail` / `outlook` / `live`)
+   doesn't have one by default. [Create a free tenant](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-create-new-tenant),
+   typically by signing up for a free Azure account.
+2. **Register the app**, either:
+   - with one command (Azure CLI signed in to your tenant):
+     ```pwsh
+     az login
+     pwsh ./scripts/register-app.ps1
+     ```
+   - or by hand in the portal: follow **"Register a Microsoft Entra application"** in the
+     [README](../README.md).
+3. Copy the printed **Application (client) ID**.
+
+## Install journey
+
+1. Download and run `HotmailConnectorSetup.exe`.
+2. Windows shows an **"unknown publisher"** SmartScreen warning (the build is unsigned; see below).
    Click **More info → Run anyway**.
-3. The installer copies the exe, **auto-configures Claude Desktop** (`hotmail-connector.exe setup`),
-   and offers **"Sign in to your Microsoft account now"** on the finish page.
-4. **Fully quit Claude Desktop from the system tray** (closing the window only minimises it) and
+3. On **"Your Microsoft app registration"**, paste your Application (client) ID. When upgrading, you can
+   leave it empty to keep the ID already saved on this PC.
+4. The installer copies the exe and runs `hotmail-connector.exe setup --client-id <id>`. That command
+   saves the ID to `%LOCALAPPDATA%\claude-hotmail-connector\settings.json` and **auto-configures Claude
+   Desktop**. The finish page offers **"Sign in to your Microsoft account now"**.
+5. **Fully quit Claude Desktop from the system tray** (closing the window only minimises it) and
    reopen it. The connector's tools are now available.
 
-No `MICROSOFT_CLIENT_ID`, no `.env`, no Azure portal: the build embeds a **shared public-client id**
-(`DEFAULT_CLIENT_ID` in [`src/config.ts`](../src/config.ts)); the user only signs in.
+**Unattended install:** `HotmailConnectorSetup.exe /VERYSILENT /CLIENTID=<your-client-id>`, then run
+`hotmail-connector.exe login` once.
 
 ### Why the SmartScreen warning (and why it's OK)
 
 The package is **intentionally unsigned**. Since Microsoft changed SmartScreen reputation handling, a
 standard code-signing certificate no longer removes the warning up front, so the cost isn't
 worthwhile at this app's volume. The installer's welcome screen ([`installer/welcome.txt`](../installer/welcome.txt))
-explains what the app is and why it's safe, and Releases publish checksums to verify the download.
-
-## Maintainer: one-time app registration
-
-The shared registration is created **once**, by the maintainer, in a free tenant they own — end users
-never do this (a personal Microsoft account has no tenant to register an app in).
-
-```pwsh
-az login
-pwsh ./scripts/register-app.ps1
-```
-
-This creates a **multitenant, public/native** client (PKCE, no secret) with the least-privilege
-delegated scopes and prints the **Application (client) id**. Put that id in
-[`src/config.ts`](../src/config.ts) → `DEFAULT_CLIENT_ID`. Because it's a public client, the id is not
-a secret and is safe to embed and distribute.
-
-Recommended before wide distribution: complete **Microsoft Publisher Verification** and set
-consent-screen branding (logo, privacy/ToS URLs) so users don't see the "unverified app" prompt.
-(A manual portal walkthrough is the fallback if you'd rather not use `az`.)
+explains what the app is and why it's safe, and Releases publish SHA-256 checksums to verify the
+download.
 
 ## Building the artifacts
 
-> Run on **Windows**. Requires Node 20+ and [Inno Setup 6](https://jrsoftware.org/isinfo.php)
-> (`iscc` on `PATH`) for the installer.
+> Run on **Windows**. Requires Node 20+ (24 LTS recommended, see #45) and
+> [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`iscc` on `PATH`) for the installer.
 
 ```pwsh
 npm ci
@@ -65,34 +70,43 @@ npm run build:exe        # -> build\hotmail-connector.exe  (Node SEA single exec
 npm run build:installer  # -> dist-installer\HotmailConnectorSetup.exe
 ```
 
-- `build:exe` ([`scripts/build-exe.mjs`](../scripts/build-exe.mjs)) bundles the app to a single CJS
+- `build:exe` ([`scripts/build-exe.mjs`](../scripts/build-exe.mjs)) bundles the app into a single CJS
   file, generates a Node **SEA** blob ([`sea-config.json`](../sea-config.json)), copies `node.exe`,
   and injects the blob with `postject`.
 - `build:installer` compiles [`installer/hotmail-connector.iss`](../installer/hotmail-connector.iss).
+- Releases are built and published by [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
 ### Smoke test the exe
 
 ```pwsh
-build\hotmail-connector.exe whoami     # after signing in
-build\hotmail-connector.exe setup      # configures Claude Desktop (idempotent, backs up first)
+build\hotmail-connector.exe setup --client-id <your-client-id>  # saves the id, configures Claude Desktop
+build\hotmail-connector.exe login                              # one-time browser sign-in
+build\hotmail-connector.exe whoami                             # prints the signed-in account
 ```
 
 ## The `setup` / `unsetup` commands
 
 The exe (and `node dist/index.js`) expose these host-wiring commands, used by the installer:
 
-- **`setup`** — detects Claude Desktop configs (both the standalone `%APPDATA%\Claude\` path **and**
-  the Microsoft Store/MSIX `…\Packages\Claude_*\LocalCache\Roaming\Claude\` path) and merges our
-  `mcpServers` entry in **without clobbering** existing preferences, writing valid JSON and pointing
-  `command` at the absolute exe/node path. Idempotent; backs up the original once.
-- **`unsetup`** — removes only our entry (run on uninstall).
+- **`setup [--client-id <id>]`**
+  - `--client-id` validates the ID (a GUID) and saves it to `settings.json` in the cache folder. That
+    lets `login`, `whoami` and the Start-menu shortcut work without any environment variables.
+  - Without the flag, setup uses `MICROSOFT_CLIENT_ID` or the saved ID. It refuses to run if neither
+    is set.
+  - It then detects the Claude Desktop configs: both the standalone `%APPDATA%\Claude\` path **and** the
+    Microsoft Store/MSIX `…\Packages\Claude_*\LocalCache\Roaming\Claude\` path.
+  - It merges our `mcpServers` entry in **without clobbering** existing preferences, writes valid
+    JSON, and points `command` at the absolute exe/node path. Idempotent; backs up the original once.
+- **`unsetup`**: removes only our entry (run on uninstall).
 
-Claude Code is configured separately via a project `.mcp.json` (see the main README).
+Neither command needs a working Microsoft configuration, so a bad environment can't block install or
+uninstall. Claude Code is configured separately (see the main README).
 
 ## Status / remaining
 
-- ✅ Auto-config engine, `setup`/`unsetup`, embedded client id, first-run wiring — implemented and
-  unit-tested; `setup` verified against a real MSIX Claude Desktop config.
-- ⏳ **Needs a Windows build run to finish #25:** produce `hotmail-connector.exe` (`build:exe`) and
-  `HotmailConnectorSetup.exe` (`build:installer`), then smoke-test the installer on a clean machine
-  and attach both to a GitHub Release with checksums. macOS/Linux packaging is out of scope for v1.
+- ✅ Single exe + Inno installer, published to GitHub Releases with checksums (v0.1.0).
+- ✅ Bring-your-own registration: installer page, `setup --client-id`, saved settings (#68).
+- ⏳ After the next release, the maintainer's old shared registration (used by v0.1.0) is retired
+  (#68). v0.1.0 users need to create their own registration and run `setup --client-id` + `login`.
+- ⏳ Uninstall cleanup of the token cache and an explicit `AppId` (#43); OS-protected token storage
+  (#42); MCPB packaging evaluation (#63); macOS/Linux setup (#56).
