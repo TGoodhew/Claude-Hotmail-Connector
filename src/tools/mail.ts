@@ -3,7 +3,7 @@
  */
 
 import { z } from "zod";
-import { getMessage, listMessages } from "../graph/mail.js";
+import { DEFAULT_MAX_BODY_CHARS, getMessage, listMessages } from "../graph/mail.js";
 import {
   defineTool,
   toRegistered,
@@ -66,6 +66,19 @@ const getMessageShape = {
     .enum(["text", "html"])
     .default("text")
     .describe("Body format. 'text' converts HTML to plain text (default, token-efficient)."),
+  maxChars: z
+    .number()
+    .int()
+    .min(1_000)
+    .max(100_000)
+    .default(DEFAULT_MAX_BODY_CHARS)
+    .describe("Most body characters to return (1,000-100,000, default 20,000)."),
+  startChar: z
+    .number()
+    .int()
+    .min(0)
+    .default(0)
+    .describe("Where in the body to start: a previous result's body.nextStartChar."),
 };
 
 export const getMessageTool: ToolDefinition<typeof getMessageShape> = defineTool({
@@ -75,7 +88,8 @@ export const getMessageTool: ToolDefinition<typeof getMessageShape> = defineTool
     "Read a single email from the user's personal Outlook.com / Hotmail mailbox by id, " +
     "returning subject, sender, receivedDateTime, webLink, " +
     "the body (HTML converted to plain text by default), and attachment metadata " +
-    "(names/sizes only — no file contents). Read-only. " +
+    "(names/sizes only — no file contents). Long bodies are cut at maxChars: body.truncated " +
+    "is then true, and startChar=body.nextStartChar reads on. Read-only. " +
     UNTRUSTED_CONTENT_DESCRIPTION,
   inputShape: getMessageShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
@@ -83,7 +97,12 @@ export const getMessageTool: ToolDefinition<typeof getMessageShape> = defineTool
   async handler(input, ctx) {
     const msg = await getMessage(ctx.graph, input);
     // The summary stays free of the message's own text; that is all in the data.
-    return untrustedResult("Read the message; its details follow.", msg);
+    const { body } = msg;
+    const part = body.truncated
+      ? ` The body is long: this is characters ${body.startChar ?? 0}-${body.nextStartChar} of ` +
+        `${body.totalChars}; call again with startChar=${body.nextStartChar} for more.`
+      : "";
+    return untrustedResult(`Read the message; its details follow.${part}`, msg);
   },
 });
 
