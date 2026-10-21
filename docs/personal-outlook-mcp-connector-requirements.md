@@ -153,6 +153,14 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 ### 7.1 `whoami` — diagnostics
 - **Graph:** `GET /me` → `displayName`, `mail` / `userPrincipalName`. Read-only. `User.Read`.
 
+### 7.1a `sign_out` — remove the saved sign-in
+- Deletes the token cache **and** its encryption key on this computer. This is the extension's
+  sign-out, since it has no command line. No Graph call or scope is needed (always registered).
+- A sign-in or refresh still in flight when the user signs out is **discarded**, not saved, so it
+  can't silently undo the sign-out (in-process; cross-process coordination is #95).
+- Annotations: `destructiveHint: true` (local data), `idempotentHint: true`, `openWorldHint: false`.
+  The description says to call it only when the user asks. Misuse only means signing in again.
+
 ### 7.2 `list_messages` — search/list mail
 - **Graph:** `GET /me/messages`.
 - **Inputs:** `query?` (keywords), `from?`, `subjectContains?`, `receivedAfter?` / `receivedBefore?` (ISO 8601),
@@ -318,21 +326,22 @@ signed in to that tenant. Registration settings:
   - **Windows (implemented):** the cache (`token-cache.enc`) is AES-256-GCM encrypted. Its key file
     (`token-cache.key`) holds only the DPAPI-wrapped key (`{"v":2,"protection":"dpapi",…}`, with
     app-specific entropy), produced through PowerShell's `ProtectedData` with the key passed on stdin.
-    A legacy plain key is upgraded in place, so existing sign-ins survive. If DPAPI fails, a warning is
+    A legacy plain key is upgraded in place on the next save (loads never write to disk), so existing sign-ins survive. If DPAPI fails, a warning is
     logged and the plain key file is used. A key that can't be unwrapped (another user or machine) is
     reset, which means signing in again.
   - **macOS / Linux:** plain owner-only key file for now *(→ #83)*.
 - Cache location: `%LOCALAPPDATA%\claude-hotmail-connector` (Windows) or `~/.claude-hotmail-connector`,
   overridable with `CLAUDE_HOTMAIL_CACHE_DIR`.
 - Tokens are never logged, returned to the client, or committed. Users MUST have a way to sign out and
-  clear the cache. Removing the extension doesn't run any cleanup, so sign-out is needed *(→ #43)*.
+  clear the cache. Removing the extension runs no cleanup, so `sign_out` (§7.1a) removes the cache and
+  key (`logout` from a source checkout does the same).
 
 ### 8.4 Configuration
 | Variable | Default | Notes |
 |---|---|---|
 | `MICROSOFT_CLIENT_ID` | the id saved by `setup` (§8.1) | The user's Entra app client id; required if none is saved. |
 | `MICROSOFT_TENANT` | `consumers` | Personal accounts only; `common` with a multitenant registration (§8.1). |
-| `DEFAULT_TIMEZONE` | `Australia/Brisbane` | Under review (§9.5, #34). MUST be validated at startup. |
+| `DEFAULT_TIMEZONE` | The system's IANA zone, else `UTC` | Validated at startup (§9.5, #34). |
 | `MICROSOFT_SCOPES` | §6 default set | Narrowing only (§6). |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir | Token cache location. |
@@ -391,7 +400,7 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | T9 | **Hostile launch environment.** A repo's `.env` swaps the client id, tenant, cache dir or scopes. | `.env` is read only from the checkout root, never the CWD (§8.4). Scope override can only narrow (§6). | ✅ #41, #70 |
 | T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; *→ #83* |
 | T11 | **Interference with the loopback sign-in.** A stray or hostile local request hits the redirect port. | Random `state`, checked in constant time. Mismatched requests get a 400 and neither abort nor complete the sign-in (§8.2). | ✅ #41 |
-| T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. Tool descriptions SHOULD say so explicitly, and results SHOULD mark message/event text as untrusted third-party content (*→ #88*). | *→ #88* |
+| T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message` and `list_events` descriptions repeat it. Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
 
 **Rules (normative)**
 1. All mail and calendar content returned by tools is **untrusted data**, never instructions.
@@ -435,8 +444,9 @@ cancellation guards are covered by unit tests (#61, #55).
 
 ### 9.5 Timezone & locale
 - Calendar reads send `Prefer: outlook.timezone`. Writes pass local wall-clock + IANA `timeZone`.
-- The default zone is currently `Australia/Brisbane` (UTC+10, no DST). Under review: default to the
-  system zone and validate at startup *(→ #34)*.
+- The default zone is the computer's own IANA zone (`UTC` if the runtime can't report one), unless
+  `DEFAULT_TIMEZONE` names another. An invalid `DEFAULT_TIMEZONE` is a startup `ConfigError`, not a
+  failure on every calendar call *(#34)*.
 - Tests MUST cover a **DST zone** (e.g. `Australia/Sydney`, `America/New_York`) across transitions,
   because Brisbane has no DST and cannot catch those bugs *(→ #64)*.
 
@@ -517,7 +527,7 @@ Claude-Hotmail-Connector/
 6. No tokens or secrets appear in logs or tool output.
 7. A prompt-injection email fixture cannot cause data exfiltration (§9.2).
 8. The extension installs, prompts for the client id, and serves all tools in Claude Desktop. Signing
-   out clears the token cache (#43).
+   out clears the token cache and key (`sign_out`).
 9. CI is green, including on Windows; the README reproduces setup on a fresh machine.
 
 ---
@@ -529,7 +539,7 @@ Claude-Hotmail-Connector/
 | Entra app not set up for personal accounts → AADSTS errors | Documented registration (§8.1), `register-app.ps1`; troubleshooting in README. |
 | Timezone drift (event an hour off) | Local wall-clock + IANA; `Prefer` header; reject `Z`/offsets; DST tests (§9.5). |
 | Duplicate events on retry | Deterministic `transactionId` (§7.5). |
-| Token theft from disk | OS-protected storage (§8.3); a sign-out path clears the cache (#43). |
+| Token theft from disk | OS-protected storage (§8.3); `sign_out` removes the cache and key (§7.1a). |
 | Token exfiltration via model-supplied URLs | Opaque cursors; access token only sent to the Graph origin (§7.2). |
 | Prompt injection via email | Threat model (§9.2): no URL fetching, no attendees, confirmation on writes, junk filtering, bounded output. |
 | Over-broad access | `Mail.Read` only; scope override narrowing-only (§6); no hard delete. |

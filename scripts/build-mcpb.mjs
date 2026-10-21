@@ -102,6 +102,7 @@ const manifest = {
     { name: "create_event", description: "Add a calendar event (timezone-correct, idempotent)." },
     { name: "update_event", description: "Edit a calendar event; reports before/after values." },
     { name: "cancel_event", description: "Guarded soft delete of a calendar event." },
+    { name: "sign_out", description: "Remove the saved Microsoft sign-in from this computer." },
   ],
   compatibility: {
     platforms: ["win32", "darwin", "linux"],

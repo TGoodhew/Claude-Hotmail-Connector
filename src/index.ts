@@ -6,11 +6,13 @@
  * source checkout. The client id comes from `MICROSOFT_CLIENT_ID` (the
  * extension's "Application (client) ID" setting, or the client's `env`).
  *
- * Subcommands (for source checkouts):
- *   (default)  start the MCP server on stdio
+ * Subcommands (for source checkouts; see `USAGE` in cli.ts):
+ *   (none)     start the MCP server on stdio
  *   login      run the interactive Microsoft sign-in and cache tokens
  *   logout     clear the cached tokens
  *   whoami     print the signed-in account (diagnostic)
+ *   help, version
+ * Anything else prints the usage and exits with status 2.
  *
  * stdout is reserved exclusively for MCP JSON-RPC; all human/log output and the
  * sign-in UX go to stderr and the system browser.
@@ -23,14 +25,27 @@ import { createFileTokenStore } from "./auth/tokens.js";
 import { getConfig } from "./config.js";
 import { createGraphClient } from "./graph/client.js";
 import { whoami } from "./graph/user.js";
-import { createMcpServer } from "./mcp.js";
+import { parseCommand, USAGE } from "./cli.js";
+import { createMcpServer, SERVER_VERSION } from "./mcp.js";
 import { createLogger } from "./util/log.js";
 
 /** How long a tool call waits for an on-demand browser sign-in before asking the user to retry. */
 const ON_DEMAND_SIGN_IN_WAIT_MS = 45_000;
 
 async function run(): Promise<void> {
-  const command = process.argv[2];
+  // Dispatch before loading config, so help, version and usage errors work
+  // even when the environment is incomplete.
+  const parsed = parseCommand(process.argv.slice(2));
+  if (parsed.kind === "help" || parsed.kind === "version") {
+    process.stderr.write(parsed.kind === "help" ? USAGE : `${SERVER_VERSION}\n`);
+    return;
+  }
+  if (parsed.kind === "invalid") {
+    process.stderr.write(`${parsed.message}\n\n${USAGE}`);
+    process.exitCode = 2;
+    return;
+  }
+  const command = parsed.kind;
   const log = createLogger({ name: "startup" });
   const config = getConfig();
   const store = createFileTokenStore(config.tokenCacheFile, { protector: defaultKeyProtector() });
@@ -73,10 +88,17 @@ async function run(): Promise<void> {
     baseUrl: config.graphBaseUrl,
     interactiveSignIn: { waitMs: ON_DEMAND_SIGN_IN_WAIT_MS },
   });
-  const server = createMcpServer({ graph: toolGraph, config });
+  const server = createMcpServer({ graph: toolGraph, config, auth });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info("MCP server ready on stdio.", { account });
+  if (process.stdin.isTTY) {
+    // Started by hand at a terminal: say what it's waiting for, so it doesn't look hung.
+    process.stderr.write(
+      "Waiting for an MCP client on stdio. MCP clients start this server themselves; " +
+        "press Ctrl+C to stop, or run with --help for the commands.\n",
+    );
+  }
 
   const shutdown = (): void => {
     void server.close().finally(() => process.exit(0));

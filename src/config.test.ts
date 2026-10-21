@@ -1,8 +1,15 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
-import { DEFAULT_SCOPES, dotenvPath, loadConfig, MISSING_CLIENT_ID_MESSAGE } from "./config.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  DEFAULT_SCOPES,
+  dotenvPath,
+  FALLBACK_TIMEZONE,
+  loadConfig,
+  MISSING_CLIENT_ID_MESSAGE,
+  systemTimeZone,
+} from "./config.js";
 import { ConfigError } from "./util/errors.js";
 
 const base = { MICROSOFT_CLIENT_ID: "11111111-2222-3333-4444-555555555555" };
@@ -60,7 +67,7 @@ describe("loadConfig", () => {
     expect(cfg.microsoftClientId).toBe(base.MICROSOFT_CLIENT_ID);
     expect(cfg.microsoftTenant).toBe("consumers");
     expect(cfg.authority).toBe("https://login.microsoftonline.com/consumers");
-    expect(cfg.defaultTimeZone).toBe("Australia/Brisbane");
+    expect(cfg.defaultTimeZone).toBe(systemTimeZone());
     expect(cfg.graphBaseUrl).toBe("https://graph.microsoft.com/v1.0");
     expect(cfg.loopbackHost).toBe("127.0.0.1");
     expect(cfg.scopes).toEqual([...DEFAULT_SCOPES]);
@@ -112,6 +119,37 @@ describe("loadConfig", () => {
     expect(cfg.microsoftTenant).toBe("common");
     expect(cfg.authority).toBe("https://login.microsoftonline.com/common");
     expect(cfg.defaultTimeZone).toBe("Europe/London");
+  });
+
+  describe("default time zone (#34)", () => {
+    afterEach(() => vi.restoreAllMocks());
+    const systemZone = (timeZone: string) =>
+      vi
+        .spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions")
+        .mockReturnValue({ timeZone } as Intl.ResolvedDateTimeFormatOptions);
+
+    it("defaults to the computer's own zone, not a hard-coded one", () => {
+      systemZone("America/New_York");
+      expect(loadConfig(base).defaultTimeZone).toBe("America/New_York");
+      // Blank, as an empty extension setting arrives, means unset.
+      expect(loadConfig({ ...base, DEFAULT_TIMEZONE: "  " }).defaultTimeZone).toBe(
+        "America/New_York",
+      );
+    });
+
+    it("falls back to UTC when the system zone is missing or unusable", () => {
+      systemZone("");
+      expect(loadConfig(base).defaultTimeZone).toBe(FALLBACK_TIMEZONE);
+      vi.restoreAllMocks();
+      systemZone("Not/AZone");
+      expect(loadConfig(base).defaultTimeZone).toBe("UTC");
+    });
+
+    it("rejects an invalid DEFAULT_TIMEZONE at startup", () => {
+      const load = () => loadConfig({ ...base, DEFAULT_TIMEZONE: "Mars/Olympus" });
+      expect(load).toThrow(ConfigError);
+      expect(load).toThrow(/not an IANA time zone/);
+    });
   });
 
   it("honours an explicit cache dir override", () => {

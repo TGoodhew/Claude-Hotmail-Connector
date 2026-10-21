@@ -10,6 +10,8 @@ import {
   defineTool,
   toolResult,
   toRegistered,
+  UNTRUSTED_CONTENT_DESCRIPTION,
+  untrustedResult,
   type RegisteredTool,
   type ToolContext,
   type ToolDefinition,
@@ -49,8 +51,10 @@ export const listEventsTool: ToolDefinition<typeof listEventsShape> = defineTool
   name: "list_events",
   title: "List calendar events",
   description:
-    "List calendar events in a date range (e.g. to check for conflicts before adding a booking). " +
-    "Times are returned in the requested IANA time zone. Read-only.",
+    "List events in the user's personal Outlook.com / Hotmail calendar in a date range (e.g. to " +
+    "check for conflicts before adding a booking). " +
+    "Times are returned in the requested IANA time zone. Read-only. " +
+    UNTRUSTED_CONTENT_DESCRIPTION,
   inputShape: listEventsShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
   scopesAnyOf: ["Calendars.Read", "Calendars.ReadWrite"],
@@ -66,7 +70,7 @@ export const listEventsTool: ToolDefinition<typeof listEventsShape> = defineTool
       events.length === 0
         ? "No events found in that range."
         : `Found ${events.length} event(s) (times in ${timeZone}).`;
-    return toolResult(summary, { count: events.length, timeZone, events });
+    return untrustedResult(summary, { count: events.length, timeZone, events });
   },
 });
 
@@ -93,7 +97,8 @@ export const createEventTool: ToolDefinition<typeof createEventShape> = defineTo
   name: "create_event",
   title: "Create a calendar event",
   description:
-    "Create a calendar event (e.g. a booking, plus separate travel-time blocks). " +
+    "Create an event in the user's personal Outlook.com / Hotmail calendar (e.g. a booking, " +
+    "plus separate travel-time blocks). " +
     "Times are LOCAL wall-clock paired with an IANA time zone (never a UTC 'Z'), so the " +
     "event lands at the intended local time. A transactionId makes repeated calls idempotent " +
     "(no duplicates). IMPORTANT: confirm the details (title, date, start/end, timezone, location) " +
@@ -136,7 +141,8 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
   name: "update_event",
   title: "Update a calendar event",
   description:
-    "Update an existing calendar event's time, location, subject, or body. Only the fields you " +
+    "Update an existing event in the user's personal Outlook.com / Hotmail calendar: its time, " +
+    "location, subject, or body. Only the fields you " +
     "provide are changed, and they are OVERWRITTEN in place (Outlook keeps no history). Times use " +
     "LOCAL wall-clock + IANA time zone. Refuses events with attendees (changing a meeting could " +
     "email them an update). IMPORTANT: confirm the change with the user BEFORE calling. The " +
@@ -190,7 +196,7 @@ export const cancelEventTool: ToolDefinition<typeof cancelEventShape> = defineTo
   name: "cancel_event",
   title: "Cancel (delete) a calendar event",
   description:
-    "DESTRUCTIVE: deletes a calendar event in the user's personal Outlook.com calendar (it moves to " +
+    "DESTRUCTIVE: deletes an event in the user's personal Outlook.com / Hotmail calendar (it moves to " +
     "Outlook's Deleted Items). IMPORTANT: only call after the user has explicitly confirmed which " +
     "event to delete. confirmSubject must be the event's exact title. Refuses events with attendees " +
     "(deleting a meeting could email cancellations) and recurring events. Echo the removed " +

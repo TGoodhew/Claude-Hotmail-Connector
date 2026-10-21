@@ -41,6 +41,7 @@ phase ([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58)).
 | `create_event`  | Add a calendar event (timezone-correct, idempotent) | `Calendars.ReadWrite` |
 | `update_event`  | Edit a calendar event (destructive: overwrites)     | `Calendars.ReadWrite` |
 | `cancel_event`  | Delete an event, guarded (see below)                | `Calendars.ReadWrite` |
+| `sign_out`      | Remove the saved sign-in from this computer         | (none)                |
 
 Mail is **read-only** (no `Mail.Send`), and calendar writes never add attendees or send invitations.
 There is **no hard-delete**. `cancel_event` moves an event to Outlook's Deleted Items, and only after
@@ -158,19 +159,19 @@ never from the folder you launch from):
 ```bash
 node dist/index.js login     # browser sign-in, caches the token
 node dist/index.js whoami    # prints your name and account, e.g. Jane Doe <jane@outlook.com>
-node dist/index.js logout    # clears the cached token
+node dist/index.js logout    # removes the saved sign-in (token cache and key)
 ```
 
 ### Configuration
 
-| Variable                   | Default                       | Notes                                                                                                                       |
-| -------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `MICROSOFT_CLIENT_ID`      | — (required)                  | Your Entra app's Application (client) ID. The extension sets it from its settings.                                          |
-| `MICROSOFT_TENANT`         | `consumers`                   | Personal accounts only. `common` also allows work/school accounts (needs a multitenant registration).                       |
-| `DEFAULT_TIMEZONE`         | `Australia/Brisbane`          | IANA zone used when a call doesn't specify one ([#34](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/34)).     |
-| `LOG_LEVEL`                | `info`                        | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
-| `MICROSOFT_SCOPES`         | least-privilege set (spec §6) | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
-| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir            | Where the encrypted token cache lives.                                                                                      |
+| Variable                   | Default                                    | Notes                                                                                                                       |
+| -------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `MICROSOFT_CLIENT_ID`      | — (required)                               | Your Entra app's Application (client) ID. The extension sets it from its settings.                                          |
+| `MICROSOFT_TENANT`         | `consumers`                                | Personal accounts only. `common` also allows work/school accounts (needs a multitenant registration).                       |
+| `DEFAULT_TIMEZONE`         | This computer's time zone (UTC if unknown) | IANA zone used when a call doesn't specify one. An invalid name stops the server at startup.                                |
+| `LOG_LEVEL`                | `info`                                     | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
+| `MICROSOFT_SCOPES`         | least-privilege set (spec §6)              | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
+| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir                         | Where the encrypted token cache lives.                                                                                      |
 
 ## Usage example
 
