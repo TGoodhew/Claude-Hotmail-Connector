@@ -4,6 +4,7 @@ import {
   AuthError,
   ConfigError,
   GraphError,
+  SignInRequiredError,
   TimeoutError,
   ValidationError,
   clientSafeMessage,
@@ -22,10 +23,16 @@ describe("clientSafeMessage — client-facing redaction boundary", () => {
     expect(msg).not.toContain(upstream);
   });
 
-  it("maps AuthError to a re-authenticate prompt (not the raw reason)", () => {
-    expect(clientSafeMessage(new AuthError("invalid_grant: refresh token revoked"))).toBe(
-      "Microsoft sign-in is required or has expired. Please re-authenticate.",
-    );
+  it("maps AuthError to a sign-in prompt naming the login command (not the raw reason)", () => {
+    const msg = clientSafeMessage(new AuthError("invalid_grant: refresh token revoked"));
+    expect(msg).toContain("Microsoft sign-in is required or has expired.");
+    expect(msg).toContain("hotmail-connector.exe login");
+    expect(msg).not.toContain("invalid_grant");
+  });
+
+  it("returns a SignInRequiredError's user instructions verbatim", () => {
+    const instructions = "A Microsoft sign-in window has opened in your browser.";
+    expect(clientSafeMessage(new SignInRequiredError(instructions))).toBe(instructions);
   });
 
   it("maps TimeoutError to a retry prompt", () => {

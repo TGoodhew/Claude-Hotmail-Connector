@@ -72,6 +72,12 @@ export interface GraphClientDeps {
   logger?: Logger;
   maxRetries?: number;
   defaultTimeoutMs?: number;
+  /**
+   * Start the browser sign-in on demand when no valid token exists, waiting up
+   * to `waitMs` for it (see `GetAccessTokenOptions.interactiveWaitMs`). Omit for
+   * non-interactive use (CLI diagnostics): a missing sign-in is then an error.
+   */
+  interactiveSignIn?: { waitMs: number };
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -217,7 +223,8 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
 
     for (;;) {
       const token = await deps.auth.getAccessToken({
-        interactive: false,
+        interactive: deps.interactiveSignIn !== undefined,
+        ...(deps.interactiveSignIn ? { interactiveWaitMs: deps.interactiveSignIn.waitMs } : {}),
         // Force a refresh after a 401 (token may be revoked despite our clock).
         ...(refreshed ? { minTtlMs: Number.MAX_SAFE_INTEGER } : {}),
       });

@@ -41,6 +41,18 @@ export class AuthError extends AppError {
   }
 }
 
+/**
+ * The user must act in their browser before the call can succeed: an
+ * on-demand sign-in has been started, is still pending, or just failed. Its
+ * message is written for the user, contains nothing sensitive, and is returned
+ * to the client verbatim.
+ */
+export class SignInRequiredError extends AuthError {}
+
+/** How to sign in explicitly; shared by user-facing auth messages. */
+export const LOGIN_HINT =
+  'run `hotmail-connector.exe login` (or the Start-menu shortcut "Sign in to Hotmail Connector")';
+
 /** A Microsoft Graph request failed. Carries the HTTP status when known. */
 export class GraphError extends AppError {
   readonly status?: number;
@@ -75,8 +87,9 @@ export class TimeoutError extends AppError {
  * client. Never includes tokens, upstream error bodies, or stack traces.
  */
 export function clientSafeMessage(err: unknown): string {
-  if (err instanceof ValidationError) {
-    // Validation messages describe the caller's own input, so they are safe.
+  if (err instanceof ValidationError || err instanceof SignInRequiredError) {
+    // Validation messages describe the caller's own input, and sign-in
+    // messages are user instructions; both are safe to return as-is.
     return err.message;
   }
   if (err instanceof AppError) {
@@ -84,7 +97,7 @@ export function clientSafeMessage(err: unknown): string {
       case "CONFIG_ERROR":
         return "The connector is not configured correctly. Check the server logs.";
       case "AUTH_ERROR":
-        return "Microsoft sign-in is required or has expired. Please re-authenticate.";
+        return `Microsoft sign-in is required or has expired. To sign in, ${LOGIN_HINT}, then try again.`;
       case "GRAPH_ERROR":
         return "The request to Microsoft Graph could not be completed.";
       case "TIMEOUT_ERROR":

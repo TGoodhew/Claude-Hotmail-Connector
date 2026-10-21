@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
-import { AuthError } from "../util/errors.js";
+import { AuthError, SignInRequiredError } from "../util/errors.js";
 import {
   buildAuthorizeUrl,
   buildCodeExchangeBody,
@@ -9,6 +9,7 @@ import {
   createMicrosoftAuth,
   decodeIdTokenUsername,
   generatePkce,
+  SIGN_IN_RETRY_COOLDOWN_MS,
   toTokenSet,
   type TokenResponse,
 } from "./microsoft.js";
@@ -268,6 +269,94 @@ describe("createMicrosoftAuth.getAccessToken", () => {
     expect(clear).toHaveBeenCalledOnce();
     // getAccount() swallows the same load error and reports "no account".
     expect(await auth.getAccount()).toBeUndefined();
+  });
+});
+
+describe("on-demand interactive sign-in (real loopback listener)", () => {
+  const tokenReply = () =>
+    jsonResponse({ access_token: "INTERACTIVE-AT", refresh_token: "RT", expires_in: 3600 });
+
+  /** Act as the browser: follow the authorize URL's redirect back to the loopback listener. */
+  function redirectBack(authorizeUrl: string, params: Record<string, string>): Promise<Response> {
+    const u = new URL(authorizeUrl);
+    const redirect = new URL(u.searchParams.get("redirect_uri")!);
+    redirect.hostname = "127.0.0.1"; // the listener binds IPv4 loopback
+    const q = new URLSearchParams({ state: u.searchParams.get("state")!, ...params });
+    return fetch(`${redirect.origin}/?${q}`);
+  }
+
+  async function until(cond: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(cond()).toBe(true);
+  }
+
+  it("signs in and returns the new token when the user finishes within the wait", async () => {
+    const store = memoryStore(null);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      openBrowser: async (url) => {
+        void redirectBack(url, { code: "CODE" });
+      },
+      now: () => 1_000,
+    });
+    expect(await auth.getAccessToken({ interactiveWaitMs: 5_000 })).toBe("INTERACTIVE-AT");
+    expect(store.current?.refreshToken).toBe("RT");
+  });
+
+  it("asks the user to finish in the browser, joins the same attempt, then succeeds", async () => {
+    const store = memoryStore(null);
+    let authorizeUrl = "";
+    const openBrowser = vi.fn(async (url: string) => {
+      authorizeUrl = url;
+    });
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+
+    const first = auth.getAccessToken({ interactiveWaitMs: 20 });
+    await expect(first).rejects.toBeInstanceOf(SignInRequiredError);
+    await expect(first).rejects.toThrow(/sign-in window has opened/);
+    await expect(auth.getAccessToken({ interactiveWaitMs: 20 })).rejects.toThrow(/Still waiting/);
+    expect(openBrowser).toHaveBeenCalledOnce();
+
+    await redirectBack(authorizeUrl, { code: "CODE" });
+    await until(() => store.current !== null);
+    expect(await auth.getAccessToken({ interactiveWaitMs: 20 })).toBe("INTERACTIVE-AT");
+    expect(openBrowser).toHaveBeenCalledOnce();
+  });
+
+  it("cools down after a cancelled sign-in instead of reopening the browser", async () => {
+    let clock = 1_000;
+    const openBrowser = vi.fn(async (url: string) => {
+      void redirectBack(url, { error: "access_denied" });
+    });
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore(null),
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openBrowser,
+      now: () => clock,
+    });
+
+    await expect(auth.getAccessToken({ interactiveWaitMs: 5_000 })).rejects.toThrow(
+      /Authorization failed: access_denied/,
+    );
+    await expect(auth.getAccessToken({ interactiveWaitMs: 5_000 })).rejects.toThrow(
+      /didn't complete/,
+    );
+    expect(openBrowser).toHaveBeenCalledOnce();
+
+    clock += SIGN_IN_RETRY_COOLDOWN_MS + 1;
+    await expect(auth.getAccessToken({ interactiveWaitMs: 5_000 })).rejects.toThrow(
+      /access_denied/,
+    );
+    expect(openBrowser).toHaveBeenCalledTimes(2);
   });
 });
 
