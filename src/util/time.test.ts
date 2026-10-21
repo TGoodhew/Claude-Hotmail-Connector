@@ -6,6 +6,7 @@ import {
   normalizeLocalDateTime,
   preferTimeZoneHeader,
   toGraphDateTime,
+  utcToZonedWallClock,
   zonedWallClockToUtcIso,
 } from "./time.js";
 
@@ -94,8 +95,91 @@ describe("zonedWallClockToUtcIso — calendar window pinning", () => {
       "2026-01-20T17:00:00.000Z",
     );
   });
-  it("passes a date-only value through untouched", () => {
-    expect(zonedWallClockToUtcIso("2026-07-20", "Australia/Brisbane")).toBe("2026-07-20");
+  // #33: these shapes used to reach Graph unpinned, where they read as UTC and
+  // shifted a Brisbane window by 10 hours.
+  it("reads a date-only value as local midnight in the zone", () => {
+    expect(zonedWallClockToUtcIso("2026-07-20", "Australia/Brisbane")).toBe(
+      "2026-07-19T14:00:00.000Z",
+    );
+    // New York on the spring-forward day: midnight is still EST (UTC-5).
+    expect(zonedWallClockToUtcIso("2026-03-08", "America/New_York")).toBe(
+      "2026-03-08T05:00:00.000Z",
+    );
+  });
+  it("accepts fractional seconds and a space separator", () => {
+    for (const v of [
+      "2026-07-20T10:00:00.000",
+      "2026-07-20T10:00:00.0000000",
+      "2026-07-20 10:00",
+    ]) {
+      expect(zonedWallClockToUtcIso(v, "Australia/Brisbane")).toBe("2026-07-20T00:00:00.000Z");
+    }
+  });
+  it("keeps a nonzero fraction to the millisecond (Copilot review on #116)", () => {
+    expect(zonedWallClockToUtcIso("2026-07-20T10:00:00.1", "Australia/Brisbane")).toBe(
+      "2026-07-20T00:00:00.100Z",
+    );
+    expect(zonedWallClockToUtcIso("2026-07-20T10:00:00.9876543", "Australia/Brisbane")).toBe(
+      "2026-07-20T00:00:00.987Z",
+    );
+    // Across a DST change the fraction still lands on the right side of the second.
+    expect(zonedWallClockToUtcIso("2026-03-08T03:00:00.500", "America/New_York")).toBe(
+      "2026-03-08T07:00:00.500Z",
+    );
+  });
+  it("rejects anything else instead of passing it on", () => {
+    for (const v of ["next tuesday", "07/20/2026", "2026-07-20T25:00", "2026-02-30", "2026-07"]) {
+      expect(() => zonedWallClockToUtcIso(v, "Australia/Brisbane"), v).toThrow(ValidationError);
+    }
+    expect(() => zonedWallClockToUtcIso("2026-13-45T00:00Z", "UTC")).toThrow(ValidationError);
+  });
+});
+
+describe("normalizeLocalDateTime input shapes (#33)", () => {
+  it("accepts fractional seconds and a space separator, dropping the fraction", () => {
+    expect(normalizeLocalDateTime("2026-07-20T10:00:00.000")).toBe("2026-07-20T10:00:00");
+    expect(normalizeLocalDateTime("2026-07-20 10:00")).toBe("2026-07-20T10:00:00");
+  });
+  it("still needs a time for an event: a bare date is rejected", () => {
+    expect(() => normalizeLocalDateTime("2026-07-20")).toThrow(ValidationError);
+  });
+  it("keeps a four-digit year, leading zeros included (Copilot review on #116)", () => {
+    expect(normalizeLocalDateTime("0100-07-20T10:00:00")).toBe("0100-07-20T10:00:00");
+    // The normalised value parses again, as the ordering checks need.
+    expect(() => zonedWallClockToUtcIso("0100-07-20T10:00:00", "UTC")).not.toThrow();
+  });
+});
+
+describe("zonedWallClockToUtcIso around DST changes (Copilot review on #116)", () => {
+  it("maps a skipped midnight to the start of that local day, not the day before", () => {
+    // Santiago jumps 00:00 -> 01:00 on 2026-09-06 (UTC-4 -> UTC-3); the day starts at 04:00Z.
+    expect(zonedWallClockToUtcIso("2026-09-06", "America/Santiago")).toBe(
+      "2026-09-06T04:00:00.000Z",
+    );
+    // A time inside the gap moves forward by the gap, like the clocks.
+    expect(zonedWallClockToUtcIso("2026-09-06T00:30", "America/Santiago")).toBe(
+      "2026-09-06T04:30:00.000Z",
+    );
+    // Havana and Beirut skip midnight too.
+    expect(zonedWallClockToUtcIso("2026-03-08", "America/Havana")).toBe("2026-03-08T05:00:00.000Z");
+    expect(zonedWallClockToUtcIso("2026-03-29", "Asia/Beirut")).toBe("2026-03-28T22:00:00.000Z");
+  });
+  it("takes the earlier instant for a time that occurs twice", () => {
+    // New York repeats 01:00-02:00 on 2026-11-01; 01:30 EDT is 05:30Z.
+    expect(zonedWallClockToUtcIso("2026-11-01T01:30", "America/New_York")).toBe(
+      "2026-11-01T05:30:00.000Z",
+    );
+  });
+  it("is exact either side of a change", () => {
+    expect(zonedWallClockToUtcIso("2026-09-05T23:59", "America/Santiago")).toBe(
+      "2026-09-06T03:59:00.000Z",
+    );
+    expect(zonedWallClockToUtcIso("2026-09-06T01:00", "America/Santiago")).toBe(
+      "2026-09-06T04:00:00.000Z",
+    );
+    expect(zonedWallClockToUtcIso("2026-11-01T02:00", "America/New_York")).toBe(
+      "2026-11-01T07:00:00.000Z",
+    );
   });
 });
 
@@ -107,5 +191,15 @@ describe("preferTimeZoneHeader", () => {
   });
   it("rejects an unknown zone", () => {
     expect(() => preferTimeZoneHeader("Nope/Nope")).toThrow(ValidationError);
+  });
+});
+
+describe("utcToZonedWallClock", () => {
+  it("renders an instant as local wall-clock time, in Graph's form", () => {
+    const at = Date.parse("2026-11-01T06:30:00.250Z"); // the second 01:30 in New York
+    expect(utcToZonedWallClock(at, "America/New_York")).toBe("2026-11-01T01:30:00.2500000");
+    expect(utcToZonedWallClock(Date.parse("2026-07-20T00:00:00Z"), "Australia/Brisbane")).toBe(
+      "2026-07-20T10:00:00.0000000",
+    );
   });
 });
