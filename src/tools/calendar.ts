@@ -138,8 +138,9 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
   title: "Update a calendar event",
   description:
     "Update an existing calendar event's time, location, subject, or body. Only the fields you " +
-    "provide are changed. Times use LOCAL wall-clock + IANA time zone. Confirm changes with the " +
-    "user before calling.",
+    "provide are changed, and they are OVERWRITTEN in place (Outlook keeps no history). Times use " +
+    "LOCAL wall-clock + IANA time zone. IMPORTANT: confirm the change with the user BEFORE " +
+    "calling. The result lists each changed field's before and after value; show it to the user.",
   inputShape: updateEventShape,
   annotations: {
     readOnlyHint: false,
@@ -150,7 +151,7 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
   },
   scopesAnyOf: ["Calendars.ReadWrite"],
   async handler(input, ctx) {
-    const result = await updateEvent(ctx.graph, {
+    const { event, changes } = await updateEvent(ctx.graph, {
       id: input.id,
       subject: input.subject,
       start: input.start ? resolveTime(input.start, ctx) : undefined,
@@ -160,7 +161,12 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
       isReminderOn: input.isReminderOn,
       reminderMinutesBeforeStart: input.reminderMinutesBeforeStart,
     });
-    return toolResult(`Updated event "${result.subject ?? input.id}".`, { event: result });
+    const fields = changes.map((c) => c.field).join(", ");
+    return toolResult(
+      `Updated event "${event.subject ?? input.id}" (changed: ${fields}). ` +
+        "Previous and new values are in `changes`.",
+      { event, changes },
+    );
   },
 });
 

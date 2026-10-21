@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { ValidationError } from "../util/errors.js";
+import { htmlToText } from "../util/html.js";
 import {
   assertValidTimeZone,
   preferTimeZoneHeader,
@@ -49,6 +50,9 @@ interface GraphEvent {
   location?: { displayName?: string };
   isAllDay?: boolean;
   webLink?: string;
+  body?: { contentType?: string; content?: string };
+  isReminderOn?: boolean;
+  reminderMinutesBeforeStart?: number;
 }
 
 function shapeTime(t?: { dateTime?: string; timeZone?: string }): EventTime | null {
@@ -215,11 +219,74 @@ export async function createEvent(
   return shapeWrite(created, transactionId);
 }
 
-/** Update an existing event with a partial patch (only provided fields). */
+/** Fields `update_event` can change, in the order changes are reported. */
+const UPDATABLE_FIELDS = [
+  "subject",
+  "start",
+  "end",
+  "location",
+  "body",
+  "isReminderOn",
+  "reminderMinutesBeforeStart",
+] as const;
+type UpdatableField = (typeof UPDATABLE_FIELDS)[number];
+
+/** Long bodies are cut to this many characters in a change report. */
+const BODY_CHANGE_MAX_CHARS = 500;
+
+/** One overwritten field: its value before and after the PATCH. */
+export interface FieldChange {
+  field: UpdatableField;
+  before: unknown;
+  after: unknown;
+}
+
+export interface EventUpdateResult {
+  event: EventWriteResult;
+  /** Before/after values of each field the update set (Outlook keeps no history). */
+  changes: FieldChange[];
+}
+
+function bodyText(body: GraphEvent["body"]): string | null {
+  if (!body?.content) return null;
+  const text = (
+    body.contentType?.toLowerCase() === "html" ? htmlToText(body.content) : body.content
+  ).trim();
+  return text.length > BODY_CHANGE_MAX_CHARS ? `${text.slice(0, BODY_CHANGE_MAX_CHARS)}…` : text;
+}
+
+function fieldValue(e: GraphEvent, field: UpdatableField): unknown {
+  switch (field) {
+    case "subject":
+      return e.subject ?? null;
+    case "start":
+      return shapeTime(e.start);
+    case "end":
+      return shapeTime(e.end);
+    case "location":
+      return e.location?.displayName ?? null;
+    case "body":
+      return bodyText(e.body);
+    case "isReminderOn":
+      return e.isReminderOn ?? null;
+    case "reminderMinutesBeforeStart":
+      return e.reminderMinutesBeforeStart ?? null;
+  }
+}
+
+/**
+ * Update an existing event with a partial patch (only provided fields).
+ *
+ * `update_event` overwrites in place with no undo, so the current values of the
+ * fields being changed are read first and reported alongside the new ones.
+ * Both requests use the same `Prefer: outlook.timezone` (the zone of the new
+ * start/end), so before/after times are directly comparable. Reading first also
+ * means a stale id fails before anything is written.
+ */
 export async function updateEvent(
   graph: GraphClient,
   input: UpdateEventInput,
-): Promise<EventWriteResult> {
+): Promise<EventUpdateResult> {
   const patch: Record<string, unknown> = {};
   if (input.subject !== undefined) patch.subject = input.subject;
   if (input.start) patch.start = toGraphDateTime(input.start.dateTime, input.start.timeZone);
@@ -233,9 +300,24 @@ export async function updateEvent(
   if (Object.keys(patch).length === 0) {
     throw new ValidationError("update_event requires at least one field to change.");
   }
-  const updated = await graph.patch<GraphEvent>(
-    `/me/events/${encodeURIComponent(input.id)}`,
-    patch,
-  );
-  return shapeWrite(updated);
+
+  const fields = UPDATABLE_FIELDS.filter((f) => f in patch);
+  const zone = input.start?.timeZone ?? input.end?.timeZone;
+  const headers = zone ? { prefer: preferTimeZoneHeader(zone) } : undefined;
+  const path = `/me/events/${encodeURIComponent(input.id)}`;
+
+  const before = await graph.get<GraphEvent>(path, {
+    query: { $select: ["id", ...fields].join(",") },
+    headers,
+  });
+  const updated = await graph.patch<GraphEvent>(path, patch, { headers });
+
+  return {
+    event: shapeWrite(updated),
+    changes: fields.map((field) => ({
+      field,
+      before: fieldValue(before, field),
+      after: fieldValue(updated, field),
+    })),
+  };
 }

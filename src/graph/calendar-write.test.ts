@@ -5,9 +5,12 @@ import { createEvent, updateEvent } from "./calendar.js";
 
 type PostMock = (path: string, body: unknown, opts?: unknown) => Promise<unknown>;
 type PatchMock = (path: string, body: unknown, opts?: unknown) => Promise<unknown>;
+type GetMock = (path: string, opts?: unknown) => Promise<unknown>;
+type ReqOpts = { query: Record<string, string>; headers?: Record<string, string> };
 
-function graphWith(fns: { post?: PostMock; patch?: PatchMock }): GraphClient {
-  return fns as unknown as GraphClient;
+function graphWith(fns: { post?: PostMock; patch?: PatchMock; get?: GetMock }): GraphClient {
+  // update_event reads the current values first; default to an empty event.
+  return { get: async () => ({ id: "evt-1" }), ...fns } as unknown as GraphClient;
 }
 
 const createdReply = {
@@ -104,5 +107,76 @@ describe("updateEvent", () => {
     await expect(updateEvent(graphWith({ patch }), { id: "evt-1" })).rejects.toBeInstanceOf(
       ValidationError,
     );
+  });
+
+  it("reads the changed fields first and reports before/after values", async () => {
+    const get = vi.fn<GetMock>(async () => ({
+      id: "evt-1",
+      subject: "Old title",
+      start: { dateTime: "2026-07-20T10:00:00.0000000", timeZone: "Australia/Brisbane" },
+    }));
+    const patch = vi.fn<PatchMock>(async () => ({
+      id: "evt-1",
+      subject: "New title",
+      start: { dateTime: "2026-07-20T12:00:00.0000000", timeZone: "Australia/Brisbane" },
+    }));
+    const res = await updateEvent(graphWith({ get, patch }), {
+      id: "evt-1",
+      subject: "New title",
+      start: { dateTime: "2026-07-20T12:00:00", timeZone: "Australia/Brisbane" },
+    });
+
+    const [getPath, getOpts] = get.mock.calls[0]! as [string, ReqOpts];
+    expect(getPath).toBe("/me/events/evt-1");
+    expect(getOpts.query.$select).toBe("id,subject,start");
+    // Same zone on both requests, so before/after times are comparable.
+    expect(getOpts.headers?.prefer).toBe('outlook.timezone="Australia/Brisbane"');
+    expect((patch.mock.calls[0]![2] as ReqOpts).headers).toEqual(getOpts.headers);
+
+    expect(res.changes).toEqual([
+      { field: "subject", before: "Old title", after: "New title" },
+      {
+        field: "start",
+        before: { dateTime: "2026-07-20T10:00:00.0000000", timeZone: "Australia/Brisbane" },
+        after: { dateTime: "2026-07-20T12:00:00.0000000", timeZone: "Australia/Brisbane" },
+      },
+    ]);
+    expect(res.event.subject).toBe("New title");
+  });
+
+  it("sends no Prefer header when no time changes", async () => {
+    const get = vi.fn<GetMock>(async () => ({ id: "evt-1", location: { displayName: "A" } }));
+    const patch = vi.fn<PatchMock>(async () => ({ id: "evt-1", location: { displayName: "B" } }));
+    const res = await updateEvent(graphWith({ get, patch }), { id: "evt-1", location: "B" });
+    expect((get.mock.calls[0]![1] as ReqOpts).headers).toBeUndefined();
+    expect(res.changes).toEqual([{ field: "location", before: "A", after: "B" }]);
+  });
+
+  it("reports bodies as plain text, truncating long ones", async () => {
+    const get = vi.fn<GetMock>(async () => ({
+      id: "evt-1",
+      body: { contentType: "html", content: "<p>Old <b>notes</b></p>" },
+    }));
+    const patch = vi.fn<PatchMock>(async () => ({
+      id: "evt-1",
+      body: { contentType: "text", content: "x".repeat(600) },
+    }));
+    const res = await updateEvent(graphWith({ get, patch }), {
+      id: "evt-1",
+      body: "x".repeat(600),
+    });
+    expect(res.changes[0]!.before).toBe("Old notes");
+    expect(res.changes[0]!.after).toBe(`${"x".repeat(500)}…`);
+  });
+
+  it("does not PATCH when the event can't be read (e.g. a stale id)", async () => {
+    const get = vi.fn<GetMock>(async () => {
+      throw new Error("404");
+    });
+    const patch = vi.fn<PatchMock>();
+    await expect(
+      updateEvent(graphWith({ get, patch }), { id: "gone", subject: "x" }),
+    ).rejects.toThrow("404");
+    expect(patch).not.toHaveBeenCalled();
   });
 });
