@@ -216,7 +216,8 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
   const write = (s: string) => {
     if (owed > 0) out.push(owed > 1 ? "\n\n" : "\n");
     owed = 0;
-    if (s !== "") cellEmpty = false;
+    // Indentation or padding before a cell's first content doesn't count as content.
+    if (!ONLY_SPACE_RE.test(s.replace(INVISIBLE_PADDING_RE, ""))) cellEmpty = false;
     out.push(s);
   };
   const endPre = (parts: string[]) => {

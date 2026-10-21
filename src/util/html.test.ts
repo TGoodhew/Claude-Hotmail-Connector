@@ -205,6 +205,10 @@ describe("htmlToText structure (#32)", () => {
     expect(row("<td><pre>Total</pre></td><td>240</td>")).toBe("Total\t240");
     expect(row("<td>Total</td><td><pre>240</pre></td>")).toBe("Total\t240");
     expect(row("<td></td><td><pre>x</pre></td>")).toBe("\tx");
+    // Indentation or padding before the <pre> isn't content (Copilot review on #109).
+    expect(row("<td>Total</td><td>\n  <pre>240</pre></td>")).toBe("Total\t240");
+    expect(row("<td>Total</td><td>&nbsp;<pre>240</pre></td>")).toBe("Total\t240");
+    expect(row("<td>Total</td><td>&zwnj;&shy; <pre>240</pre></td>")).toBe("Total\t240");
     // Its own spacing and line breaks, and content around it in the cell, stay.
     expect(row("<td>A<pre>  b\n  c</pre>D</td><td>E</td>")).toBe("A\n  b\n  c\nD\tE");
   });
