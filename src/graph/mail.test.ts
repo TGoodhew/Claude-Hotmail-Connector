@@ -273,6 +273,16 @@ describe("getMessage", () => {
     await getMessage(graphWith(undefined, get), { id: "AA=BB/CC", format: "text" });
     expect(get.mock.calls[0]![0]).toContain(encodeURIComponent("AA=BB/CC"));
   });
+
+  it("reads a message with a malformed numeric entity instead of failing (#32)", async () => {
+    const get = vi.fn(async () => ({
+      id: "m3",
+      hasAttachments: false,
+      body: { contentType: "html", content: "<p>Total&#99999999; &euro;240</p>" },
+    }));
+    const msg = await getMessage(graphWith(undefined, get), { id: "m3", format: "text" });
+    expect(msg.body.content).toBe("Total� €240");
+  });
 });
 
 describe("body size cap (#38)", () => {
