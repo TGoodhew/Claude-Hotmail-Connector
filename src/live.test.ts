@@ -70,9 +70,10 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
       try {
         const first = await createEvent(g, input);
         created.push(first.id);
-        // The wall-clock time is preserved, not shifted to UTC.
-        expect(first.start?.dateTime?.startsWith("2031-01-15T09:30")).toBe(true);
 
+        // The wall-clock time is preserved, not shifted to UTC. The create
+        // response's zone isn't requested, so this is checked through a listing
+        // rendered in Sydney time.
         const listed = await listEvents(g, {
           startDateTime: "2031-01-15",
           endDateTime: "2031-01-16",
