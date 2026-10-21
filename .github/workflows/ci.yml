@@ -21,6 +21,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Runtime dependencies end up in the shipped .mcpb bundle: fail on any
+      # high/critical advisory there. (Dev-only tooling is tracked separately.)
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Typecheck
         run: npm run typecheck
 
