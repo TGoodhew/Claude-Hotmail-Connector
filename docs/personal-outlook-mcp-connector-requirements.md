@@ -332,7 +332,7 @@ signed in to that tenant. Registration settings:
 |---|---|---|
 | `MICROSOFT_CLIENT_ID` | the id saved by `setup` (§8.1) | The user's Entra app client id; required if none is saved. |
 | `MICROSOFT_TENANT` | `consumers` | Personal accounts only; `common` with a multitenant registration (§8.1). |
-| `DEFAULT_TIMEZONE` | `Australia/Brisbane` | Under review (§9.5, #34). MUST be validated at startup. |
+| `DEFAULT_TIMEZONE` | The system's IANA zone, else `UTC` | Validated at startup (§9.5, #34). |
 | `MICROSOFT_SCOPES` | §6 default set | Narrowing only (§6). |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir | Token cache location. |
@@ -435,8 +435,9 @@ cancellation guards are covered by unit tests (#61, #55).
 
 ### 9.5 Timezone & locale
 - Calendar reads send `Prefer: outlook.timezone`. Writes pass local wall-clock + IANA `timeZone`.
-- The default zone is currently `Australia/Brisbane` (UTC+10, no DST). Under review: default to the
-  system zone and validate at startup *(→ #34)*.
+- The default zone is the computer's own IANA zone (`UTC` if the runtime can't report one), unless
+  `DEFAULT_TIMEZONE` names another. An invalid `DEFAULT_TIMEZONE` is a startup `ConfigError`, not a
+  failure on every calendar call *(#34)*.
 - Tests MUST cover a **DST zone** (e.g. `Australia/Sydney`, `America/New_York`) across transitions,
   because Brisbane has no DST and cannot catch those bugs *(→ #64)*.
 
