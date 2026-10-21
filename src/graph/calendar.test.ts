@@ -73,4 +73,27 @@ describe("listEvents", () => {
       listEvents(graphWith(getAllPages), { ...validRange, startDateTime: "nope" }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
+
+  it("pins a date-only window to the zone's midnights (#33)", async () => {
+    const getAllPages = vi.fn<GetAllPagesMock>(async () => []);
+    await listEvents(graphWith(getAllPages), {
+      ...validRange,
+      startDateTime: "2026-07-20",
+      endDateTime: "2026-07-21",
+    });
+    expect(getAllPages.mock.calls[0]![1]?.query).toMatchObject({
+      startDateTime: "2026-07-19T14:00:00.000Z",
+      endDateTime: "2026-07-20T14:00:00.000Z",
+    });
+  });
+
+  it("rejects a window that ends at or before it starts, without calling Graph (#33)", async () => {
+    const getAllPages = vi.fn<GetAllPagesMock>(async () => []);
+    for (const endDateTime of ["2026-07-19T23:00:00+10:00", validRange.startDateTime]) {
+      await expect(
+        listEvents(graphWith(getAllPages), { ...validRange, endDateTime }),
+      ).rejects.toThrow(/endDateTime must be after startDateTime/);
+    }
+    expect(getAllPages).not.toHaveBeenCalled();
+  });
 });

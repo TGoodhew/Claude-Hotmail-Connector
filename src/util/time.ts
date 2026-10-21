@@ -19,7 +19,10 @@ export interface GraphDateTime {
   timeZone: string;
 }
 
-const LOCAL_DT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+// `YYYY-MM-DDTHH:mm[:ss[.fraction]]`, with `T` or a space between date and time
+// (models write both; Graph returns seven fractional digits).
+const LOCAL_DT_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?$/;
+const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const HAS_ZULU_RE = /[zZ]$/;
 const HAS_OFFSET_RE = /[+-]\d{2}:?\d{2}$/;
 
@@ -83,27 +86,48 @@ export function normalizeLocalDateTime(input: string): string {
         `pair it with an IANA timeZone instead (e.g. "2026-07-20T12:00:00" + "Australia/Brisbane").`,
     );
   }
-  const m = LOCAL_DT_RE.exec(s);
+  const { y, mo, d, h, mi, se } = parseLocal(s, input, false);
+  const p2 = (n: number): string => String(n).padStart(2, "0");
+  return `${y}-${p2(mo)}-${p2(d)}T${p2(h)}:${p2(mi)}:${p2(se)}`;
+}
+
+interface LocalParts {
+  y: number;
+  mo: number;
+  d: number;
+  h: number;
+  mi: number;
+  se: number;
+}
+
+/**
+ * Parse and range-check a bare local date/time (fractional seconds dropped).
+ * With `allowDateOnly`, `YYYY-MM-DD` means midnight that day. Anything else is
+ * a {@link ValidationError}, never passed on for Graph to read as UTC (#33).
+ */
+function parseLocal(s: string, input: string, allowDateOnly: boolean): LocalParts {
+  const m = LOCAL_DT_RE.exec(s) ?? (allowDateOnly ? DATE_ONLY_RE.exec(s) : null);
   if (!m) {
     throw new ValidationError(
-      `Invalid local dateTime "${input}"; expected "YYYY-MM-DDTHH:mm" or "YYYY-MM-DDTHH:mm:ss".`,
+      `Invalid local dateTime "${input}"; expected "YYYY-MM-DDTHH:mm" or "YYYY-MM-DDTHH:mm:ss"` +
+        (allowDateOnly ? ', or a date "YYYY-MM-DD" for midnight.' : "."),
     );
   }
-  const [, y, mo, d, h, mi, se] = m;
-  const yy = Number(y);
-  const moo = Number(mo);
-  const dd = Number(d);
-  const hh = Number(h);
-  const mii = Number(mi);
-  const sss = se ? Number(se) : 0;
-  if (moo < 1 || moo > 12) throw new ValidationError(`Month out of range in "${input}".`);
-  if (dd < 1 || dd > 31) throw new ValidationError(`Day out of range in "${input}".`);
-  if (hh > 23) throw new ValidationError(`Hour out of range in "${input}".`);
-  if (mii > 59) throw new ValidationError(`Minute out of range in "${input}".`);
-  if (sss > 59) throw new ValidationError(`Second out of range in "${input}".`);
-  assertRealCalendarDate(yy, moo, dd, hh, mii, sss, input);
-  const p2 = (n: number): string => String(n).padStart(2, "0");
-  return `${y}-${mo}-${d}T${p2(hh)}:${p2(mii)}:${p2(sss)}`;
+  const [y, mo, d, h, mi, se] = [1, 2, 3, 4, 5, 6].map((i) => Number(m[i] ?? 0)) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  if (mo < 1 || mo > 12) throw new ValidationError(`Month out of range in "${input}".`);
+  if (d < 1 || d > 31) throw new ValidationError(`Day out of range in "${input}".`);
+  if (h > 23) throw new ValidationError(`Hour out of range in "${input}".`);
+  if (mi > 59) throw new ValidationError(`Minute out of range in "${input}".`);
+  if (se > 59) throw new ValidationError(`Second out of range in "${input}".`);
+  assertRealCalendarDate(y, mo, d, h, mi, se, input);
+  return { y, mo, d, h, mi, se };
 }
 
 /**
@@ -152,24 +176,22 @@ function tzOffsetMs(utcMs: number, timeZone: string): number {
  * the corresponding UTC instant as an ISO string (`...Z`).
  *
  * Used to pin a calendar query window so the queried range matches the zone the
- * results are rendered in. If the input already carries an offset/`Z` it is
- * returned unchanged; anything that isn't a bare `YYYY-MM-DDTHH:mm[:ss]` (e.g. a
- * date-only value) is passed through untouched for Graph to interpret.
+ * results are rendered in, and to compare start and end. A value that already
+ * carries an offset/`Z` is returned unchanged (once it parses). A date-only
+ * value means local midnight. Anything else is a {@link ValidationError}: passed
+ * through, Graph would read it as UTC and shift the window (#33).
  */
 export function zonedWallClockToUtcIso(dateTime: string, timeZone: string): string {
   const s = dateTime.trim();
-  if (hasExplicitOffset(s)) return s;
-  const m = LOCAL_DT_RE.exec(s);
-  if (!m) return dateTime;
+  if (hasExplicitOffset(s)) {
+    if (Number.isNaN(Date.parse(s))) {
+      throw new ValidationError(`Invalid date/time "${dateTime}".`);
+    }
+    return s;
+  }
   assertValidTimeZone(timeZone);
-  const asUtc = Date.UTC(
-    Number(m[1]),
-    Number(m[2]) - 1,
-    Number(m[3]),
-    Number(m[4]),
-    Number(m[5]),
-    m[6] ? Number(m[6]) : 0,
-  );
+  const p = parseLocal(s, dateTime, true);
+  const asUtc = Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.se);
   let offset = tzOffsetMs(asUtc, timeZone);
   // Refine once so DST boundaries (where the offset differs at the corrected
   // instant) resolve to the correct UTC time.

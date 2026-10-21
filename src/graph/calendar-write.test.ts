@@ -89,6 +89,54 @@ describe("createEvent", () => {
   });
 });
 
+describe("end after start (#33)", () => {
+  const brisbane = (dateTime: string) => ({ dateTime, timeZone: "Australia/Brisbane" });
+
+  it("create_event refuses an end at or before the start, comparing instants", async () => {
+    const post = vi.fn<PostMock>(async () => createdReply);
+    for (const end of ["2026-07-20T09:00:00", "2026-07-20T10:00:00"]) {
+      await expect(
+        createEvent(graphWith({ post }), {
+          subject: "x",
+          start: brisbane("2026-07-20T10:00:00"),
+          end: brisbane(end),
+        }),
+      ).rejects.toThrow(/end must be after its start/);
+    }
+    expect(post).not.toHaveBeenCalled();
+    // An earlier wall-clock end in a zone further east can still be later.
+    await createEvent(graphWith({ post }), {
+      subject: "flight",
+      start: brisbane("2026-07-20T10:00:00"), // 00:00Z
+      end: { dateTime: "2026-07-20T09:30:00", timeZone: "Asia/Tokyo" }, // 00:30Z
+    });
+    expect(post).toHaveBeenCalledOnce();
+  });
+
+  it("update_event checks a new start against the event's current end, before writing", async () => {
+    const get = vi.fn<GetMock>(async () => ({
+      id: "evt-1",
+      "@odata.etag": 'W/"t1"',
+      start: { dateTime: "2026-07-20T10:00:00.0000000", timeZone: "Australia/Brisbane" },
+      end: { dateTime: "2026-07-20T11:00:00.0000000", timeZone: "Australia/Brisbane" },
+    }));
+    const patch = vi.fn<PatchMock>(async () => ({ id: "evt-1" }));
+    await expect(
+      updateEvent(graphWith({ get, patch }), { id: "evt-1", start: brisbane("2026-07-20T11:30") }),
+    ).rejects.toThrow(/would end at or before it starts/);
+    await expect(
+      updateEvent(graphWith({ get, patch }), { id: "evt-1", end: brisbane("2026-07-20T09:00") }),
+    ).rejects.toThrow(/would end at or before it starts/);
+    expect(patch).not.toHaveBeenCalled();
+
+    await updateEvent(graphWith({ get, patch }), {
+      id: "evt-1",
+      start: brisbane("2026-07-20T10:30"),
+    });
+    expect(patch).toHaveBeenCalledOnce();
+  });
+});
+
 describe("updateEvent", () => {
   it("builds a partial patch with only provided fields", async () => {
     const patch = vi.fn<PatchMock>(async () => ({ id: "evt-1", subject: "New title" }));
@@ -138,7 +186,8 @@ describe("updateEvent", () => {
 
     const [getPath, getOpts] = get.mock.calls[0]! as [string, ReqOpts];
     expect(getPath).toBe("/me/events/evt-1");
-    expect(getOpts.query.$select).toBe("id,attendees,subject,start");
+    // end too: the new start is checked against the current end (#33).
+    expect(getOpts.query.$select).toBe("id,attendees,subject,start,end");
     // Same zone on both requests, so before/after times are comparable.
     expect(getOpts.headers?.prefer).toBe('outlook.timezone="Australia/Brisbane"');
     expect((patch.mock.calls[0]![2] as ReqOpts).headers).toEqual({

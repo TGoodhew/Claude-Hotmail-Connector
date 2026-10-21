@@ -94,8 +94,41 @@ describe("zonedWallClockToUtcIso — calendar window pinning", () => {
       "2026-01-20T17:00:00.000Z",
     );
   });
-  it("passes a date-only value through untouched", () => {
-    expect(zonedWallClockToUtcIso("2026-07-20", "Australia/Brisbane")).toBe("2026-07-20");
+  // #33: these shapes used to reach Graph unpinned, where they read as UTC and
+  // shifted a Brisbane window by 10 hours.
+  it("reads a date-only value as local midnight in the zone", () => {
+    expect(zonedWallClockToUtcIso("2026-07-20", "Australia/Brisbane")).toBe(
+      "2026-07-19T14:00:00.000Z",
+    );
+    // New York on the spring-forward day: midnight is still EST (UTC-5).
+    expect(zonedWallClockToUtcIso("2026-03-08", "America/New_York")).toBe(
+      "2026-03-08T05:00:00.000Z",
+    );
+  });
+  it("accepts fractional seconds and a space separator", () => {
+    for (const v of [
+      "2026-07-20T10:00:00.000",
+      "2026-07-20T10:00:00.0000000",
+      "2026-07-20 10:00",
+    ]) {
+      expect(zonedWallClockToUtcIso(v, "Australia/Brisbane")).toBe("2026-07-20T00:00:00.000Z");
+    }
+  });
+  it("rejects anything else instead of passing it on", () => {
+    for (const v of ["next tuesday", "07/20/2026", "2026-07-20T25:00", "2026-02-30", "2026-07"]) {
+      expect(() => zonedWallClockToUtcIso(v, "Australia/Brisbane"), v).toThrow(ValidationError);
+    }
+    expect(() => zonedWallClockToUtcIso("2026-13-45T00:00Z", "UTC")).toThrow(ValidationError);
+  });
+});
+
+describe("normalizeLocalDateTime input shapes (#33)", () => {
+  it("accepts fractional seconds and a space separator, dropping the fraction", () => {
+    expect(normalizeLocalDateTime("2026-07-20T10:00:00.000")).toBe("2026-07-20T10:00:00");
+    expect(normalizeLocalDateTime("2026-07-20 10:00")).toBe("2026-07-20T10:00:00");
+  });
+  it("still needs a time for an event: a bare date is rejected", () => {
+    expect(() => normalizeLocalDateTime("2026-07-20")).toThrow(ValidationError);
   });
 });
 
