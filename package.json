@@ -21,6 +21,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:live": "node scripts/test-live.mjs",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",

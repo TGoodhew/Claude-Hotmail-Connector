@@ -1,0 +1,109 @@
+/**
+ * Opt-in live test against the real Microsoft Graph (spec v2 §13, #48).
+ *
+ * Skipped unless HOTMAIL_LIVE_TESTS=1, so CI never runs it. To run it from a
+ * source checkout with your own app registration (see the README):
+ *
+ *   node dist/index.js login      # once: signs in and caches tokens
+ *   npm run test:live
+ *
+ * It reads a little mail (read-only), then creates one throwaway event far in
+ * the future in a DST zone, checks its local time survived the round trip,
+ * repeats the create with the same transactionId to see how Graph answers, and
+ * cancels the event (moved to Deleted Items) whatever happens. It never opens
+ * a browser: with no cached sign-in it fails and asks you to run `login`.
+ */
+
+import { describe, expect, it } from "vitest";
+import { createMicrosoftAuth } from "./auth/microsoft.js";
+import { defaultKeyProtector } from "./auth/protect.js";
+import { createFileTokenStore } from "./auth/tokens.js";
+import { getConfig } from "./config.js";
+import { cancelEvent, createEvent, listEvents } from "./graph/calendar.js";
+import { createGraphClient } from "./graph/client.js";
+import { getMessage, listMessages } from "./graph/mail.js";
+import { whoami } from "./graph/user.js";
+
+const LIVE = process.env.HOTMAIL_LIVE_TESTS === "1";
+
+describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
+  const config = LIVE ? getConfig() : undefined;
+  const graph = () => {
+    const store = createFileTokenStore(config!.tokenCacheFile, {
+      protector: defaultKeyProtector(),
+    });
+    const auth = createMicrosoftAuth({ config: config!, store });
+    return createGraphClient({ auth, baseUrl: config!.graphBaseUrl }); // non-interactive
+  };
+
+  it("reads the signed-in account and some mail", { timeout: 60_000 }, async () => {
+    const g = graph();
+    const me = await whoami(g);
+    expect(me.mail ?? me.userPrincipalName).toBeTruthy();
+
+    const { messages } = await listMessages(g, { limit: 3 });
+    if (messages.length > 0) {
+      const msg = await getMessage(g, { id: messages[0]!.id, format: "text" });
+      expect(msg.id).toBe(messages[0]!.id);
+      expect(msg.body.contentType).toBe("text");
+    }
+  });
+
+  it(
+    "creates an event at the intended local time, de-duplicates by transactionId, and cleans up",
+    { timeout: 120_000 },
+    async () => {
+      const g = graph();
+      const timeZone = "Australia/Sydney"; // a DST zone (#64)
+      const stamp = new Date()
+        .toISOString()
+        .replace(/[^0-9]/g, "")
+        .slice(0, 14);
+      const subject = `Hotmail Connector live test ${stamp}`;
+      const input = {
+        subject,
+        start: { dateTime: "2031-01-15T09:30:00", timeZone },
+        end: { dateTime: "2031-01-15T10:15:00", timeZone },
+        transactionId: `live-${stamp}`,
+      };
+      const created: string[] = [];
+      try {
+        const first = await createEvent(g, input);
+        created.push(first.id);
+        // The wall-clock time is preserved, not shifted to UTC.
+        expect(first.start?.dateTime?.startsWith("2031-01-15T09:30")).toBe(true);
+
+        const listed = await listEvents(g, {
+          startDateTime: "2031-01-15",
+          endDateTime: "2031-01-16",
+          timeZone,
+          limit: 50,
+        });
+        const found = listed.find((e) => e.id === first.id);
+        expect(found?.start?.dateTime?.startsWith("2031-01-15T09:30")).toBe(true);
+        expect(found?.end?.dateTime?.startsWith("2031-01-15T10:15")).toBe(true);
+
+        // How Graph answers a repeat of the same transactionId (#48, D7).
+        let repeat: string;
+        try {
+          const second = await createEvent(g, input);
+          if (second.id !== first.id) created.push(second.id);
+          repeat = second.id === first.id ? "returned the same event" : "created a second event";
+        } catch (e) {
+          repeat = `failed: ${e instanceof Error ? e.message : String(e)}`;
+        }
+        console.log(`[live] Repeating a create with the same transactionId ${repeat}.`);
+        expect(repeat).toBe("returned the same event");
+      } finally {
+        for (const id of created) {
+          await cancelEvent(g, { id, confirmSubject: subject, timeZone }).catch((e: unknown) =>
+            console.warn(
+              `[live] Couldn't remove test event ${id}; delete "${subject}" by hand.`,
+              e,
+            ),
+          );
+        }
+      }
+    },
+  );
+});
