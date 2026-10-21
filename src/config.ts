@@ -8,15 +8,40 @@
  * can be unit-tested without mutating `process.env`.
  */
 
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
 import { ConfigError } from "./util/errors.js";
 
-// Seed process.env from a local .env if present. Real environment wins.
+/**
+ * Where a development `.env` may live: the root of the connector's own checkout
+ * (the parent of the folder holding the entry script, e.g. `<repo>/dist/index.js`
+ * → `<repo>/.env`). It is deliberately **not** the current directory: Claude
+ * Code launches MCP servers inside project folders, and a project's `.env` must
+ * not be able to swap our client id, tenant, scopes or cache dir (#41, spec v2
+ * §8.4). Extension installs have no `.env`.
+ *
+ * Symlinks are resolved first: Node keeps a symlinked entry script's own path in
+ * `process.argv[1]`, so `project/bin/x.js -> <repo>/dist/index.js` would
+ * otherwise point at `project/.env`.
+ */
+export function dotenvPath(entryScript: string | undefined): string | undefined {
+  if (!entryScript) return undefined;
+  let script = resolve(entryScript);
+  try {
+    script = realpathSync(script);
+  } catch {
+    // Not on disk (e.g. a test path): the resolved path is the best we have.
+  }
+  return join(dirname(dirname(script)), ".env");
+}
+
+// Seed process.env from that .env if present. Real environment wins.
 // `quiet` avoids writing dotenv's banner to stdout (reserved for MCP JSON-RPC).
-loadDotenv({ quiet: true });
+const devDotenv = dotenvPath(process.argv[1]);
+if (devDotenv) loadDotenv({ path: devDotenv, quiet: true });
 
 /** Delegated Microsoft Graph scopes requested at sign-in (least privilege). */
 export const DEFAULT_SCOPES = [

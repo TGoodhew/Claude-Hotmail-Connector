@@ -1,8 +1,46 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SCOPES, loadConfig, MISSING_CLIENT_ID_MESSAGE } from "./config.js";
+import { DEFAULT_SCOPES, dotenvPath, loadConfig, MISSING_CLIENT_ID_MESSAGE } from "./config.js";
 import { ConfigError } from "./util/errors.js";
 
 const base = { MICROSOFT_CLIENT_ID: "11111111-2222-3333-4444-555555555555" };
+
+describe("dotenvPath (#41)", () => {
+  it("is the connector checkout root, derived from the entry script, not the CWD", () => {
+    const repo = resolve("/work/Claude-Hotmail-Connector");
+    expect(dotenvPath(join(repo, "dist", "index.js"))).toBe(join(repo, ".env"));
+    // An extension bundle: <ext>/server/index.cjs -> <ext>/.env (none shipped).
+    const ext = resolve("/ext/hotmail");
+    expect(dotenvPath(join(ext, "server", "index.cjs"))).toBe(join(ext, ".env"));
+    expect(dotenvPath(join(repo, "dist", "index.js"))).not.toBe(join(process.cwd(), ".env"));
+  });
+
+  it("is undefined without an entry script", () => {
+    expect(dotenvPath(undefined)).toBeUndefined();
+  });
+
+  it("follows a symlinked entry script back to the real checkout", (ctx) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cht-dotenv-")));
+    try {
+      const checkout = join(root, "checkout");
+      const project = join(root, "project");
+      mkdirSync(join(checkout, "dist"), { recursive: true });
+      mkdirSync(join(project, "bin"), { recursive: true });
+      writeFileSync(join(checkout, "dist", "index.js"), "");
+      const link = join(project, "bin", "connector.js");
+      try {
+        symlinkSync(join(checkout, "dist", "index.js"), link, "file");
+      } catch {
+        ctx.skip(); // e.g. Windows without symlink privilege
+      }
+      expect(dotenvPath(link)).toBe(join(checkout, ".env"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("loadConfig", () => {
   it("requires a client id: there is no bundled shared default", () => {

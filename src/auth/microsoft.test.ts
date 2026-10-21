@@ -331,6 +331,33 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     expect(openBrowser).toHaveBeenCalledOnce();
   });
 
+  it("ignores stray loopback requests (wrong state) instead of aborting the sign-in (#41)", async () => {
+    const store = memoryStore(null);
+    let authorizeUrl = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      openBrowser: async (url) => {
+        authorizeUrl = url;
+      },
+      now: () => 1_000,
+    });
+    const pending = auth.signIn();
+    await until(() => authorizeUrl !== "");
+
+    // A hostile/stray local request with a wrong state, and one trying to cancel.
+    expect((await redirectBack(authorizeUrl, { code: "EVIL", state: "wrong" })).status).toBe(400);
+    expect(
+      (await redirectBack(authorizeUrl, { error: "access_denied", state: "wrong" })).status,
+    ).toBe(400);
+    expect(store.current).toBeNull(); // nothing completed or aborted
+
+    // Microsoft's real redirect still completes the sign-in.
+    await redirectBack(authorizeUrl, { code: "CODE" });
+    await expect(pending).resolves.toMatchObject({ accessToken: "INTERACTIVE-AT" });
+  });
+
   it("cools down after a cancelled sign-in instead of reopening the browser", async () => {
     let clock = 1_000;
     const openBrowser = vi.fn(async (url: string) => {

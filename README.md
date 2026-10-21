@@ -150,7 +150,8 @@ extension is simpler.)
 
 You don't need to sign in first: the first tool call opens the Microsoft sign-in in your browser. From
 a source checkout you can also sign in, check or reset explicitly (with `MICROSOFT_CLIENT_ID` set, e.g.
-in a local `.env`, see [`.env.example`](.env.example)):
+in a `.env` in the checkout root, see [`.env.example`](.env.example). It's only ever read from there,
+never from the folder you launch from):
 
 ```bash
 node dist/index.js login     # browser sign-in, caches the token

@@ -269,29 +269,34 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     const pkce = generatePkce();
     const state = base64url(randomBytes(16));
     return await new Promise<TokenSet>((resolve, reject) => {
+      let completed = false;
       const server = createServer((req, res) => {
         const url = new URL(req.url ?? "/", `http://${config.loopbackHost}`);
         const code = url.searchParams.get("code");
         const returnedState = url.searchParams.get("state");
         const oauthError = url.searchParams.get("error");
-        if (!code && !oauthError) {
-          // e.g. favicon.ico — ignore.
+        if (completed || (!code && !oauthError)) {
+          // e.g. favicon.ico, or anything after the real callback — ignore.
           res.statusCode = 404;
           res.end();
           return;
         }
-        // Respond to the browser first, then finish the exchange.
         res.setHeader("content-type", "text/html; charset=utf-8");
+        // Only Microsoft's redirect carries our random state. Anything else on
+        // this port (a stray or hostile local request) gets a 400 and is ignored:
+        // it must neither abort the pending sign-in nor complete it (#41).
+        if (!returnedState || !safeEqual(returnedState, state)) {
+          res.statusCode = 400;
+          res.end(page("Sign-in error", "This request doesn't belong to the current sign-in."));
+          log.warn("Ignored a loopback request with a missing or wrong state");
+          return;
+        }
+        completed = true;
+        // Respond to the browser first, then finish the exchange.
         if (oauthError) {
           res.end(page("Sign-in failed", "You can close this tab and try again."));
           cleanup();
           reject(new AuthError(`Authorization failed: ${oauthError}`));
-          return;
-        }
-        if (!returnedState || !safeEqual(returnedState, state)) {
-          res.end(page("Sign-in error", "State mismatch. Please try again."));
-          cleanup();
-          reject(new AuthError("OAuth state mismatch (possible CSRF)."));
           return;
         }
         res.end(page("Signed in", "You're all set — you can close this tab and return to Claude."));
