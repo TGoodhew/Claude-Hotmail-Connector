@@ -775,6 +775,41 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     expect(current).toBeNull();
   });
 
+  it("a request waiting on one sign-out's cleanup is stopped by a second sign-out", async () => {
+    let releaseFirstClear!: () => void;
+    const firstClearGate = new Promise<void>((r) => (releaseFirstClear = r));
+    let clears = 0;
+    const store: TokenStore = {
+      async load() {
+        return null;
+      },
+      async save() {},
+      async clear() {
+        if (++clears === 1) await firstClearGate;
+      },
+    };
+    const openBrowser = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    const first = auth.signOut();
+    await until(() => clears === 1);
+    // A request arrives mid-cleanup and waits…
+    const request = auth.getAccessToken({ interactiveWaitMs: 20 }).then(
+      () => new Error("expected the request to stop"),
+      (e: unknown) => e as Error,
+    );
+    const second = auth.signOut(); // …then the user signs out again.
+    releaseFirstClear();
+    await Promise.all([first, second]);
+    expect(await request).toBeInstanceOf(SignedOutError);
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
   it("a save already writing when the user signs out is removed by the cleanup", async () => {
     let releaseSave!: () => void;
     const saveGate = new Promise<void>((r) => (releaseSave = r));

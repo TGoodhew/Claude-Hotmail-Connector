@@ -515,16 +515,17 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     async getAccessToken(options: GetAccessTokenOptions = {}): Promise<string> {
       const interactive = options.interactive ?? true;
       const minTtlMs = options.minTtlMs ?? DEFAULT_MIN_TTL_MS;
-      // A sign-out still cleaning up: wait, so this request can't read the
-      // credentials being deleted and refresh them back into existence.
-      while (pendingSignOut) await pendingSignOut.catch(() => undefined);
-      const signInsAtStart = signInsCompleted;
-      // Noted before any further await: if the user signs out while this request
-      // is in flight, it stops (see "Sign-out ordering" above).
+      // Noted before any await: if the user signs out while this request is in
+      // flight (including while it waits below), it stops (see "Sign-out ordering").
       const epoch = signOuts;
       const ensureNotSignedOut = () => {
         if (signOuts !== epoch) throw new SignedOutError();
       };
+      // A sign-out still cleaning up: wait, so this request can't read the
+      // credentials being deleted and refresh them back into existence.
+      while (pendingSignOut) await pendingSignOut.catch(() => undefined);
+      ensureNotSignedOut();
+      const signInsAtStart = signInsCompleted;
 
       let cached: TokenSet | null = null;
       try {
