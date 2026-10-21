@@ -30,6 +30,9 @@ jobs:
       - name: Format check
         run: npm run format:check
 
+      - name: Control-character check
+        run: npm run check:text
+
       - name: Build
         run: npm run build
 
