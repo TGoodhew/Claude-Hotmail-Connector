@@ -8,6 +8,7 @@
  * can be unit-tested without mutating `process.env`.
  */
 
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
@@ -21,9 +22,20 @@ import { ConfigError } from "./util/errors.js";
  * Code launches MCP servers inside project folders, and a project's `.env` must
  * not be able to swap our client id, tenant, scopes or cache dir (#41, spec v2
  * §8.4). Extension installs have no `.env`.
+ *
+ * Symlinks are resolved first: Node keeps a symlinked entry script's own path in
+ * `process.argv[1]`, so `project/bin/x.js -> <repo>/dist/index.js` would
+ * otherwise point at `project/.env`.
  */
 export function dotenvPath(entryScript: string | undefined): string | undefined {
-  return entryScript ? join(dirname(dirname(resolve(entryScript))), ".env") : undefined;
+  if (!entryScript) return undefined;
+  let script = resolve(entryScript);
+  try {
+    script = realpathSync(script);
+  } catch {
+    // Not on disk (e.g. a test path): the resolved path is the best we have.
+  }
+  return join(dirname(dirname(script)), ".env");
 }
 
 // Seed process.env from that .env if present. Real environment wins.
