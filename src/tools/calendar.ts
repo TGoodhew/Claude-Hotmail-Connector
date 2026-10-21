@@ -50,7 +50,8 @@ export const listEventsTool: ToolDefinition<typeof listEventsShape> = defineTool
   name: "list_events",
   title: "List calendar events",
   description:
-    "List calendar events in a date range (e.g. to check for conflicts before adding a booking). " +
+    "In the user's personal Microsoft Outlook.com/Hotmail calendar, list events in a date range " +
+    "(e.g. to check for conflicts before adding a booking). " +
     "Times are returned in the requested IANA time zone. Read-only.",
   inputShape: listEventsShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
@@ -93,7 +94,8 @@ export const createEventTool: ToolDefinition<typeof createEventShape> = defineTo
   name: "create_event",
   title: "Create a calendar event",
   description:
-    "Create a calendar event (e.g. a booking, plus separate travel-time blocks). " +
+    "In the user's personal Microsoft Outlook.com/Hotmail calendar, create a calendar event " +
+    "(e.g. a booking, plus separate travel-time blocks). " +
     "Times are LOCAL wall-clock paired with an IANA time zone (never a UTC 'Z'), so the " +
     "event lands at the intended local time. A transactionId makes repeated calls idempotent " +
     "(no duplicates). IMPORTANT: confirm the details (title, date, start/end, timezone, location) " +
@@ -135,7 +137,8 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
   name: "update_event",
   title: "Update a calendar event",
   description:
-    "Update an existing calendar event's time, location, subject, or body. Only the fields you " +
+    "In the user's personal Microsoft Outlook.com/Hotmail calendar, update an existing event's time, " +
+    "location, subject, or body. Only the fields you " +
     "provide are changed. Times use LOCAL wall-clock + IANA time zone. Confirm changes with the " +
     "user before calling.",
   inputShape: updateEventShape,

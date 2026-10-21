@@ -17,7 +17,8 @@ export const whoamiTool: ToolDefinition<typeof whoamiShape> = defineTool({
   name: "whoami",
   title: "Show the connected account",
   description:
-    "Return the signed-in Microsoft account's display name and email address. Useful to confirm " +
+    "Return the signed-in personal Microsoft Outlook.com/Hotmail account's display name and email address. " +
+    "Useful to confirm " +
     "the correct personal account is connected. Read-only.",
   inputShape: whoamiShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
