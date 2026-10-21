@@ -7,15 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create (e.g. v0.1.0)"
+        description: "Release tag to create (e.g. v0.2.0); must match package.json"
         required: true
 
 permissions:
   contents: write
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  build-extension:
+    runs-on: ubuntu-latest
     env:
       TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
     steps:
@@ -29,38 +29,41 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Test
-        run: npm test
+      - name: Tag matches package.json version
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$expected" ]; then
+            echo "Tag $TAG does not match package.json version ($expected)." >&2
+            exit 1
+          fi
 
-      - name: Build single-exe (Node SEA)
-        run: npm run build:exe
+      - name: Typecheck, lint, format, control characters
+        run: |
+          npm run typecheck
+          npm run lint
+          npm run format:check
+          npm run check:text
 
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
+      - name: Build and test
+        run: |
+          npm run build
+          npm test
 
-      - name: Build installer
-        run: npm run build:installer
+      - name: Build Claude Desktop extension (.mcpb)
+        run: npm run build:mcpb
 
       - name: Checksums
-        shell: pwsh
         run: |
-          $files = @("build/hotmail-connector.exe", "dist-installer/HotmailConnectorSetup.exe")
-          $out = "dist-installer/SHA256SUMS.txt"
-          Remove-Item $out -ErrorAction SilentlyContinue
-          foreach ($f in $files) {
-            $hash = (Get-FileHash $f -Algorithm SHA256).Hash
-            "$hash  $(Split-Path $f -Leaf)" | Add-Content $out
-          }
-          Get-Content $out
+          cd build
+          sha256sum hotmail-connector.mcpb > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Publish GitHub Release
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $notes = "Windows build for $env:TAG. Unsigned by design (see docs/installer.md) - Windows SmartScreen will warn; choose More info -> Run anyway. Verify downloads against SHA256SUMS.txt. Installer: HotmailConnectorSetup.exe (recommended); portable: hotmail-connector.exe."
-          gh release view $env:TAG 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $env:TAG --title $env:TAG --notes $notes --target $env:GITHUB_SHA
-          }
-          gh release upload $env:TAG build/hotmail-connector.exe dist-installer/HotmailConnectorSetup.exe dist-installer/SHA256SUMS.txt --clobber
+          notes="Claude Desktop extension for $TAG: download hotmail-connector.mcpb and double-click it (or drag it into Claude Desktop > Settings > Extensions), then enter your own Entra app's Application (client) ID. Verify against SHA256SUMS.txt. See the README for creating your app registration and for Claude Code (source) setup."
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --notes "$notes" --target "$GITHUB_SHA"
+          fi
+          gh release upload "$TAG" build/hotmail-connector.mcpb build/SHA256SUMS.txt --clobber

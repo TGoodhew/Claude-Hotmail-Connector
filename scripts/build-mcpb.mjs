@@ -1,5 +1,6 @@
 /**
- * Build a Claude Desktop extension (MCP Bundle, `.mcpb`) — spike for #63.
+ * Build the Claude Desktop extension (MCP Bundle, `.mcpb`): the connector's
+ * distribution format for Claude Desktop (#63, spec v2 §11).
  *
  * An MCPB is a zip that Claude Desktop installs with a double-click. Claude
  * Desktop ships its own Node.js runtime, generates a settings UI from
@@ -7,8 +8,8 @@
  * embedded runtime and no editing of claude_desktop_config.json.
  *
  * Steps:
- *   1. Bundle the app (incl. dependencies) into one CJS file, like build:exe,
- *      so the bundle needs no node_modules.
+ *   1. Bundle the app (incl. dependencies) into one CJS file with esbuild, so
+ *      the bundle needs no node_modules.
  *   2. Write manifest.json (version from package.json).
  *   3. Validate and pack with the pinned official CLI (@anthropic-ai/mcpb).
  *

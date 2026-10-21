@@ -3,15 +3,8 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    // Build outputs, including the SEA bundle and installer from `build:exe` / `build:installer`.
-    ignores: [
-      "dist/**",
-      "dist-sea/**",
-      "build/**",
-      "dist-installer/**",
-      "node_modules/**",
-      "coverage/**",
-    ],
+    // Build outputs, including the `build:mcpb` staging folder and bundle.
+    ignores: ["dist/**", "build/**", "node_modules/**", "coverage/**"],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

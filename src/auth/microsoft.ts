@@ -397,7 +397,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       now() - lastSignInFailureAt < SIGN_IN_RETRY_COOLDOWN_MS
     ) {
       throw new SignInRequiredError(
-        `Microsoft sign-in didn't complete. Ask me to try again in a minute, or ${LOGIN_HINT}.`,
+        `Microsoft sign-in didn't complete. Ask me to try again in a minute ${LOGIN_HINT}.`,
       );
     }
     const pending = signInAndSave();
@@ -410,7 +410,8 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         ? "Still waiting for you to finish the Microsoft sign-in in your browser. " +
             "Once you have, ask me to try again."
         : "A Microsoft sign-in window has opened in your browser. Finish signing in there, " +
-            `then ask me to try again. If no browser window appeared, ${LOGIN_HINT}.`,
+            "then ask me to try again. If no browser window appeared, check that a default web " +
+            `browser is set and ask me again ${LOGIN_HINT}.`,
     );
   }
 

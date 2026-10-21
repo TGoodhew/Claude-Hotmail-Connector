@@ -1,18 +1,17 @@
 /**
  * Runtime configuration for the connector.
  *
- * Values come from environment variables (optionally seeded from a local
- * `.env` file, which is git-ignored) and, for the client id, the persisted
- * user settings file (see `settings.ts`). {@link loadConfig} is a pure function
- * of its `env` and `settings` arguments so it can be unit-tested without
- * mutating `process.env` or touching the filesystem.
+ * Values come from environment variables: set by the MCP client (e.g. the
+ * Claude Desktop extension's settings map "Application (client) ID" to
+ * `MICROSOFT_CLIENT_ID`), optionally seeded from a local `.env` file in
+ * development. {@link loadConfig} is a pure function of its `env` argument so it
+ * can be unit-tested without mutating `process.env`.
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
-import { readSettings, type UserSettings } from "./settings.js";
 import { ConfigError } from "./util/errors.js";
 
 // Seed process.env from a local .env if present. Real environment wins.
@@ -48,10 +47,11 @@ export const LOOPBACK_HOST = "127.0.0.1";
 export const MISSING_CLIENT_ID_MESSAGE =
   "No Microsoft app registration is configured. Create your own Entra app registration " +
   '(see "Register a Microsoft Entra application" in the README, or run scripts/register-app.ps1), ' +
-  "then run `setup --client-id <Application (client) ID>` or set MICROSOFT_CLIENT_ID.";
+  "then enter its Application (client) ID in the extension's settings in Claude Desktop " +
+  "(Settings > Extensions > Hotmail Connector), or set MICROSOFT_CLIENT_ID.";
 
 const EnvSchema = z.object({
-  // Optional here: falls back to the saved settings; loadConfig errors if neither is set.
+  // Optional in the schema so loadConfig can raise the friendlier MISSING_CLIENT_ID_MESSAGE.
   MICROSOFT_CLIENT_ID: z
     .string()
     .trim()
@@ -87,8 +87,8 @@ export interface AppConfig {
   logLevel: "debug" | "info" | "warn" | "error";
 }
 
-/** Directory for the token cache and settings file (honours `CLAUDE_HOTMAIL_CACHE_DIR`). */
-export function resolveCacheDir(env: NodeJS.ProcessEnv): string {
+/** Directory for the token cache (honours `CLAUDE_HOTMAIL_CACHE_DIR`). */
+function resolveCacheDir(env: NodeJS.ProcessEnv): string {
   if (env.CLAUDE_HOTMAIL_CACHE_DIR) return env.CLAUDE_HOTMAIL_CACHE_DIR;
   if (process.platform === "win32" && env.LOCALAPPDATA) {
     return join(env.LOCALAPPDATA, "claude-hotmail-connector");
@@ -131,15 +131,11 @@ function parseScopes(raw: string | undefined): string[] {
 }
 
 /**
- * Build a validated {@link AppConfig} from an environment object and the saved
- * user settings. `MICROSOFT_CLIENT_ID` wins over `settings.clientId`.
+ * Build a validated {@link AppConfig} from an environment object.
  * Throws {@link ConfigError} with a friendly, aggregated message on failure,
- * including when no client id is configured at all.
+ * including when no client id is configured.
  */
-export function loadConfig(
-  env: NodeJS.ProcessEnv = process.env,
-  settings: UserSettings = {},
-): AppConfig {
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = EnvSchema.safeParse(env);
   if (!parsed.success) {
     const details = parsed.error.issues
@@ -150,7 +146,7 @@ export function loadConfig(
 
   const e = parsed.data;
   const cacheDir = resolveCacheDir(env);
-  const clientId = e.MICROSOFT_CLIENT_ID ?? settings.clientId;
+  const clientId = e.MICROSOFT_CLIENT_ID;
   if (!clientId) throw new ConfigError(MISSING_CLIENT_ID_MESSAGE);
 
   return {
@@ -169,9 +165,9 @@ export function loadConfig(
 
 let cached: AppConfig | undefined;
 
-/** Memoised config built from `process.env` and the saved settings. Use in application code. */
+/** Memoised config built from `process.env`. Use in application code. */
 export function getConfig(): AppConfig {
-  cached ??= loadConfig(process.env, readSettings(resolveCacheDir(process.env)));
+  cached ??= loadConfig(process.env);
   return cached;
 }
 

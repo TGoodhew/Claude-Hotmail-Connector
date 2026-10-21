@@ -1,12 +1,14 @@
 /**
  * Entry point — a local stdio MCP server (Mode A).
  *
- * Subcommands:
- *   (default)  start the MCP server on stdio (for Claude Desktop / VS Code)
- *   setup      auto-configure detected MCP hosts (Claude Desktop) to launch this server;
- *              `setup --client-id <id>` also saves the user's own Entra client id
- *   unsetup    remove this server from detected MCP hosts (used on uninstall)
- *   login      run the one-time interactive Microsoft sign-in and cache tokens
+ * Normally launched by an MCP client: by Claude Desktop as an extension
+ * (`.mcpb`, see scripts/build-mcpb.mjs), or by Claude Code / VS Code from a
+ * source checkout. The client id comes from `MICROSOFT_CLIENT_ID` (the
+ * extension's "Application (client) ID" setting, or the client's `env`).
+ *
+ * Subcommands (for source checkouts):
+ *   (default)  start the MCP server on stdio
+ *   login      run the interactive Microsoft sign-in and cache tokens
  *   logout     clear the cached tokens
  *   whoami     print the signed-in account (diagnostic)
  *
@@ -18,76 +20,17 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createMicrosoftAuth } from "./auth/microsoft.js";
 import { defaultKeyProtector } from "./auth/protect.js";
 import { createFileTokenStore } from "./auth/tokens.js";
-import { getConfig, MISSING_CLIENT_ID_MESSAGE, resolveCacheDir } from "./config.js";
+import { getConfig } from "./config.js";
 import { createGraphClient } from "./graph/client.js";
 import { whoami } from "./graph/user.js";
 import { createMcpServer } from "./mcp.js";
-import { isValidClientId, readSettings, writeSettings } from "./settings.js";
-import { runSetup, runUnsetup } from "./setup/run.js";
-import { ConfigError } from "./util/errors.js";
 import { createLogger } from "./util/log.js";
 
 /** How long a tool call waits for an on-demand browser sign-in before asking the user to retry. */
 const ON_DEMAND_SIGN_IN_WAIT_MS = 45_000;
 
-/** Value of `--client-id <id>` / `--client-id=<id>`, if present. */
-function clientIdFlag(args: string[]): string | undefined {
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i]!;
-    if (a === "--client-id") return args[i + 1] ?? "";
-    if (a.startsWith("--client-id=")) return a.slice("--client-id=".length);
-  }
-  return undefined;
-}
-
-/**
- * `setup [--client-id <id>]`: save the client id (if given), then wire up the
- * host apps. Runs WITHOUT loading the full config, since setup is how the
- * client id gets configured in the first place.
- */
-function setupCommand(args: string[]): void {
-  const cacheDir = resolveCacheDir(process.env);
-  const flag = clientIdFlag(args)?.trim();
-  if (flag !== undefined) {
-    if (!isValidClientId(flag)) {
-      throw new ConfigError(
-        `"${flag}" is not a valid Application (client) ID; expected a GUID like ` +
-          "00000000-0000-0000-0000-000000000000.",
-      );
-    }
-    const path = writeSettings(cacheDir, { clientId: flag });
-    process.stderr.write(`Saved client id to ${path}\n`);
-  }
-
-  const clientId =
-    flag || process.env.MICROSOFT_CLIENT_ID?.trim() || readSettings(cacheDir).clientId;
-  if (!clientId) throw new ConfigError(MISSING_CLIENT_ID_MESSAGE);
-
-  const outcome = runSetup({ clientId });
-  for (const c of outcome.configured) {
-    process.stderr.write(`  ${c.outcome}: ${c.path}\n`);
-  }
-  process.stderr.write(`\n${outcome.message}\n`);
-}
-
 async function run(): Promise<void> {
-  const [command, ...args] = process.argv.slice(2);
-
-  // Host wiring needs no Microsoft config, so it must not fail on it.
-  if (command === "setup") {
-    setupCommand(args);
-    return;
-  }
-
-  if (command === "unsetup") {
-    const outcome = runUnsetup();
-    for (const c of outcome.configured) {
-      process.stderr.write(`  removed: ${c.path}\n`);
-    }
-    process.stderr.write(`\n${outcome.message}\n`);
-    return;
-  }
-
+  const command = process.argv[2];
   const log = createLogger({ name: "startup" });
   const config = getConfig();
   const store = createFileTokenStore(config.tokenCacheFile, { protector: defaultKeyProtector() });
@@ -121,9 +64,7 @@ async function run(): Promise<void> {
   // signing in, then retry" while the sign-in carries on in the background.
   const account = await auth.getAccount();
   if (!account) {
-    log.warn(
-      "Not signed in yet. The first tool call will open a browser sign-in (or run `login`).",
-    );
+    log.warn("Not signed in yet. The first tool call will open a browser sign-in.");
   }
 
   const toolGraph = createGraphClient({

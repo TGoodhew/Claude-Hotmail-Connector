@@ -27,9 +27,9 @@ body:
     attributes:
       label: How is it installed?
       options:
-        - Windows installer (HotmailConnectorSetup.exe)
-        - Portable exe (hotmail-connector.exe)
+        - Claude Desktop extension (hotmail-connector.mcpb)
         - From source (node dist/index.js)
+        - v0.1.0 Windows installer (retired)
     validations:
       required: true
   - type: dropdown

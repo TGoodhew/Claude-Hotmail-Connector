@@ -15,7 +15,7 @@ no hosted service behind it.
 ## Getting help
 
 1. Check [Troubleshooting](README.md#troubleshooting) in the README and
-   [`docs/installer.md`](docs/installer.md).
+   [`docs/packaging.md`](docs/packaging.md) (the Claude Desktop extension).
 2. Search [existing issues](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues?q=is%3Aissue).
 3. If it's a bug, open an issue with the **Bug report** template. Include the version, your OS, the
    client (Claude Desktop / Claude Code), and a `LOG_LEVEL=debug` stderr excerpt. **Redact** email

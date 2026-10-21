@@ -8,17 +8,18 @@ Claude's official Microsoft 365 connector only supports work/school (Microsoft E
 rejects personal Microsoft accounts. This project fills that gap as a **personal, single-user tool**
 that runs entirely on your own machine.
 
-> **Status:** v0.1.0 (Windows). The requirements are in [spec v2](docs/personal-outlook-mcp-connector-requirements.md),
-> and the remaining work is tracked in the [Spec v2 epic (#66)](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66).
-> Where this README describes something that is about to change, it links the tracking issue.
+> **Status:** the latest release (v0.1.0) is a Windows installer. The next release ships as a
+> **Claude Desktop extension (`.mcpb`)** for Windows, macOS and Linux. The requirements are in
+> [spec v2](docs/personal-outlook-mcp-connector-requirements.md), and the remaining work is tracked in
+> the [Spec v2 epic (#66)](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66).
 
 ## How it works — local stdio
 
-The connector is a **local stdio MCP server** (spec v2 §4). Claude Desktop or Claude Code / VS Code
-launches it as a subprocess and talks to it over stdin/stdout. There is **no public URL, no tunnel and
-no hosting cost**, and no Claude ↔ server OAuth. The only sign-in is to **Microsoft**: a native
-public-client OAuth 2.0 authorization-code + PKCE flow with a loopback redirect. No client secret is
-involved.
+The connector is a **local stdio MCP server** (spec v2 §4). Claude Desktop (as an extension) or Claude
+Code / VS Code launches it as a subprocess and talks to it over stdin/stdout. There is **no public URL,
+no tunnel and no hosting cost**, and no Claude ↔ server OAuth. The only sign-in is to **Microsoft**: a
+native public-client OAuth 2.0 authorization-code + PKCE flow with a loopback redirect, opened in your
+browser the first time a tool needs it. No client secret is involved.
 
 ```
 Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──▶ Microsoft Graph (personal account)
@@ -51,49 +52,16 @@ three checks:
 
 Full tool contracts are in spec v2 §7.
 
-## Install (Windows)
+## Step 1: register your own Microsoft Entra application
 
-1. **Create your own Microsoft Entra app registration** and copy its **Application (client) ID**:
-   see [step 1](#1-register-a-microsoft-entra-application) below, or run
-   `scripts/register-app.ps1`. The connector doesn't ship a shared registration, so each user owns
-   their own Microsoft access.
-2. Download the latest `HotmailConnectorSetup.exe` (or the portable `hotmail-connector.exe`) from
-   [Releases](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases), verify it against
-   `SHA256SUMS.txt`, and run it. Windows shows an **"unknown publisher"** warning (the build is
-   unsigned, by design); click **More info → Run anyway**.
-3. Paste your client ID when asked. The installer configures Claude Desktop and offers to run the
-   one-time Microsoft sign-in.
-4. **Fully quit Claude Desktop from the system tray** (closing the window only minimises it) and reopen
-   it.
+Every user needs their own registration; the connector doesn't ship a shared one, so each user owns
+their own Microsoft access. Registering is free, but it needs a **Microsoft Entra tenant**, and a
+personal account doesn't come with one. If you don't have a tenant,
+[create a free one](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-create-new-tenant)
+first (typically by signing up for a free Azure account).
 
-> **Upgrading from v0.1.0:** v0.1.0 embedded a shared client ID, which is being retired. Create your
-> own registration and enter its ID when you install the new version, or run
-> `hotmail-connector.exe setup --client-id <id>`, then sign in again
-> ([#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)). Packaging as a one-click
-> Claude Desktop extension (`.mcpb`) is being evaluated
-> ([#63](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/63)).
-
-See [`docs/installer.md`](docs/installer.md) for installer details, unattended install, and how the
-packages are built.
-
-## Manual / developer setup
-
-### Prerequisites
-
-- **Node.js 20+**. **Node 24 LTS is recommended**: Node 20 reached end-of-life in April 2026, and
-  the project is moving to 24 ([#45](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/45)).
-- A **personal Microsoft account** (`@hotmail.com` / `@outlook.com` / `@live.com`).
-- **Claude Desktop** and/or **Claude Code / VS Code** (with MCP support) on the same machine.
-- A **Microsoft Entra app registration**, which is free (step 1). Registering an app needs a
-  **Microsoft Entra tenant**, and a personal account doesn't come with one: if you don't have a
-  tenant, [create a free one](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-create-new-tenant)
-  first (typically by signing up for a free Azure account).
-
-### 1. Register a Microsoft Entra application
-
-> **Required.** Every user needs their own registration. If you have the Azure CLI signed in to your
-> tenant (`az login`), `pwsh ./scripts/register-app.ps1` does all of the steps below and prints the
-> client ID.
+> **Shortcut:** with the Azure CLI signed in to your tenant (`az login`),
+> `pwsh ./scripts/register-app.ps1` does all of the steps below and prints the client ID.
 
 The connector signs in as a **public/native client**. No client secret is ever used or stored.
 
@@ -116,7 +84,32 @@ The connector signs in as a **public/native client**. No client secret is ever u
    `openid`, `profile`, `email`, `offline_access`, `User.Read`, `Mail.Read`, `Calendars.ReadWrite`.
    A personal account doesn't need admin consent; you consent at first sign-in.
 
-### 2. Install & build
+## Step 2a: install in Claude Desktop (extension)
+
+1. Download `hotmail-connector.mcpb` from
+   [Releases](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases) and verify it against
+   `SHA256SUMS.txt`. (Until the next release, build it yourself: `npm run build:mcpb`, see
+   [Development](#development).)
+2. **Double-click it**, or drag it into **Claude Desktop → Settings → Extensions**, and choose
+   **Install**.
+3. Enter your **Application (client) ID** from step 1. You can change it later under **Settings →
+   Extensions → Hotmail Connector**.
+4. Ask Claude something that needs your mailbox or calendar. The first time, a Microsoft sign-in opens
+   in your browser. Finish it within about 45 seconds and that request carries on; otherwise ask
+   again once you've signed in.
+
+> **Upgrading from the v0.1.0 Windows installer:** first uninstall **Claude Hotmail Connector** from
+> Windows **Settings → Apps**. That removes its Claude Desktop entry; keeping both would show every
+> tool twice. Then install the extension with **your own** client ID (v0.1.0's shared ID is being
+> retired, [#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)) and sign in again.
+
+More detail, including how the bundle is built, is in [`docs/packaging.md`](docs/packaging.md).
+
+## Step 2b: run from source (Claude Code / VS Code)
+
+Prerequisites: **Node.js 20+**. **Node 24 LTS is recommended**: Node 20 reached end-of-life in April
+2026, and the project is moving to 24
+([#45](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/45)).
 
 ```bash
 git clone https://github.com/TGoodhew/Claude-Hotmail-Connector.git
@@ -125,69 +118,18 @@ npm install
 npm run build          # produces dist/index.js
 ```
 
-### 3. Configure
+Then point your client at `dist/index.js` and pass your client ID in the server's environment.
 
-Save your client ID (step 1). `setup` validates it, stores it in `settings.json` in the cache folder
-so that `login`, `whoami` and the server all find it, and configures Claude Desktop (step 5):
-
-```bash
-node dist/index.js setup --client-id <the Application (client) ID from step 1>
-```
-
-For development you can instead set it in a local `.env` (`MICROSOFT_CLIENT_ID` wins over the saved
-ID):
+**Claude Code:**
 
 ```bash
-cp .env.example .env
-# edit .env and set MICROSOFT_CLIENT_ID=<the Application (client) ID from step 1>
+claude mcp add --scope user --env MICROSOFT_CLIENT_ID=<your-client-id> \
+  hotmail-connector -- node /path/to/Claude-Hotmail-Connector/dist/index.js
 ```
 
-Environment variables (see [`.env.example`](.env.example)):
-
-| Variable                   | Default                       | Notes                                                                                                                       |
-| -------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `MICROSOFT_CLIENT_ID`      | the ID saved by `setup`       | Your Entra app's client ID. Required if no ID has been saved.                                                               |
-| `MICROSOFT_TENANT`         | `consumers`                   | Personal accounts only. `common` also allows work/school accounts (needs a multitenant registration).                       |
-| `DEFAULT_TIMEZONE`         | `Australia/Brisbane`          | IANA zone used when a call doesn't specify one ([#34](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/34)).     |
-| `LOG_LEVEL`                | `info`                        | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
-| `MICROSOFT_SCOPES`         | least-privilege set (spec §6) | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
-| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir            | Where the encrypted token cache and `settings.json` live.                                                                   |
-
-### 4. Sign in once
-
-```bash
-node dist/index.js login
-```
-
-This opens your system browser to Microsoft. Sign in with your **personal** account and consent to
-the requested permissions. The refresh token is stored **encrypted** in your user profile (see
-[Security](#security)), and later runs refresh it silently. `node dist/index.js logout` clears it.
-
-Verify:
-
-```bash
-node dist/index.js whoami       # prints your name and account, e.g. Jane Doe <jane@outlook.com>
-```
-
-### 5. Wire it into a client
-
-The quickest way is to let the connector configure Claude Desktop for you (the same engine the
-installer uses):
-
-```bash
-node dist/index.js setup --client-id <id>   # saves the ID; detects Claude Desktop (incl. Microsoft Store build)
-node dist/index.js setup                    # re-run later: reuses the saved ID
-node dist/index.js unsetup                  # removes the server from Claude Desktop again
-```
-
-Or configure a client manually. The server is launched as a stdio subprocess. It reads the saved ID,
-or you can pass `MICROSOFT_CLIENT_ID` in its `env`.
-
-#### Claude Code / VS Code
-
-Use **Command Palette → "MCP: Add Server…" → Command (stdio)**, pointing `node` at the built
-`dist/index.js`. Or copy [`.vscode/mcp.json.example`](.vscode/mcp.json.example) to `.vscode/mcp.json`
-and edit the path and client id:
+**VS Code:** use **Command Palette → "MCP: Add Server…" → Command (stdio)**, or copy
+[`.vscode/mcp.json.example`](.vscode/mcp.json.example) to `.vscode/mcp.json` and edit the path and
+client ID:
 
 ```jsonc
 {
@@ -202,27 +144,30 @@ and edit the path and client id:
 }
 ```
 
-#### Claude Desktop
+(Claude Desktop can also run a source checkout through `claude_desktop_config.json`, see
+[`examples/claude_desktop_config.example.json`](examples/claude_desktop_config.example.json). The
+extension is simpler.)
 
-Edit `claude_desktop_config.json` (see
-[`examples/claude_desktop_config.example.json`](examples/claude_desktop_config.example.json)):
+You don't need to sign in first: the first tool call opens the Microsoft sign-in in your browser. From
+a source checkout you can also sign in, check or reset explicitly (with `MICROSOFT_CLIENT_ID` set, e.g.
+in a local `.env`, see [`.env.example`](.env.example)):
 
-```jsonc
-{
-  "mcpServers": {
-    "hotmail-connector": {
-      "command": "node",
-      "args": ["C:\\path\\to\\Claude-Hotmail-Connector\\dist\\index.js"],
-      "env": { "MICROSOFT_CLIENT_ID": "<your-entra-app-client-id>" },
-    },
-  },
-}
+```bash
+node dist/index.js login     # browser sign-in, caches the token
+node dist/index.js whoami    # prints your name and account, e.g. Jane Doe <jane@outlook.com>
+node dist/index.js logout    # clears the cached token
 ```
 
-Restart the client and the connector's tools should appear. You don't have to run `login` first: if
-you aren't signed in (or your sign-in has expired), the first tool call opens a Microsoft sign-in in
-your browser. Finish it within about 45 seconds and that call carries on. Otherwise Claude tells you
-to finish signing in and try again. Running `login` beforehand avoids the interruption.
+### Configuration
+
+| Variable                   | Default                       | Notes                                                                                                                       |
+| -------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `MICROSOFT_CLIENT_ID`      | — (required)                  | Your Entra app's Application (client) ID. The extension sets it from its settings.                                          |
+| `MICROSOFT_TENANT`         | `consumers`                   | Personal accounts only. `common` also allows work/school accounts (needs a multitenant registration).                       |
+| `DEFAULT_TIMEZONE`         | `Australia/Brisbane`          | IANA zone used when a call doesn't specify one ([#34](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/34)).     |
+| `LOG_LEVEL`                | `info`                        | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
+| `MICROSOFT_SCOPES`         | least-privilege set (spec §6) | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
+| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir            | Where the encrypted token cache lives.                                                                                      |
 
 ## Usage example
 
@@ -274,14 +219,16 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
 - **Event lands an hour off:** always pass a local wall-clock `dateTime` (e.g. `2026-07-20T10:00:00`)
   with an IANA `timeZone`, never a `Z`-suffixed value. The connector rejects `Z`/offset values for
   event times.
-- **"No Microsoft app registration is configured":** no client ID is saved or set. Run
-  `hotmail-connector.exe setup --client-id <id>` (or `node dist/index.js setup --client-id <id>`) with
-  your own registration's Application (client) ID (step 1).
+- **"No Microsoft app registration is configured":** no client ID is set. Enter it in **Claude Desktop
+  → Settings → Extensions → Hotmail Connector**, or set `MICROSOFT_CLIENT_ID` in your client's server
+  config (step 2b).
 - **A tool says to finish signing in, or "sign-in is required":** finish the Microsoft sign-in in the
-  browser window that opened, then ask Claude to retry. If no window appeared, run
-  `node dist/index.js login` (or the **Sign in to Hotmail Connector** Start-menu shortcut). After a
-  cancelled sign-in, the connector waits 30 seconds before opening another window. If problems
-  persist, run `logout` then `login` to reset the token cache.
+  browser window that opened, then ask Claude to retry. If no window appeared, check that a default web
+  browser is set; from a source checkout you can also run `node dist/index.js login`. After a cancelled
+  sign-in, the connector waits 30 seconds before opening another window.
+- **Every tool appears twice:** you have both the extension and an older installer/manual config
+  entry. Uninstall the v0.1.0 installer, or remove the `hotmail-connector` entry from
+  `claude_desktop_config.json`.
 - **`npm install` times out or hangs (dead IPv6 route):** force IPv4:
   `NODE_OPTIONS="--dns-result-order=ipv4first --no-network-family-autoselection" npm install`.
 
@@ -294,29 +241,29 @@ npm run lint            # eslint
 npm run format          # prettier --write   (format:check in CI)
 npm run check:text      # reject raw control characters in tracked files (CI)
 npm test                # vitest (unit + in-memory + built-subprocess smoke)
-npm run build:exe       # Windows: Node SEA single executable (postject via npx)
-npm run build:installer # Windows: Inno Setup installer (needs iscc on PATH)
+npm run build:mcpb      # Claude Desktop extension -> build/hotmail-connector.mcpb
 ```
 
 Layout (tests are colocated as `src/**/*.test.ts`):
 
-- `src/index.ts`: CLI and stdio entry (`setup`, `unsetup`, `login`, `logout`, `whoami`; default =
-  server). `src/mcp.ts`: server assembly.
-- `src/auth`: Microsoft OAuth (PKCE + loopback) and the encrypted token cache.
+- `src/index.ts`: CLI and stdio entry (`login`, `logout`, `whoami`; default = server).
+  `src/mcp.ts`: server assembly.
+- `src/auth`: Microsoft OAuth (PKCE + loopback, on-demand sign-in) and the encrypted token cache
+  (DPAPI-protected key on Windows).
 - `src/graph`: Graph client (auth, retries, paging) plus the mail / calendar / user modules.
 - `src/tools`: zod schemas and thin tool handlers.
-- `src/setup`: MCP host auto-configuration behind `setup` / `unsetup`.
 - `src/util`: time zones, HTML-to-text, logging, errors.
+- `scripts/`: `build-mcpb.mjs` (extension), `check-text.mjs`, `register-app.ps1`.
 
 ## Requirements, design & roadmap
 
 - [`docs/personal-outlook-mcp-connector-requirements.md`](docs/personal-outlook-mcp-connector-requirements.md):
   the build spec, **v2** (tools, Graph, auth, security, timezone, packaging, decision log).
   Requirements not yet implemented link to their tracking issues.
+- [`docs/packaging.md`](docs/packaging.md): the Claude Desktop extension (`.mcpb`): install, upgrade,
+  build.
 - [`docs/local-hosting-investigation-and-requirements.md`](docs/local-hosting-investigation-and-requirements.md):
   the original local-hosting investigation (superseded by spec v2; kept for the record).
-- [`docs/installer.md`](docs/installer.md): the packaged Windows installer, the auto-config engine,
-  `register-app`, and the SEA/Inno build.
 - **Roadmap:** the [Spec v2 epic (#66)](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66)
   orders all open work: spec decisions → security fixes → correctness → CI/tests → features.
 

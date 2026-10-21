@@ -23,10 +23,11 @@ describe("clientSafeMessage — client-facing redaction boundary", () => {
     expect(msg).not.toContain(upstream);
   });
 
-  it("maps AuthError to a sign-in prompt naming the login command (not the raw reason)", () => {
+  it("maps AuthError to a sign-in prompt (not the raw reason)", () => {
     const msg = clientSafeMessage(new AuthError("invalid_grant: refresh token revoked"));
     expect(msg).toContain("Microsoft sign-in is required or has expired.");
-    expect(msg).toContain("hotmail-connector.exe login");
+    expect(msg).toContain("sign-in window will open in your browser");
+    expect(msg).toContain("node dist/index.js login");
     expect(msg).not.toContain("invalid_grant");
   });
 
