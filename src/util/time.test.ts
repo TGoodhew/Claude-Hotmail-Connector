@@ -94,6 +94,24 @@ describe("zonedWallClockToUtcIso — calendar window pinning", () => {
       "2026-01-20T17:00:00.000Z",
     );
   });
+  it("handles a normal Sydney time during daylight saving", () => {
+    expect(zonedWallClockToUtcIso("2026-01-15T12:00:00", "Australia/Sydney")).toBe(
+      "2026-01-15T01:00:00.000Z",
+    );
+  });
+  it("moves a nonexistent Sydney spring-forward time into the later offset", () => {
+    // Sydney skips from 02:00 to 03:00 on 2026-10-04. The current policy
+    // resolves the gap using the post-transition (+11) offset.
+    expect(zonedWallClockToUtcIso("2026-10-04T02:30:00", "Australia/Sydney")).toBe(
+      "2026-10-03T16:30:00.000Z",
+    );
+  });
+  it("resolves an ambiguous Sydney fall-back time using standard time", () => {
+    // 02:30 occurs twice when Sydney moves from +11 to +10 on 2026-04-05.
+    expect(zonedWallClockToUtcIso("2026-04-05T02:30:00", "Australia/Sydney")).toBe(
+      "2026-04-04T16:30:00.000Z",
+    );
+  });
   it("passes a date-only value through untouched", () => {
     expect(zonedWallClockToUtcIso("2026-07-20", "Australia/Brisbane")).toBe("2026-07-20");
   });

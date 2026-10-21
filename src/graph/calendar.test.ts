@@ -73,4 +73,19 @@ describe("listEvents", () => {
       listEvents(graphWith(getAllPages), { ...validRange, startDateTime: "nope" }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
+
+  it("pins a bare window that spans the Sydney DST transition", async () => {
+    const getAllPages = vi.fn<GetAllPagesMock>(async () => []);
+    await listEvents(graphWith(getAllPages), {
+      startDateTime: "2026-10-04T00:00:00",
+      endDateTime: "2026-10-04T05:00:00",
+      timeZone: "Australia/Sydney",
+      limit: 25,
+    });
+
+    const [, opts] = getAllPages.mock.calls[0]!;
+    expect(opts?.query?.startDateTime).toBe("2026-10-03T14:00:00.000Z");
+    expect(opts?.query?.endDateTime).toBe("2026-10-03T18:00:00.000Z");
+    expect(opts?.headers?.prefer).toBe('outlook.timezone="Australia/Sydney"');
+  });
 });
