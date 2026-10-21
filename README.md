@@ -212,9 +212,10 @@ Edit `claude_desktop_config.json` (see
 }
 ```
 
-Restart the client and the connector's tools should appear. If you haven't run `login` yet, run it
-once in a terminal first: the server doesn't open a browser on its own today. On-demand sign-in is
-planned in [#69](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/69).
+Restart the client and the connector's tools should appear. You don't have to run `login` first: if
+you aren't signed in (or your sign-in has expired), the first tool call opens a Microsoft sign-in in
+your browser. Finish it within about 45 seconds and that call carries on. Otherwise Claude tells you
+to finish signing in and try again. Running `login` beforehand avoids the interruption.
 
 ## Usage example
 
@@ -263,9 +264,11 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
 - **"No Microsoft app registration is configured":** no client ID is saved or set. Run
   `hotmail-connector.exe setup --client-id <id>` (or `node dist/index.js setup --client-id <id>`) with
   your own registration's Application (client) ID (step 1).
-- **"Not signed in" from a tool:** run `node dist/index.js login` (or the **Sign in to Hotmail
-  Connector** Start-menu shortcut) once. If it persists, run `logout` then `login` to reset the token
-  cache.
+- **A tool says to finish signing in, or "sign-in is required":** finish the Microsoft sign-in in the
+  browser window that opened, then ask Claude to retry. If no window appeared, run
+  `node dist/index.js login` (or the **Sign in to Hotmail Connector** Start-menu shortcut). After a
+  cancelled sign-in, the connector waits 30 seconds before opening another window. If problems
+  persist, run `logout` then `login` to reset the token cache.
 - **`npm install` times out or hangs (dead IPv6 route):** force IPv4:
   `NODE_OPTIONS="--dns-result-order=ipv4first --no-network-family-autoselection" npm install`.
 

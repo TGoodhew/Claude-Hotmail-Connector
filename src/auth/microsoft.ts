@@ -7,16 +7,18 @@
  * `common` authority (personal + work/school accounts), with a **loopback**
  * redirect and **no client secret**.
  *
+ * Sign-in runs either explicitly (`login`) or on demand when a tool needs a
+ * token and none is valid (see `GetAccessTokenOptions.interactiveWaitMs`).
  * The pure building blocks (PKCE, authorize-URL, token-request/response) are
- * exported for unit testing; the interactive browser + loopback listener is
- * exercised manually (documented in the README).
+ * exported for unit testing; the loopback listener is tested by driving it
+ * over HTTP with an injected browser launcher.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
-import { AuthError } from "../util/errors.js";
+import { AuthError, LOGIN_HINT, SignInRequiredError } from "../util/errors.js";
 import { createLogger, type Logger } from "../util/log.js";
 import type { TokenSet, TokenStore } from "./tokens.js";
 
@@ -24,6 +26,11 @@ import type { TokenSet, TokenStore } from "./tokens.js";
 const DEFAULT_MIN_TTL_MS = 60_000;
 /** How long to wait for the user to complete the browser sign-in. */
 const AUTH_TIMEOUT_MS = 5 * 60_000;
+/**
+ * After an on-demand sign-in fails or is cancelled, don't open another browser
+ * window for this long, so automatic model retries can't loop on the user.
+ */
+export const SIGN_IN_RETRY_COOLDOWN_MS = 30_000;
 
 // ── PKCE ─────────────────────────────────────────────────────────────────────
 
@@ -170,6 +177,13 @@ export interface MicrosoftAuthDeps {
 export interface GetAccessTokenOptions {
   /** Allow launching the browser for interactive sign-in (default true). */
   interactive?: boolean;
+  /**
+   * With `interactive`: wait at most this long for the browser sign-in, then
+   * fail with a {@link SignInRequiredError} telling the user to finish it. The
+   * sign-in carries on in the background, and later calls join it. Unset:
+   * wait for it to finish (or time out after 5 minutes).
+   */
+  interactiveWaitMs?: number;
   /** Refresh if fewer than this many ms remain (default 60s). */
   minTtlMs?: number;
 }
@@ -347,6 +361,59 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     });
   }
 
+  // Single-flight interactive sign-in. An on-demand caller may stop waiting
+  // (`interactiveWaitMs`) while the browser flow carries on; later callers join
+  // the same attempt rather than opening another window.
+  let inflightSignIn: Promise<TokenSet> | null = null;
+  let lastSignInFailureAt: number | undefined;
+  function signInAndSave(): Promise<TokenSet> {
+    if (!inflightSignIn) {
+      const attempt = (async () => {
+        try {
+          const tokens = await interactiveSignIn();
+          await store.save(tokens);
+          lastSignInFailureAt = undefined;
+          return tokens;
+        } catch (e) {
+          lastSignInFailureAt = now();
+          throw e;
+        } finally {
+          inflightSignIn = null;
+        }
+      })();
+      // A caller that stopped waiting no longer observes the result; never let
+      // a later failure surface as an unhandled rejection.
+      attempt.catch(() => undefined);
+      inflightSignIn = attempt;
+    }
+    return inflightSignIn;
+  }
+
+  async function signInOnDemand(waitMs: number | undefined): Promise<string> {
+    const joining = inflightSignIn !== null;
+    if (
+      !joining &&
+      lastSignInFailureAt !== undefined &&
+      now() - lastSignInFailureAt < SIGN_IN_RETRY_COOLDOWN_MS
+    ) {
+      throw new SignInRequiredError(
+        `Microsoft sign-in didn't complete. Ask me to try again in a minute, or ${LOGIN_HINT}.`,
+      );
+    }
+    const pending = signInAndSave();
+    if (waitMs === undefined) return (await pending).accessToken;
+
+    const tokens = await settleWithin(pending, waitMs);
+    if (tokens) return tokens.accessToken;
+    throw new SignInRequiredError(
+      joining
+        ? "Still waiting for you to finish the Microsoft sign-in in your browser. " +
+            "Once you have, ask me to try again."
+        : "A Microsoft sign-in window has opened in your browser. Finish signing in there, " +
+            `then ask me to try again. If no browser window appeared, ${LOGIN_HINT}.`,
+    );
+  }
+
   return {
     async getAccessToken(options: GetAccessTokenOptions = {}): Promise<string> {
       const interactive = options.interactive ?? true;
@@ -379,15 +446,11 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         throw new AuthError("Not signed in. Interactive Microsoft sign-in is required.");
       }
 
-      const tokens = await interactiveSignIn();
-      await store.save(tokens);
-      return tokens.accessToken;
+      return signInOnDemand(options.interactiveWaitMs);
     },
 
     async signIn(): Promise<TokenSet> {
-      const tokens = await interactiveSignIn();
-      await store.save(tokens);
-      return tokens;
+      return signInAndSave();
     },
 
     async signOut(): Promise<void> {
@@ -402,6 +465,23 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       }
     },
   };
+}
+
+/** `p`'s value if it settles within `ms`, else `undefined` (rejections propagate). */
+function settleWithin<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 }
 
 function safeEqual(a: string, b: string): boolean {

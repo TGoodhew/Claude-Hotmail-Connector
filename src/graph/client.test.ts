@@ -12,7 +12,11 @@ function json(body: unknown, init: { status?: number; headers?: Record<string, s
 }
 
 type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
-type AuthFn = (opts?: { interactive?: boolean; minTtlMs?: number }) => Promise<string>;
+type AuthFn = (opts?: {
+  interactive?: boolean;
+  interactiveWaitMs?: number;
+  minTtlMs?: number;
+}) => Promise<string>;
 
 function fetchMock(impl?: FetchFn) {
   return vi.fn<FetchFn>(impl);
@@ -46,6 +50,34 @@ describe("retryAfterMs", () => {
   it("returns undefined for junk / null", () => {
     expect(retryAfterMs(null)).toBeUndefined();
     expect(retryAfterMs("not-a-date")).toBeUndefined();
+  });
+});
+
+describe("createGraphClient token acquisition", () => {
+  it("is non-interactive by default (CLI diagnostics never open a browser)", async () => {
+    const auth = makeAuth();
+    const client = createGraphClient({
+      auth,
+      baseUrl: BASE,
+      fetchImpl: fetchMock(async () => json({ ok: true })) as never,
+    });
+    await client.get("/me");
+    expect(auth.getAccessToken.mock.calls[0]![0]).toMatchObject({ interactive: false });
+  });
+
+  it("requests on-demand sign-in with the configured wait for tool calls", async () => {
+    const auth = makeAuth();
+    const client = createGraphClient({
+      auth,
+      baseUrl: BASE,
+      fetchImpl: fetchMock(async () => json({ ok: true })) as never,
+      interactiveSignIn: { waitMs: 45_000 },
+    });
+    await client.get("/me");
+    expect(auth.getAccessToken.mock.calls[0]![0]).toMatchObject({
+      interactive: true,
+      interactiveWaitMs: 45_000,
+    });
   });
 });
 

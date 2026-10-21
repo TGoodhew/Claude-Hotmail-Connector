@@ -26,6 +26,9 @@ import { runSetup, runUnsetup } from "./setup/run.js";
 import { ConfigError } from "./util/errors.js";
 import { createLogger } from "./util/log.js";
 
+/** How long a tool call waits for an on-demand browser sign-in before asking the user to retry. */
+const ON_DEMAND_SIGN_IN_WAIT_MS = 45_000;
+
 /** Value of `--client-id <id>` / `--client-id=<id>`, if present. */
 function clientIdFlag(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
@@ -109,16 +112,25 @@ async function run(): Promise<void> {
     return;
   }
 
-  // Default: start the MCP server. Do NOT block on interactive sign-in here —
-  // that would stall the MCP handshake and pop a browser from a background
-  // subprocess. Tools acquire tokens non-interactively; if not signed in they
-  // return an actionable error telling the user to run `login`.
+  // Default: start the MCP server. Never sign in at startup: that would stall
+  // the MCP handshake and pop a browser before the user has asked for
+  // anything. Instead, the first tool call that needs a token starts the
+  // browser sign-in on demand and waits up to ON_DEMAND_SIGN_IN_WAIT_MS (inside
+  // typical 60s MCP request timeouts). Past that, the call returns "finish
+  // signing in, then retry" while the sign-in carries on in the background.
   const account = await auth.getAccount();
   if (!account) {
-    log.warn("Not signed in yet. Run `node dist/index.js login` once to authenticate.");
+    log.warn(
+      "Not signed in yet. The first tool call will open a browser sign-in (or run `login`).",
+    );
   }
 
-  const server = createMcpServer({ graph, config });
+  const toolGraph = createGraphClient({
+    auth,
+    baseUrl: config.graphBaseUrl,
+    interactiveSignIn: { waitMs: ON_DEMAND_SIGN_IN_WAIT_MS },
+  });
+  const server = createMcpServer({ graph: toolGraph, config });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info("MCP server ready on stdio.", { account });

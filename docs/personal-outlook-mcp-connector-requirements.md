@@ -261,9 +261,14 @@ signed in to that tenant. Registration settings:
   `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/{authorize,token}`, with a random `state`, the
   system browser, and a one-shot loopback listener on `127.0.0.1` with a 5-minute timeout.
 - **Explicit:** `login` / `logout` CLI commands, plus a Start-menu shortcut from the installer.
-- **On demand:** when a tool needs a token and silent refresh fails, the server SHOULD start the sign-in
-  itself: MCP URL-mode elicitation where the client supports it, otherwise the system browser. Concurrent
-  calls share one attempt *(→ #69; today tools return "run login")*.
+- **On demand:** when a tool needs a token and silent refresh fails, the server starts the sign-in
+  itself in the system browser and waits up to 45 s, inside typical 60 s MCP request timeouts. If you
+  finish in time, the call proceeds; otherwise it returns a user-facing "finish signing in, then
+  retry" message and the sign-in continues in the background. Concurrent and later calls **join the
+  same attempt** rather than opening another window. After a failed or cancelled attempt there is a
+  30 s cooldown, so automatic retries can't loop on the user. Startup never signs in, and CLI
+  diagnostics (`whoami`) stay non-interactive. MCP URL-mode elicitation MAY be added where clients
+  support it.
 - A loopback request with a wrong `state` MUST be rejected **without** aborting the pending sign-in
   *(→ #41)*.
 - Token requests MUST have a timeout *(→ #37)*.
