@@ -626,11 +626,15 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
       },
       now: () => 1_000,
     });
-    const pending = auth.signIn();
+    // Capture the outcome now: the attempt rejects while we're still awaiting the redirect.
+    const outcome = auth.signIn().then(
+      () => new Error("expected the sign-in to be discarded"),
+      (e: unknown) => e as Error,
+    );
     await until(() => authorizeUrl !== "");
     await auth.signOut(); // user signs out while the browser flow is open…
     await redirectBack(authorizeUrl, { code: "CODE" }); // …then finishes it anyway
-    await expect(pending).rejects.toThrow(/signed out while this Microsoft sign-in/);
+    expect((await outcome).message).toMatch(/signed out while this Microsoft sign-in/);
     expect(store.current).toBeNull(); // the sign-out stands
   });
 
@@ -638,20 +642,24 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     const store = memoryStore({ accessToken: "OLD", refreshToken: "RT", expiresAt: 0, scopes: [] });
     let releaseRefresh!: () => void;
     const gate = new Promise<void>((r) => (releaseRefresh = r));
+    const fetchImpl = vi.fn(async () => {
+      await gate;
+      return tokenReply();
+    });
     const auth = createMicrosoftAuth({
       config,
       store,
-      fetchImpl: vi.fn(async () => {
-        await gate;
-        return tokenReply();
-      }) as unknown as typeof fetch,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => 1_000,
     });
-    const refreshing = auth.getAccessToken({ interactive: false });
-    await new Promise((r) => setTimeout(r, 10));
+    const outcome = auth.getAccessToken({ interactive: false }).then(
+      () => new Error("expected the refresh to be discarded"),
+      (e: unknown) => e as Error,
+    );
+    await until(() => fetchImpl.mock.calls.length > 0); // the refresh request is in flight
     await auth.signOut();
     releaseRefresh();
-    await expect(refreshing).rejects.toBeInstanceOf(AuthError);
+    expect(await outcome).toBeInstanceOf(AuthError);
     expect(store.current).toBeNull();
   });
 
