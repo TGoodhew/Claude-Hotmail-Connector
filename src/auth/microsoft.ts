@@ -366,6 +366,9 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
           ? deps.openBrowser(authorizeUrl)
           : import("open").then((m) => m.default(authorizeUrl).then(launcherSucceeded));
         launch.catch((e: unknown) => {
+          // The browser evidently worked: Microsoft's redirect has arrived and the
+          // token exchange is under way, so a late launcher failure is irrelevant.
+          if (completed) return;
           if (deps.printUrlIfBrowserFails) {
             log.warn("Could not open a browser automatically. Visit the URL printed on stderr.");
             // Print to stderr so the user can copy it (never stdout).

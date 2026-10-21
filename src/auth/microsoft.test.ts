@@ -400,6 +400,34 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     await expect(pending).resolves.toMatchObject({ accessToken: "INTERACTIVE-AT" });
   });
 
+  it("ignores a launcher failure that arrives after Microsoft's redirect was accepted", async () => {
+    let releaseExchange!: () => void;
+    const exchangeGate = new Promise<void>((r) => (releaseExchange = r));
+    let failLauncher!: (e: Error) => void;
+    let authorizeUrl = "";
+    const store = memoryStore(null);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => {
+        await exchangeGate; // token exchange in progress…
+        return tokenReply();
+      }) as unknown as typeof fetch,
+      openBrowser: (url) => {
+        authorizeUrl = url;
+        return new Promise<void>((_, reject) => (failLauncher = reject));
+      },
+      now: () => 1_000,
+    });
+    const pending = auth.signIn();
+    await until(() => authorizeUrl !== "");
+    await redirectBack(authorizeUrl, { code: "CODE" }); // callback accepted
+    failLauncher(new Error("launcher exited 1")); // …the launcher reports failure late…
+    releaseExchange(); // …and the exchange then succeeds.
+    await expect(pending).resolves.toMatchObject({ accessToken: "INTERACTIVE-AT" });
+    expect(store.current?.accessToken).toBe("INTERACTIVE-AT");
+  });
+
   it("ends the attempt at once if the browser can't be opened (server mode)", async () => {
     const auth = createMicrosoftAuth({
       config,
