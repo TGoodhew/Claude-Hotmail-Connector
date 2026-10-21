@@ -187,6 +187,27 @@ describe("htmlToText structure (#32)", () => {
     expect(htmlToText("<table><tr><td><span>A<br></span>B</td></tr></table>")).toBe("A\nB");
   });
 
+  it("treats encoded spacing like spacing before a cell's end (Copilot review on #109)", () => {
+    for (const space of ["&nbsp;", "&#160;", "&#32;", "&#xA0;"]) {
+      expect(
+        htmlToText(`<table><tr><td>Total<br>${space}</td><td>240</td></tr></table>`),
+        space,
+      ).toBe("Total\t240");
+      expect(htmlToText(`<table><tr><td><p>Total</p>${space}<td>240</table>`), space).toBe(
+        "Total\t240",
+      );
+    }
+  });
+
+  it("keeps breaks owed outside a cell, such as after a caption (Copilot review on #109)", () => {
+    expect(htmlToText("<table><caption>Booking</caption><tr><td>Date<td>Mon</table>")).toBe(
+      "Booking\nDate\tMon",
+    );
+    expect(htmlToText("<table><tr><td>a</td></tr><p>Note</p></table>After")).toBe(
+      "a\nNote\n\nAfter",
+    );
+  });
+
   it("isn't fooled by tag-like text inside another tag's attribute (Copilot review on #109)", () => {
     expect(htmlToText('<a title="<!--">Keep me</a><!-- footer -->')).toBe("Keep me");
     expect(htmlToText('<table><tr><td><a title="</td>">A</a></td><td>B</td></tr></table>')).toBe(
@@ -212,6 +233,13 @@ describe("htmlToText structure (#32)", () => {
     // The head also ends where the body starts, and an unended <head> hides nothing.
     expect(htmlToText("<head><title>T</title><body><p>Body</p>")).toBe("Body");
     expect(htmlToText("<head><p>Visible</p>")).toBe("Visible");
+    // Fake terminators (in a comment or attribute) with no real one hide nothing
+    // either (Copilot review on #109).
+    expect(htmlToText("<head><!-- </head> --><p>Visible</p>")).toBe("Visible");
+    expect(htmlToText('<head><meta content="</head>"><p>Visible</p>')).toBe("Visible");
+    expect(htmlToText('<head><meta content="<body>"><title>T</title><p>Visible</p>')).toBe(
+      "Visible",
+    );
     // An unclosed <pre> keeps its spacing to the end, as in a browser.
     expect(htmlToText("<p>Hi</p><pre>  a\n    b")).toBe("Hi\n\n  a\n    b");
   });
