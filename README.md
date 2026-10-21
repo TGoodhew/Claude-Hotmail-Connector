@@ -100,11 +100,11 @@ The connector signs in as a **public/native client**. No client secret is ever u
 1. Go to the [Entra admin center → App registrations](https://entra.microsoft.com/) →
    **New registration**.
 2. **Name:** e.g. `Claude Hotmail Connector`.
-3. **Supported account types:** choose **"Accounts in any organizational directory (Any Microsoft
-   Entra ID tenant – Multitenant) and personal Microsoft accounts (e.g. Skype, Xbox)."** This is what
-   allows `hotmail.com` / `outlook.com` sign-in with the default `common` tenant. (Restricting this to
-   personal accounts only is under review in
-   [#62](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/62).)
+3. **Supported account types:** choose **"Personal Microsoft accounts only"**. That's what the
+   connector is for (`hotmail.com` / `outlook.com` / `live.com`), and it matches the default
+   `MICROSOFT_TENANT=consumers`. Work/school accounts are served by Claude's official Microsoft 365
+   connector. To allow them anyway, pick the multitenant + personal option instead and set
+   `MICROSOFT_TENANT=common`.
 4. **Redirect URI:** select platform **"Public client/native (mobile & desktop)"** and enter
    **`http://localhost`**. Microsoft allows any loopback port for native clients, so you don't need a
    specific port.
@@ -147,7 +147,7 @@ Environment variables (see [`.env.example`](.env.example)):
 | Variable                   | Default                       | Notes                                                                                                                       |
 | -------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `MICROSOFT_CLIENT_ID`      | the ID saved by `setup`       | Your Entra app's client ID. Required if no ID has been saved.                                                               |
-| `MICROSOFT_TENANT`         | `common`                      | `common` allows personal + work/school accounts.                                                                            |
+| `MICROSOFT_TENANT`         | `consumers`                   | Personal accounts only. `common` also allows work/school accounts (needs a multitenant registration).                       |
 | `DEFAULT_TIMEZONE`         | `Australia/Brisbane`          | IANA zone used when a call doesn't specify one ([#34](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/34)).     |
 | `LOG_LEVEL`                | `info`                        | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
 | `MICROSOFT_SCOPES`         | least-privilege set (spec §6) | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
@@ -260,8 +260,12 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
 ## Troubleshooting
 
 - **`AADSTS50020` / "account does not exist in tenant" / personal account rejected:** the app
-  registration isn't set to **multitenant + personal accounts**, or you used a tenant other than
-  `common`. Recreate or adjust it per step 1.3 and keep `MICROSOFT_TENANT=common`.
+  registration doesn't accept personal accounts. Set its account type to **Personal Microsoft accounts
+  only** (or multitenant + personal) per step 1.3.
+- **`AADSTS9002331` / "configured for use by Microsoft Account users only":** a personal-only
+  registration is being used with `MICROSOFT_TENANT=common`. Use the default, `consumers`.
+- **A work/school account can't sign in:** expected with the default `consumers` tenant. See step 1.3
+  for the multitenant option.
 - **`AADSTS7000218` / "client_assertion or client_secret required":** the app is registered as a
   confidential/web client. Register it as a **public client** with **"Allow public client flows" =
   Yes** (step 1.6).

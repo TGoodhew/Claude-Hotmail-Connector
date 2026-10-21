@@ -24,8 +24,8 @@ describe("loadConfig", () => {
   it("applies the documented defaults", () => {
     const cfg = loadConfig(base);
     expect(cfg.microsoftClientId).toBe(base.MICROSOFT_CLIENT_ID);
-    expect(cfg.microsoftTenant).toBe("common");
-    expect(cfg.authority).toBe("https://login.microsoftonline.com/common");
+    expect(cfg.microsoftTenant).toBe("consumers");
+    expect(cfg.authority).toBe("https://login.microsoftonline.com/consumers");
     expect(cfg.defaultTimeZone).toBe("Australia/Brisbane");
     expect(cfg.graphBaseUrl).toBe("https://graph.microsoft.com/v1.0");
     expect(cfg.loopbackHost).toBe("127.0.0.1");
@@ -72,11 +72,11 @@ describe("loadConfig", () => {
   it("honours a custom tenant and timezone", () => {
     const cfg = loadConfig({
       ...base,
-      MICROSOFT_TENANT: "consumers",
+      MICROSOFT_TENANT: "common",
       DEFAULT_TIMEZONE: "Europe/London",
     });
-    expect(cfg.microsoftTenant).toBe("consumers");
-    expect(cfg.authority).toBe("https://login.microsoftonline.com/consumers");
+    expect(cfg.microsoftTenant).toBe("common");
+    expect(cfg.authority).toBe("https://login.microsoftonline.com/common");
     expect(cfg.defaultTimeZone).toBe("Europe/London");
   });
 
