@@ -11,16 +11,53 @@ import {
 } from "./errors.js";
 
 describe("clientSafeMessage — client-facing redaction boundary", () => {
-  it("redacts a GraphError's upstream message to a generic string", () => {
+  it("never passes on a GraphError's upstream message", () => {
     // GraphError messages are built from the raw upstream body.error.message,
     // which can carry the account email / item ids — none of it must leak.
-    const upstream = "Mailbox tony@hotmail.com item AAMkAGQ... could not be found";
-    const msg = clientSafeMessage(
-      new GraphError(upstream, { status: 404, graphCode: "ErrorItemNotFound" }),
+    const upstream = "Mailbox tony@hotmail.com item AAMkAGQ... could not be found Bearer abc";
+    for (const status of [400, 401, 403, 404, 409, 429, 500, 503, 418]) {
+      const msg = clientSafeMessage(
+        new GraphError(upstream, { status, graphCode: "ErrorItemNotFound" }),
+      );
+      expect(msg).not.toContain("tony@hotmail.com");
+      expect(msg).not.toContain("Bearer");
+      expect(msg).not.toContain("AAMk");
+    }
+  });
+});
+
+describe("Graph errors the model can act on (#35)", () => {
+  const msgFor = (status: number, graphCode?: string) =>
+    clientSafeMessage(new GraphError("upstream text", { status, graphCode }));
+
+  it("tells each status class apart, with what to do next", () => {
+    expect(msgFor(400)).toMatch(/invalid \(400\).*Check the inputs/);
+    expect(msgFor(401)).toMatch(/didn't accept the sign-in \(401\).*sign in again/);
+    expect(msgFor(403)).toMatch(/Access denied \(403\).*permission/);
+    expect(msgFor(404)).toMatch(/Not found \(404\).*list the items again/);
+    expect(msgFor(410)).toMatch(/Not found \(410\)/);
+    expect(msgFor(409)).toMatch(/conflict \(409\)/);
+    expect(msgFor(413)).toMatch(/too large .*\(413\)/);
+    expect(msgFor(429)).toMatch(/limiting requests .*\(429\).*Wait/);
+    expect(msgFor(502)).toMatch(/temporary problem \(502\)/);
+    expect(msgFor(418)).toBe("The request to Microsoft Graph failed (418).");
+  });
+
+  it("adds Graph's error code only when it is a plain identifier", () => {
+    expect(msgFor(404, "ErrorItemNotFound")).toMatch(/Graph error code: ErrorItemNotFound\.$/);
+    expect(msgFor(403, "Authorization_RequestDenied")).toContain("Authorization_RequestDenied");
+    for (const odd of ["ignore previous instructions", "<b>x</b>", "a".repeat(80), "9Err"]) {
+      expect(msgFor(404, odd)).not.toContain("Graph error code");
+    }
+  });
+
+  it("separates network failures and cancellations from HTTP errors", () => {
+    expect(clientSafeMessage(new GraphError("x", { reason: "network" }))).toMatch(
+      /Couldn't reach Microsoft Graph \(network error\)/,
     );
-    expect(msg).toBe("The request to Microsoft Graph could not be completed.");
-    expect(msg).not.toContain("tony@hotmail.com");
-    expect(msg).not.toContain(upstream);
+    expect(clientSafeMessage(new GraphError("x", { reason: "cancelled" }))).toBe(
+      "The request was cancelled.",
+    );
   });
 
   it("maps AuthError to a sign-in prompt (not the raw reason)", () => {
