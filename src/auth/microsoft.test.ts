@@ -229,6 +229,27 @@ describe("createMicrosoftAuth.getAccessToken", () => {
     expect(store.current?.refreshToken).toBe("NEW-RT");
   });
 
+  it("gives up on a token endpoint that never answers, instead of hanging (#37)", async () => {
+    const store = memoryStore({ ...validCached, expiresAt: 1_500 });
+    const stalled = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))),
+        ),
+    );
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: stalled as unknown as typeof fetch,
+      now: () => 1_000,
+      tokenTimeoutMs: 20,
+      logger: { debug() {}, info() {}, warn() {}, error() {} } as never,
+    });
+    await expect(auth.getAccessToken({ interactive: false })).rejects.toBeInstanceOf(AuthError);
+    expect(stalled).toHaveBeenCalledOnce();
+    expect(stalled.mock.calls[0]![1]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("throws (no browser) when refresh fails and interactive=false", async () => {
     const store = memoryStore({ ...validCached, expiresAt: 1_500 });
     const fetchImpl = vi.fn(async () => jsonResponse({ error: "invalid_grant" }, 400));
