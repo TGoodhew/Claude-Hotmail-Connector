@@ -10,6 +10,7 @@ import {
   createMcpServer,
   SERVER_INSTRUCTIONS,
   SERVER_VERSION,
+  TOOL_CALL_DEADLINE_MS,
   toolsForScopes,
 } from "./mcp.js";
 import type { RegisteredTool, ToolContext } from "./tools/types.js";
@@ -105,6 +106,42 @@ describe("tool calls are bound to one sign-out epoch", () => {
     await client.connect(clientTransport);
     await client.callTool({ name: "two_requests", arguments: {} });
     expect(seen).toEqual([3, 3]); // not 3 then 4
+    await client.close();
+  });
+
+  it("gives every request the client's cancellation signal and one deadline (#37)", async () => {
+    const seen: { signal?: AbortSignal; deadline?: number }[] = [];
+    const graph = {
+      get: vi.fn(async (_path: string, opts?: { signal?: AbortSignal; deadline?: number }) => {
+        seen.push({ signal: opts?.signal, deadline: opts?.deadline });
+        return {};
+      }),
+    } as unknown as GraphClient;
+    const twoRequests: RegisteredTool = {
+      name: "two_requests",
+      description: "test tool",
+      inputShape: {},
+      scopesAnyOf: ["openid"],
+      handler: async (_input, ctx) => {
+        await ctx.graph.get("/a");
+        await ctx.graph.get("/b");
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    };
+    const server = createMcpServer({ graph, config }, [twoRequests]);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    const before = Date.now();
+    await client.callTool({ name: "two_requests", arguments: {} });
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]!.signal).toBeInstanceOf(AbortSignal);
+    expect(seen[1]!.signal).toBe(seen[0]!.signal);
+    expect(seen[1]!.deadline).toBe(seen[0]!.deadline); // one deadline for the call
+    expect(seen[0]!.deadline! - before).toBeLessThanOrEqual(TOOL_CALL_DEADLINE_MS + 1_000);
+    expect(seen[0]!.deadline! - before).toBeGreaterThan(TOOL_CALL_DEADLINE_MS - 5_000);
     await client.close();
   });
 });
