@@ -12,13 +12,25 @@ import { GraphError, ValidationError } from "../util/errors.js";
 import { htmlToText } from "../util/html.js";
 import {
   assertValidTimeZone,
+  type GraphDateTime,
   preferTimeZoneHeader,
   toGraphDateTime,
+  utcToZonedWallClock,
   zonedWallClockToUtcIso,
 } from "../util/time.js";
 import type { GraphClient } from "./client.js";
 
 const EVENT_SELECT = "id,subject,start,end,location,isAllDay,webLink";
+
+/** The UTC instant (ms) of a local wall-clock time in its zone. */
+function instant(t: { dateTime: string; timeZone: string }): number {
+  return Date.parse(zonedWallClockToUtcIso(t.dateTime, t.timeZone));
+}
+
+/** Refuse a range or event that ends at or before it starts (#33). */
+function assertEndAfterStart(startMs: number, endMs: number, message: string): void {
+  if (endMs <= startMs) throw new ValidationError(message);
+}
 
 export interface ListEventsInput {
   startDateTime: string;
@@ -91,17 +103,17 @@ export async function listEvents(
   input: ListEventsInput,
 ): Promise<EventSummary[]> {
   assertValidTimeZone(input.timeZone);
-  if (Number.isNaN(Date.parse(input.startDateTime))) {
-    throw new ValidationError(`startDateTime must be ISO 8601; got "${input.startDateTime}".`);
-  }
-  if (Number.isNaN(Date.parse(input.endDateTime))) {
-    throw new ValidationError(`endDateTime must be ISO 8601; got "${input.endDateTime}".`);
-  }
 
   // Pin bare local bounds to the display zone so the query window and the
-  // rendered results agree (see doc comment above).
+  // rendered results agree (see doc comment above). Unparseable bounds are
+  // rejected here rather than passed to Graph.
   const startDateTime = zonedWallClockToUtcIso(input.startDateTime, input.timeZone);
   const endDateTime = zonedWallClockToUtcIso(input.endDateTime, input.timeZone);
+  assertEndAfterStart(
+    Date.parse(startDateTime),
+    Date.parse(endDateTime),
+    "endDateTime must be after startDateTime.",
+  );
 
   const events = await graph.getAllPages<GraphEvent>(
     "/me/calendarView",
@@ -238,10 +250,17 @@ export async function createEvent(
   deriveId: (input: CreateEventInput) => string = deterministicTransactionId,
 ): Promise<EventWriteResult> {
   const transactionId = input.transactionId ?? deriveId(input);
+  const start = toGraphDateTime(input.start.dateTime, input.start.timeZone);
+  const end = toGraphDateTime(input.end.dateTime, input.end.timeZone);
+  assertEndAfterStart(
+    instant(start),
+    instant(end),
+    "The event's end must be after its start. Nothing was created.",
+  );
   const payload: Record<string, unknown> = {
     subject: input.subject,
-    start: toGraphDateTime(input.start.dateTime, input.start.timeZone),
-    end: toGraphDateTime(input.end.dateTime, input.end.timeZone),
+    start,
+    end,
     transactionId,
     ...(input.location ? { location: { displayName: input.location } } : {}),
     ...(input.body ? { body: { contentType: "text", content: input.body } } : {}),
@@ -384,16 +403,41 @@ export async function updateEvent(
   const zone = input.start?.timeZone ?? input.end?.timeZone;
   const headers = zone ? { prefer: preferTimeZoneHeader(zone) } : undefined;
   const path = `/me/events/${encodeURIComponent(input.id)}`;
+  // Changing either side needs both, to check the result still ends after it starts.
+  const select = new Set(["id", "attendees", ...fields, ...(zone ? ["start", "end"] : [])]);
 
+  // When times change, read the event in UTC: a stored time is then exact even
+  // in a repeated daylight-saving hour, where the same wall-clock time happens
+  // twice. The report still shows it in `zone`, like the updated event.
   const before = await graph.get<GraphEvent>(path, {
-    query: { $select: ["id", "attendees", ...fields].join(",") },
-    headers,
+    query: { $select: [...select].join(",") },
+    headers: zone ? { prefer: preferTimeZoneHeader("UTC") } : undefined,
   });
   if ((before.attendees?.length ?? 0) > 0) {
     throw new ValidationError(
       "This event has attendees, so changing it could email them an update. The connector " +
         "doesn't send mail; change it in Outlook instead. Nothing was changed.",
     );
+  }
+  if (zone) {
+    // A side that isn't changing keeps its stored value (read in UTC above).
+    const stored = (t?: { dateTime?: string }) =>
+      t?.dateTime ? instant({ dateTime: t.dateTime, timeZone: "UTC" }) : undefined;
+    const storedStart = stored(before.start);
+    const storedEnd = stored(before.end);
+    const startMs = input.start ? instant(patch.start as GraphDateTime) : storedStart;
+    const endMs = input.end ? instant(patch.end as GraphDateTime) : storedEnd;
+    if (startMs !== undefined && endMs !== undefined) {
+      assertEndAfterStart(
+        startMs,
+        endMs,
+        "After this change the event would end at or before it starts. Nothing was changed.",
+      );
+    }
+    // Report the stored times in the zone of the change, as Graph renders the result.
+    const inZone = (ms: number) => ({ dateTime: utcToZonedWallClock(ms, zone), timeZone: zone });
+    if (storedStart !== undefined) before.start = inZone(storedStart);
+    if (storedEnd !== undefined) before.end = inZone(storedEnd);
   }
   // Prepare the report's "before" side now: a failure here must not happen
   // after the write, where it would hide a change that was actually made.
