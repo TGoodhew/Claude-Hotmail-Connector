@@ -20,7 +20,7 @@ Only the **latest release** receives security fixes.
 
 ## Scope
 
-In scope: this repository's code, build scripts, installer and release artifacts. Examples include
+In scope: this repository's code, build scripts, the Claude Desktop extension bundle and release artifacts. Examples include
 token handling and storage, the OAuth sign-in flow, what the MCP tools expose to the model, and log
 scrubbing.
 

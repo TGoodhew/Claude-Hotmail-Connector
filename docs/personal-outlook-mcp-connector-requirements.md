@@ -7,8 +7,8 @@
 **Tracking:** epic [#66](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66) · decisions [#59](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/59)
 
 > **What changed in v2.** v1.0 specified a *remote* connector on Cloudflare Workers. What was built is a
-> **local stdio** MCP server (the "Mode A" recommended by the hosting investigation), with a Windows
-> installer. v2 makes the spec match that reality, records the decisions taken when the two
+> **local stdio** MCP server (the "Mode A" recommended by the hosting investigation), originally with
+> a Windows installer, since replaced by a Claude Desktop extension (§11, D13). v2 makes the spec match that reality, records the decisions taken when the two
 > diverged (§16), and moves the remote design to a future-phase section (§15).
 >
 > **Status markers.** Requirements the implementation does not yet meet carry the issue that tracks
@@ -74,7 +74,6 @@ personal accounts for mail and calendar when you use **your own** Entra app regi
 | **Public client** | An OAuth client that cannot keep a secret (a desktop app). It authenticates with **PKCE** instead. |
 | **PKCE** | Proof Key for Code Exchange (RFC 7636), which protects the authorization-code flow without a secret. |
 | **Loopback redirect** | Redirect URI `http://localhost:<port>`, served briefly by the app to receive the auth code. |
-| **SEA** | Node.js Single Executable Application, a Node runtime and app bundled into one `.exe`. |
 | **MCPB** | MCP Bundle (Desktop Extension): Claude Desktop's one-click package format for local MCP servers. |
 
 ---
@@ -103,8 +102,8 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - **TypeScript on Node.js.** The MCP ecosystem is TypeScript-first; the reference SDK is
   `@modelcontextprotocol/sdk`.
 - **Runtime: Node.js 24 LTS** (`engines >=24`; CI and release on 24) *(→ #45; currently Node 20, which
-  reached EOL in April 2026)*. The SEA exe embeds the Node runtime it was built with, so the build
-  runtime MUST be a supported LTS line.
+  reached EOL in April 2026)*. The Claude Desktop extension runs on Claude Desktop's own bundled Node
+  (version undocumented; the bundle targets Node 18+), so CI and source checkouts are what this pins.
 - **Libraries:** `zod` (input validation), `dotenv` (dev config), `open` (system browser). Build with
   `tsup`, test with `vitest`. Crypto (PKCE, AES-256-GCM, SHA-256) uses Node's built-in `crypto`; no
   hand-rolled primitives.
@@ -270,10 +269,11 @@ signed in to that tenant. Registration settings:
   restricting the audience narrows who can sign in. Advanced: a *multitenant + personal* registration
   with `MICROSOFT_TENANT=common` also admits work/school accounts. `register-app.ps1 -Audience
   Multitenant` creates one. Existing multitenant registrations keep working with `consumers`.
-- **Supplying the client id.** `setup --client-id <id>` (run by the installer from its client-id page,
-  or `/CLIENTID=` when silent) validates the GUID and saves it to `settings.json` in the cache
-  directory. `MICROSOFT_CLIENT_ID` (env / `.env` / an MCPB setting) takes precedence over the saved
-  value. With neither, every command except `setup` / `unsetup` fails with an actionable error.
+- **Supplying the client id:** always via `MICROSOFT_CLIENT_ID`.
+  - In the Claude Desktop extension, it comes from the extension's required "Application (client) ID"
+    setting (`user_config.client_id`).
+  - In Claude Code / VS Code, it comes from the server's `env`; in development, from a local `.env`.
+  - Without it, every command fails with an actionable error.
 - Builds MUST NOT embed a shared client id. The maintainer's former shared registration (used by
   v0.1.0) is retired after the next release *(→ #68)*.
 
@@ -281,7 +281,8 @@ signed in to that tenant. Registration settings:
 - **Flow:** authorization code + **PKCE (S256)** against
   `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/{authorize,token}`, with a random `state`, the
   system browser, and a one-shot loopback listener on `127.0.0.1` with a 5-minute timeout.
-- **Explicit:** `login` / `logout` CLI commands, plus a Start-menu shortcut from the installer.
+- **Explicit (source checkouts):** `login` / `logout` / `whoami` CLI commands. The extension has no
+  command line and relies on on-demand sign-in.
 - **On demand:** when a tool needs a token and silent refresh fails, the server starts the sign-in
   itself in the system browser and waits up to 45 s, inside typical 60 s MCP request timeouts. If you
   finish in time, the call proceeds; otherwise it returns a user-facing "finish signing in, then
@@ -307,8 +308,8 @@ signed in to that tenant. Registration settings:
   - **macOS / Linux:** plain owner-only key file for now *(→ #83)*.
 - Cache location: `%LOCALAPPDATA%\claude-hotmail-connector` (Windows) or `~/.claude-hotmail-connector`,
   overridable with `CLAUDE_HOTMAIL_CACHE_DIR`.
-- Tokens are never logged, returned to the client, or committed. Uninstall MUST remove the cache
-  *(→ #43)*.
+- Tokens are never logged, returned to the client, or committed. Users MUST have a way to sign out and
+  clear the cache. Removing the extension doesn't run any cleanup, so sign-out is needed *(→ #43)*.
 
 ### 8.4 Configuration
 | Variable | Default | Notes |
@@ -425,19 +426,17 @@ Claude-Hotmail-Connector/
 ├─ docs/
 │  ├─ personal-outlook-mcp-connector-requirements.md   # this spec (v2)
 │  ├─ local-hosting-investigation-and-requirements.md  # superseded; kept for the investigation record
-│  └─ installer.md                # packaging & installer details
+│  └─ packaging.md                # Claude Desktop extension (.mcpb): install, upgrade, build
 ├─ src/
-│  ├─ index.ts                    # CLI: (default) stdio server, setup, unsetup, login, logout, whoami
+│  ├─ index.ts                    # CLI: (default) stdio server, login, logout, whoami
 │  ├─ mcp.ts                      # McpServer + tool registration
 │  ├─ config.ts                   # env/config loading & validation
-│  ├─ auth/{microsoft,tokens}.ts  # upstream OAuth (PKCE + loopback), token store
+│  ├─ auth/{microsoft,tokens,protect}.ts  # upstream OAuth (PKCE + loopback), token store, DPAPI
 │  ├─ graph/{client,mail,calendar,user}.ts   # Graph client (auth, retry, paging) + modules
 │  ├─ tools/{mail,calendar,user,types}.ts    # zod schemas + thin handlers
-│  ├─ setup/{clients,run}.ts      # MCP host auto-configuration
 │  └─ util/{time,html,log,errors}.ts
 │     (tests are colocated: src/**/*.test.ts)
-├─ scripts/                       # build-exe.mjs, check-text.mjs, register-app.ps1
-├─ installer/                     # Inno Setup script
+├─ scripts/                       # build-mcpb.mjs, check-text.mjs, register-app.ps1
 └─ .github/workflows/             # ci.yml, release.yml
 ```
 
@@ -445,18 +444,19 @@ Claude-Hotmail-Connector/
 
 ## 11. Packaging & distribution
 
-- **Current:** a Node SEA single exe (`npm run build:exe`) and an Inno Setup installer
-  (`npm run build:installer`), published to GitHub Releases with SHA-256 checksums by `release.yml`. The
-  exe's `setup` / `unsetup` commands add or remove the server in `claude_desktop_config.json` (standalone
-  and Microsoft Store paths). Windows only; unsigned by design. Developer path: `npm run build` +
-  `node dist/index.js`.
-- The installer collects the user's client id (§8.1). It MUST clean up on uninstall *(→ #43)*.
-  `setup` MUST tolerate a UTF-8 BOM and write configs atomically *(→ #40)*.
-- **Intended direction: MCPB.** Claude Desktop's Desktop Extension format would provide one-click install,
-  a settings UI for the client id (sensitive values in OS secure storage), Claude Desktop's own Node
-  runtime, and macOS support, with no config-file editing. It depends on on-demand sign-in (§8.2). A
-  spike decides whether MCPB becomes the primary Desktop channel *(→ #63)*. Cross-platform `setup` for
-  other clients is tracked in #56.
+- **Claude Desktop: MCP Bundle (`.mcpb`)** (owner decision on #63, option A).
+  - `npm run build:mcpb` produces `build/hotmail-connector.mcpb` (see `docs/packaging.md`): a
+    single-file esbuild server bundle (no `node_modules`) plus `manifest.json` (spec 0.3). It is
+    validated and packed with the pinned `@anthropic-ai/mcpb` CLI.
+  - Claude Desktop installs it with a double-click, runs it on its own bundled Node, and collects the
+    client id through a generated settings UI. Windows, macOS and Linux are all supported.
+  - Sign-in is on demand (§8.2). CI builds the bundle on every PR, and `release.yml` publishes it with
+    a SHA-256 checksum when a `v*` tag matching `package.json` is pushed.
+- **Claude Code / VS Code:** a source checkout (`npm run build` + `node dist/index.js`), configured with
+  `MICROSOFT_CLIENT_ID` in the server's `env`. Smoother setup for these clients is tracked in #56.
+- **Retired:** the v0.1.0 Node SEA exe, the Inno Setup installer and the `setup` / `unsetup` commands
+  that edited `claude_desktop_config.json`. Users upgrading must uninstall v0.1.0 first, or every tool
+  shows twice.
 - **CI/release:** CI MUST run on Windows as well as Linux, the release job MUST run the full checks, and
   the version MUST have a single source *(→ #46)*.
 
@@ -492,7 +492,8 @@ Claude-Hotmail-Connector/
 5. Retrying a create does not produce duplicates.
 6. No tokens or secrets appear in logs or tool output.
 7. A prompt-injection email fixture cannot cause data exfiltration (§9.2).
-8. Uninstall removes the client config entry and the token cache.
+8. The extension installs, prompts for the client id, and serves all tools in Claude Desktop. Signing
+   out clears the token cache (#43).
 9. CI is green, including on Windows; the README reproduces setup on a fresh machine.
 
 ---
@@ -504,12 +505,12 @@ Claude-Hotmail-Connector/
 | Entra app not set up for personal accounts → AADSTS errors | Documented registration (§8.1), `register-app.ps1`; troubleshooting in README. |
 | Timezone drift (event an hour off) | Local wall-clock + IANA; `Prefer` header; reject `Z`/offsets; DST tests (§9.5). |
 | Duplicate events on retry | Deterministic `transactionId` (§7.5). |
-| Token theft from disk | OS-protected storage (§8.3); cache removed on uninstall. |
+| Token theft from disk | OS-protected storage (§8.3); a sign-out path clears the cache (#43). |
 | Token exfiltration via model-supplied URLs | Opaque cursors; access token only sent to the Graph origin (§7.2). |
 | Prompt injection via email | Threat model (§9.2): no URL fetching, no attendees, confirmation on writes, junk filtering, bounded output. |
 | Over-broad access | `Mail.Read` only; scope override narrowing-only (§6); no hard delete. |
 | Graph throttling / outages | Backoff with `Retry-After`; timeouts; result caps (§9.3). |
-| Unpatched runtime in shipped exe | Supported Node LTS (§5); Dependabot/audit (#44). |
+| Outdated dependencies in the shipped bundle | Dependabot/audit (#44); Claude Desktop supplies the Node runtime. |
 | Only usable on the user's PC | Accepted for v2; remote mode is a future phase (§15). |
 
 ---
@@ -569,7 +570,7 @@ Decided by the owner on 2026-10-21. Details and rationale are in #59.
 | D10 | `update_event` risk | Destructive write; before/after echo | #71 |
 | D11 | Scope override | Narrowing only | #70 |
 | D12 | Layout & tests | Colocated tests; live opt-in test required; coverage threshold | #48, #47 |
-| D13 | Packaging | Document exe + installer; MCPB intended, pending spike | #63 |
+| D13 | Packaging | After the #63 spike: **MCPB** for Claude Desktop; source for Claude Code; exe, installer and `setup`/`unsetup` retired | #63 |
 | D14 | Acceptance criteria | Mode A criteria (§13); remote criteria → §15 | — |
 | D15 | Runtime | Node 24 LTS | #45 |
 

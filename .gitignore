@@ -43,7 +43,5 @@ Thumbs.db
 # Local MCP client config (test setup)
 .mcp.json
 
-# Installer / packaging build outputs
+# Packaging build outputs (build/mcpb staging, build/*.mcpb)
 build/
-dist-sea/
-dist-installer/

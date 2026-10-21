@@ -3,22 +3,18 @@ import { DEFAULT_SCOPES, loadConfig, MISSING_CLIENT_ID_MESSAGE } from "./config.
 import { ConfigError } from "./util/errors.js";
 
 const base = { MICROSOFT_CLIENT_ID: "11111111-2222-3333-4444-555555555555" };
-const savedId = "99999999-8888-7777-6666-555555555555";
 
 describe("loadConfig", () => {
   it("requires a client id: there is no bundled shared default", () => {
     expect(() => loadConfig({})).toThrow(ConfigError);
     expect(() => loadConfig({ MICROSOFT_CLIENT_ID: "   " })).toThrow(MISSING_CLIENT_ID_MESSAGE);
+    expect(MISSING_CLIENT_ID_MESSAGE).toContain("Settings > Extensions");
   });
 
-  it("uses the saved settings client id when the env var is absent", () => {
-    expect(loadConfig({}, { clientId: savedId }).microsoftClientId).toBe(savedId);
-  });
-
-  it("prefers MICROSOFT_CLIENT_ID over the saved settings", () => {
-    expect(loadConfig(base, { clientId: savedId }).microsoftClientId).toBe(
-      base.MICROSOFT_CLIENT_ID,
-    );
+  it("uses MICROSOFT_CLIENT_ID (trimmed)", () => {
+    expect(
+      loadConfig({ MICROSOFT_CLIENT_ID: ` ${base.MICROSOFT_CLIENT_ID} ` }).microsoftClientId,
+    ).toBe(base.MICROSOFT_CLIENT_ID);
   });
 
   it("applies the documented defaults", () => {

@@ -38,3 +38,6 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Build Claude Desktop extension (.mcpb)
+        run: npm run build:mcpb

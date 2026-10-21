@@ -49,9 +49,11 @@ export class AuthError extends AppError {
  */
 export class SignInRequiredError extends AuthError {}
 
-/** How to sign in explicitly; shared by user-facing auth messages. */
-export const LOGIN_HINT =
-  'run `hotmail-connector.exe login` (or the Start-menu shortcut "Sign in to Hotmail Connector")';
+/**
+ * The explicit sign-in path, appended to user-facing auth messages. Extension
+ * installs sign in on demand only; source checkouts also have `login`.
+ */
+export const LOGIN_HINT = "(from a source checkout you can also run `node dist/index.js login`)";
 
 /** A Microsoft Graph request failed. Carries the HTTP status when known. */
 export class GraphError extends AppError {
@@ -97,7 +99,10 @@ export function clientSafeMessage(err: unknown): string {
       case "CONFIG_ERROR":
         return "The connector is not configured correctly. Check the server logs.";
       case "AUTH_ERROR":
-        return `Microsoft sign-in is required or has expired. To sign in, ${LOGIN_HINT}, then try again.`;
+        return (
+          "Microsoft sign-in is required or has expired. Ask me to try again and a Microsoft " +
+          `sign-in window will open in your browser ${LOGIN_HINT}.`
+        );
       case "GRAPH_ERROR":
         return "The request to Microsoft Graph could not be completed.";
       case "TIMEOUT_ERROR":
