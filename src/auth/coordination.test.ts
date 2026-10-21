@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,6 +105,45 @@ describe("createFileCoordinator (#95)", () => {
       return { value: undefined };
     });
     expect(readFileSync(lock, "utf8")).toBe("someone-else");
+  });
+
+  it("breaks a fresh lock at once when the process that took it has exited", async () => {
+    const dir = tempDir();
+    const exited = spawnSync(process.execPath, ["-e", ""]).pid!; // a process id no longer running
+    writeFileSync(join(dir, "auth.lock"), `${exited}-deadbeef`);
+    const c = createFileCoordinator(dir, { lockTimeoutMs: 2_000 });
+    expect(await c.withLock(async () => ({ value: "ran" }))).toBe("ran");
+  });
+
+  it("never lets two waiters reaping the same stale lock both hold it (Copilot review on #126)", async () => {
+    const dir = tempDir();
+    const exited = spawnSync(process.execPath, ["-e", ""]).pid!;
+    writeFileSync(join(dir, "auth.lock"), `${exited}-deadbeef`);
+    // Several "processes" all find the dead holder's lock at once.
+    const coordinators = Array.from({ length: 4 }, () => createFileCoordinator(dir));
+    let active = 0;
+    let overlapped = false;
+    await Promise.all(
+      coordinators.map((c) =>
+        c.withLock(async () => {
+          active += 1;
+          if (active > 1) overlapped = true;
+          await new Promise((r) => setTimeout(r, 15));
+          active -= 1;
+          return { value: undefined };
+        }),
+      ),
+    );
+    expect(overlapped).toBe(false);
+    expect(existsSync(join(dir, "auth.lock.reap"))).toBe(false);
+  });
+
+  it("doesn't break a lock whose holder is still running, however long it waits", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "auth.lock"), `${process.pid}-other-instance`); // this process: alive
+    const c = createFileCoordinator(dir, { lockTimeoutMs: 80 });
+    await expect(c.withLock(async () => ({ value: 1 }))).rejects.toBeInstanceOf(AuthError);
+    expect(readFileSync(join(dir, "auth.lock"), "utf8")).toBe(`${process.pid}-other-instance`);
   });
 
   it("releases the lock when the locked section throws, and stores nothing", async () => {

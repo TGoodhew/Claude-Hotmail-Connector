@@ -63,8 +63,9 @@ export interface FileCoordinatorOptions {
   /** Give up waiting for the lock after this long (default 10s). */
   lockTimeoutMs?: number;
   /**
-   * A lock older than this is taken to belong to a process that died while
-   * holding it, and is removed (default 30s; locks are held for milliseconds).
+   * A lock is stale, and removed, when the process that took it has exited, or
+   * in any case once it is this old (default 2 minutes, which also covers a
+   * reused process id; locks are held for milliseconds).
    */
   staleLockMs?: number;
   now?: () => number;
@@ -73,9 +74,23 @@ export interface FileCoordinatorOptions {
 
 const STATE_FILE = "auth-state.json";
 const LOCK_FILE = "auth.lock";
+/** Guards removing a stale lock, so only one waiter does it at a time. */
+const REAP_FILE = "auth.lock.reap";
+/** A reaper holds its guard for milliseconds; one this old was left by a crash. */
+const REAP_STALE_MS = 5_000;
 
 function isErrno(e: unknown, code: string): boolean {
   return typeof e === "object" && e !== null && (e as NodeJS.ErrnoException).code === code;
+}
+
+/** Whether a process with this id is running (EPERM: it is, but isn't ours to signal). */
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return isErrno(e, "EPERM");
+  }
 }
 
 function parseState(raw: string): SharedAuthState {
@@ -95,8 +110,9 @@ export function createFileCoordinator(
 ): AuthCoordinator {
   const statePath = join(dir, STATE_FILE);
   const lockPath = join(dir, LOCK_FILE);
+  const reapPath = join(dir, REAP_FILE);
   const timeoutMs = options.lockTimeoutMs ?? 10_000;
-  const staleMs = options.staleLockMs ?? 30_000;
+  const staleMs = options.staleLockMs ?? 120_000;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   // One lock attempt at a time within this process, so local callers queue here
@@ -135,15 +151,11 @@ export function createFileCoordinator(
       } catch (e) {
         if (!isErrno(e, "EEXIST")) throw e;
       }
-      try {
-        if (now() - (await stat(lockPath)).mtimeMs > staleMs) {
-          // Its holder died mid-operation: break the lock and try again.
-          await rm(lockPath, { force: true });
-          continue;
-        }
-      } catch (e) {
-        if (!isErrno(e, "ENOENT")) throw e;
-        continue; // released between our attempts: try again at once
+      const stale = await isStale();
+      if (stale === null) continue; // released between our attempts: try again at once
+      if (stale) {
+        await reap();
+        continue;
       }
       if (now() >= deadline) {
         throw new AuthError(
@@ -151,6 +163,56 @@ export function createFileCoordinator(
         );
       }
       await sleep(20 + Math.floor(Math.random() * 30));
+    }
+  }
+
+  /**
+   * Whether the current lock is stale (null: there is none). It is when the
+   * process recorded in it has exited, or once it is older than `staleMs`.
+   */
+  async function isStale(): Promise<boolean | null> {
+    let content: string;
+    let mtimeMs: number;
+    try {
+      mtimeMs = (await stat(lockPath)).mtimeMs;
+      content = await readFile(lockPath, "utf8");
+    } catch (e) {
+      if (isErrno(e, "ENOENT")) return null;
+      throw e;
+    }
+    if (now() - mtimeMs > staleMs) return true;
+    const pid = Number(content.split("-")[0]);
+    // No id yet (just created) or our own process: its holder is alive.
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return false;
+    return !isRunning(pid);
+  }
+
+  /**
+   * Remove a stale lock. Only one waiter reaps at a time (an exclusive guard
+   * file), and it checks again under the guard, so it can't remove a lock that
+   * another waiter has taken since it looked: while the guard is held, the
+   * stale lock can only go away by being reaped here.
+   */
+  async function reap(): Promise<void> {
+    try {
+      await (await open(reapPath, "wx")).close();
+    } catch (e) {
+      if (!isErrno(e, "EEXIST")) throw e;
+      // Another waiter is reaping. A guard left by one that crashed mid-reap
+      // (held for milliseconds) is removed, then we try again.
+      try {
+        if (now() - (await stat(reapPath)).mtimeMs > REAP_STALE_MS) {
+          await rm(reapPath, { force: true });
+        }
+      } catch (err) {
+        if (!isErrno(err, "ENOENT")) throw err;
+      }
+      return;
+    }
+    try {
+      if (await isStale()) await rm(lockPath, { force: true });
+    } finally {
+      await rm(reapPath, { force: true });
     }
   }
 

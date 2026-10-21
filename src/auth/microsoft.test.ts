@@ -1161,4 +1161,113 @@ describe("sign-in and sign-out across processes (#95)", () => {
     expect(second.ok && second.value.accessToken).toBe("CODE-AT");
     expect(store.current?.accessToken).toBe("CODE-AT");
   });
+
+  /** A token endpoint that answers only when told to. */
+  function slowEndpoint() {
+    const s = { sent: false, answer: (_r: Response): void => undefined };
+    const respond = () =>
+      new Promise<Response>((r) => {
+        s.sent = true;
+        s.answer = r;
+      });
+    return { s, respond };
+  }
+
+  it("a slow refresh of the old account can't replace a sign-in that finished elsewhere (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 500,
+      scopes: config.scopes,
+    });
+    const { s, respond } = slowEndpoint();
+    const server = processWith(store, dir, respond);
+    const cli = processWith(store, dir, reply("NEW-ACCOUNT-AT"));
+
+    const lookup = outcome(server.auth.getAccessToken({ interactive: false }));
+    await until(() => s.sent); // refreshing the old account
+    const login = outcome(cli.auth.signIn()); // meanwhile, `login` with another account
+    await until(() => cli.authorizeUrl() !== "");
+    await redirectBack(cli.authorizeUrl(), { code: "C" });
+    expect((await login).ok).toBe(true);
+
+    s.answer(reply("REFRESHED-OLD")());
+    const result = await lookup;
+    // The refresh's tokens were dropped, and the request uses the new sign-in.
+    expect(result.ok && result.value).toBe("NEW-ACCOUNT-AT");
+    expect(store.current?.accessToken).toBe("NEW-ACCOUNT-AT");
+  });
+
+  it("a request from before a sign-out elsewhere doesn't fall back to a browser sign-in (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 500,
+      scopes: config.scopes,
+    });
+    const { s, respond } = slowEndpoint();
+    const server = processWith(store, dir, respond);
+    const cli = processWith(store, dir, reply("UNUSED"));
+
+    const lookup = outcome(server.auth.getAccessToken({ interactiveWaitMs: 1_000 }));
+    await until(() => s.sent);
+    await cli.auth.signOut();
+    // The refresh then fails, which would normally lead to a browser sign-in.
+    s.answer(jsonResponse({ error: "invalid_grant" }, 400));
+
+    const result = await lookup;
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(server.authorizeUrl()).toBe(""); // no browser was opened
+    expect(store.current).toBeNull();
+  });
+
+  it("a sign-in started while a local sign-out is still cleaning up saves normally (Copilot review on #126)", async () => {
+    let finishClear = (): void => undefined;
+    let clearing = false;
+    const base = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    });
+    const store: TokenStore & { current: TokenSet | null } = {
+      get current() {
+        return base.current;
+      },
+      set current(v) {
+        base.current = v;
+      },
+      load: () => base.load(),
+      save: (t) => base.save(t),
+      async clear() {
+        clearing = true;
+        await new Promise<void>((r) => (finishClear = r)); // a slow cleanup
+        base.current = null;
+      },
+    };
+    let url = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => reply("FRESH-AT")()) as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        url = u;
+      },
+      now: () => 1_000,
+    });
+
+    const signOut = auth.signOut(); // still cleaning up...
+    const signIn = outcome(auth.signIn()); // ...when `login` runs again
+    await until(() => clearing);
+    finishClear();
+    await signOut;
+    await until(() => url !== "");
+    await redirectBack(url, { code: "C" });
+    const result = await signIn;
+    expect(result.ok && result.value.accessToken).toBe("FRESH-AT");
+    expect(store.current?.accessToken).toBe("FRESH-AT");
+  });
 });
