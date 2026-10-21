@@ -20,11 +20,14 @@ import { defaultKeyProtector } from "./auth/protect.js";
 import { createFileTokenStore } from "./auth/tokens.js";
 import { getConfig } from "./config.js";
 import { cancelEvent, createEvent, listEvents } from "./graph/calendar.js";
-import { createGraphClient } from "./graph/client.js";
+import { createGraphClient, scopeToOperation } from "./graph/client.js";
 import { getMessage, listMessages } from "./graph/mail.js";
 import { whoami } from "./graph/user.js";
 
 const LIVE = process.env.HOTMAIL_LIVE_TESTS === "1";
+/** Deadlines for the write test's main steps and for removing what it created. */
+const MAIN_MS = 70_000;
+const CLEANUP_MS = 35_000;
 
 describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
   const config = LIVE ? getConfig() : undefined;
@@ -51,9 +54,13 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
 
   it(
     "creates an event at the intended local time, de-duplicates by transactionId, and cleans up",
-    { timeout: 120_000 },
+    { timeout: MAIN_MS + CLEANUP_MS + 15_000 },
     async () => {
-      const g = graph();
+      // The Graph client retries (with Retry-After waits) until a deadline, and a
+      // Vitest timeout wouldn't cancel it or run `finally`. So the main steps get
+      // a deadline, and cleanup gets its own fresh one, both inside the timeout.
+      const base = graph();
+      const g = scopeToOperation(base, { deadline: Date.now() + MAIN_MS });
       const timeZone = "Australia/Sydney"; // a DST zone (#64)
       const stamp = new Date()
         .toISOString()
@@ -96,12 +103,14 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
         console.log(`[live] Repeating a create with the same transactionId ${repeat}.`);
         expect(repeat).toBe("returned the same event");
       } finally {
+        const cleanup = scopeToOperation(base, { deadline: Date.now() + CLEANUP_MS });
         for (const id of created) {
-          await cancelEvent(g, { id, confirmSubject: subject, timeZone }).catch((e: unknown) =>
-            console.warn(
-              `[live] Couldn't remove test event ${id}; delete "${subject}" by hand.`,
-              e,
-            ),
+          await cancelEvent(cleanup, { id, confirmSubject: subject, timeZone }).catch(
+            (e: unknown) =>
+              console.warn(
+                `[live] Couldn't remove test event ${id}; delete "${subject}" by hand.`,
+                e,
+              ),
           );
         }
       }
