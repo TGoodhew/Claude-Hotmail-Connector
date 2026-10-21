@@ -180,7 +180,11 @@ export interface MicrosoftAuthDeps {
   /** Injectable clock (defaults to Date.now). */
   now?: () => number;
   logger?: Logger;
+  /** Limit on one token-endpoint request, body included (default 15s, #37). */
+  tokenTimeoutMs?: number;
 }
+
+const DEFAULT_TOKEN_TIMEOUT_MS = 15_000;
 
 export interface GetAccessTokenOptions {
   /** Allow launching the browser for interactive sign-in (default true). */
@@ -220,12 +224,34 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   const tokenEndpoint = `${config.authority}/oauth2/v2.0/token`;
 
   async function postToken(body: URLSearchParams): Promise<TokenResponse> {
-    const res = await doFetch(tokenEndpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body,
-    });
-    const text = await res.text();
+    // A stalled token endpoint must not hang the tool call that needed a token:
+    // the limit covers the wait for headers and the body.
+    const timeoutMs = deps.tokenTimeoutMs ?? DEFAULT_TOKEN_TIMEOUT_MS;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res: Response;
+    let text: string;
+    try {
+      res = await doFetch(tokenEndpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          accept: "application/json",
+        },
+        body,
+        signal: controller.signal,
+      });
+      text = await res.text();
+    } catch (e) {
+      throw new AuthError(
+        controller.signal.aborted
+          ? `Microsoft token endpoint didn't answer within ${timeoutMs}ms.`
+          : "Couldn't reach the Microsoft token endpoint.",
+        e,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
     let json: unknown;
     try {
       json = JSON.parse(text);
