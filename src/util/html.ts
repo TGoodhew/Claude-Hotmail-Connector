@@ -235,7 +235,7 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
     if (preText) {
       // HTML ignores one newline straight after the <pre> tag in the source,
       // but keeps one from markup (`<pre><br>`) or after anything else (#125).
-      const t = preStart ? raw.replace(/^\r?\n/, "") : raw;
+      const t = preStart ? raw.replace(/^(?:\r\n|\r|\n)/, "") : raw; // one line ending, any style
       preStart = false;
       return void preText.push(decodeEntities(t));
     }
@@ -366,13 +366,14 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
   if (preText) endPre(preText); // an unclosed <pre> runs to the end, as in a browser
   // The end of input ends open cells, rows and tables as their closing tags
   // would, so a trailing empty cell keeps its column (#125).
-  for (;;) {
+  for (let enclosing = outer.pop(); enclosing; enclosing = outer.pop()) {
     dropCellEndBreaks();
     endRow();
-    const enclosing = outer.pop();
-    if (!enclosing) break;
     table = enclosing;
+    out.push("\n"); // as an explicit </table> does
   }
+  dropCellEndBreaks(); // cells and rows outside any table (stray <td>s)
+  endRow();
   return out.join("");
 }
 

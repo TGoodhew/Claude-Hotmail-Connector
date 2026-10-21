@@ -282,6 +282,8 @@ describe("htmlToText structure (#32)", () => {
     const block = (html: string) => htmlToText(`<p>x</p>${html}`).split("\n\n")[1];
     expect(block("<pre>\nA</pre>")).toBe("A"); // the source newline after the tag: ignored
     expect(block("<pre>\r\nA</pre>")).toBe("A");
+    expect(block("<pre>\rA</pre>")).toBe("A"); // a bare CR too (Copilot review on #127)
+    expect(block("<pre>\r\rA</pre>")).toBe("\nA"); // still only one
     expect(block("<pre>\n\nA</pre>")).toBe("\nA"); // only one is ignored
     expect(block("<pre><br>A</pre>")).toBe("\nA"); // from markup: kept
     expect(block("<pre><span>\nA</span></pre>")).toBe("\nA"); // after a tag: kept
@@ -298,6 +300,11 @@ describe("htmlToText structure (#32)", () => {
     expect(htmlToText("<table><tr><td>x<table><tr><td>in<td>")).toBe(
       htmlToText("<table><tr><td>x<table><tr><td>in<td></td></tr></table></td></tr></table>"),
     );
+    // Including an empty nested table (Copilot review on #127).
+    expect(htmlToText("<table><tr><td>A<td><table>")).toBe(
+      htmlToText("<table><tr><td>A<td><table></table></td></tr></table>"),
+    );
+    expect(htmlToText("<table><tr><td>A<td><table>")).toBe("A");
   });
 });
 
