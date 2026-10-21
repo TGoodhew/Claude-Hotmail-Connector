@@ -90,7 +90,7 @@ export function normalizeLocalDateTime(input: string): string {
   // ordering on this normalised value, which is what gets written.
   const { y, mo, d, h, mi, se } = parseLocal(s, input, false);
   const p2 = (n: number): string => String(n).padStart(2, "0");
-  return `${y}-${p2(mo)}-${p2(d)}T${p2(h)}:${p2(mi)}:${p2(se)}`;
+  return `${String(y).padStart(4, "0")}-${p2(mo)}-${p2(d)}T${p2(h)}:${p2(mi)}:${p2(se)}`;
 }
 
 interface LocalParts {
@@ -197,14 +197,30 @@ export function zonedWallClockToUtcIso(dateTime: string, timeZone: string): stri
   assertValidTimeZone(timeZone);
   const p = parseLocal(s, dateTime, true);
   const asUtc = Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.se);
-  let offset = tzOffsetMs(asUtc, timeZone);
-  // Refine once so DST boundaries (where the offset differs at the corrected
-  // instant) resolve to the correct UTC time.
-  const refined = tzOffsetMs(asUtc - offset, timeZone);
-  if (refined !== offset) offset = refined;
   // The offset is found at whole seconds (zone formatting has no ms), then the
   // fraction is added back, so sub-second bounds keep their order.
-  return new Date(asUtc - offset + p.ms).toISOString();
+  return new Date(localToUtcMs(asUtc, timeZone) + p.ms).toISOString();
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * The UTC instant of a local wall-clock time (`wallMs`, the wall clock read as
+ * if it were UTC) in `timeZone`. Around a DST change the zone's offset differs
+ * before and after, so both are tried and only an instant that really shows
+ * that wall-clock time is accepted. When the clocks go back and the time occurs
+ * twice, the earlier instant is used. When they go forward and it never occurs
+ * (e.g. midnight in a zone that skips 00:00-01:00), it maps to the moment the
+ * clocks jump to, so a date-only bound is still the start of that local day
+ * (the "compatible" rule, as in Temporal).
+ */
+function localToUtcMs(wallMs: number, timeZone: string): number {
+  const offsets = [tzOffsetMs(wallMs - DAY_MS, timeZone), tzOffsetMs(wallMs + DAY_MS, timeZone)];
+  const shows = (utc: number) => utc + tzOffsetMs(utc, timeZone) === wallMs;
+  const valid = offsets.map((o) => wallMs - o).filter(shows);
+  if (valid.length > 0) return Math.min(...valid);
+  // In the gap: the earlier (smaller) offset gives the instant after the jump.
+  return wallMs - Math.min(...offsets);
 }
 
 /**

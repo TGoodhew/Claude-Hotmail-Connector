@@ -142,6 +142,44 @@ describe("normalizeLocalDateTime input shapes (#33)", () => {
   it("still needs a time for an event: a bare date is rejected", () => {
     expect(() => normalizeLocalDateTime("2026-07-20")).toThrow(ValidationError);
   });
+  it("keeps a four-digit year, leading zeros included (Copilot review on #116)", () => {
+    expect(normalizeLocalDateTime("0100-07-20T10:00:00")).toBe("0100-07-20T10:00:00");
+    // The normalised value parses again, as the ordering checks need.
+    expect(() => zonedWallClockToUtcIso("0100-07-20T10:00:00", "UTC")).not.toThrow();
+  });
+});
+
+describe("zonedWallClockToUtcIso around DST changes (Copilot review on #116)", () => {
+  it("maps a skipped midnight to the start of that local day, not the day before", () => {
+    // Santiago jumps 00:00 -> 01:00 on 2026-09-06 (UTC-4 -> UTC-3); the day starts at 04:00Z.
+    expect(zonedWallClockToUtcIso("2026-09-06", "America/Santiago")).toBe(
+      "2026-09-06T04:00:00.000Z",
+    );
+    // A time inside the gap moves forward by the gap, like the clocks.
+    expect(zonedWallClockToUtcIso("2026-09-06T00:30", "America/Santiago")).toBe(
+      "2026-09-06T04:30:00.000Z",
+    );
+    // Havana and Beirut skip midnight too.
+    expect(zonedWallClockToUtcIso("2026-03-08", "America/Havana")).toBe("2026-03-08T05:00:00.000Z");
+    expect(zonedWallClockToUtcIso("2026-03-29", "Asia/Beirut")).toBe("2026-03-28T22:00:00.000Z");
+  });
+  it("takes the earlier instant for a time that occurs twice", () => {
+    // New York repeats 01:00-02:00 on 2026-11-01; 01:30 EDT is 05:30Z.
+    expect(zonedWallClockToUtcIso("2026-11-01T01:30", "America/New_York")).toBe(
+      "2026-11-01T05:30:00.000Z",
+    );
+  });
+  it("is exact either side of a change", () => {
+    expect(zonedWallClockToUtcIso("2026-09-05T23:59", "America/Santiago")).toBe(
+      "2026-09-06T03:59:00.000Z",
+    );
+    expect(zonedWallClockToUtcIso("2026-09-06T01:00", "America/Santiago")).toBe(
+      "2026-09-06T04:00:00.000Z",
+    );
+    expect(zonedWallClockToUtcIso("2026-11-01T02:00", "America/New_York")).toBe(
+      "2026-11-01T07:00:00.000Z",
+    );
+  });
 });
 
 describe("preferTimeZoneHeader", () => {
