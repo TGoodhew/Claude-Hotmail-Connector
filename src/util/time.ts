@@ -177,6 +177,17 @@ function tzOffsetMs(utcMs: number, timeZone: string): number {
 }
 
 /**
+ * A UTC instant as the local wall-clock time in `timeZone`, in the form Graph
+ * returns (`YYYY-MM-DDTHH:mm:ss.fffffff`).
+ */
+export function utcToZonedWallClock(utcMs: number, timeZone: string): string {
+  assertValidTimeZone(timeZone);
+  // The offset is read at whole seconds (zone formatting has no ms).
+  const wall = utcMs + tzOffsetMs(Math.floor(utcMs / 1000) * 1000, timeZone);
+  return `${new Date(wall).toISOString().slice(0, 23)}0000`;
+}
+
+/**
  * Interpret a bare local wall-clock dateTime as a time in `timeZone` and return
  * the corresponding UTC instant as an ISO string (`...Z`).
  *

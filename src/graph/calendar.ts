@@ -15,6 +15,7 @@ import {
   type GraphDateTime,
   preferTimeZoneHeader,
   toGraphDateTime,
+  utcToZonedWallClock,
   zonedWallClockToUtcIso,
 } from "../util/time.js";
 import type { GraphClient } from "./client.js";
@@ -405,9 +406,12 @@ export async function updateEvent(
   // Changing either side needs both, to check the result still ends after it starts.
   const select = new Set(["id", "attendees", ...fields, ...(zone ? ["start", "end"] : [])]);
 
+  // When times change, read the event in UTC: a stored time is then exact even
+  // in a repeated daylight-saving hour, where the same wall-clock time happens
+  // twice. The report still shows it in `zone`, like the updated event.
   const before = await graph.get<GraphEvent>(path, {
     query: { $select: [...select].join(",") },
-    headers,
+    headers: zone ? { prefer: preferTimeZoneHeader("UTC") } : undefined,
   });
   if ((before.attendees?.length ?? 0) > 0) {
     throw new ValidationError(
@@ -416,12 +420,13 @@ export async function updateEvent(
     );
   }
   if (zone) {
-    // A side that isn't changing keeps its current value, which Graph rendered
-    // in `zone` (the Prefer header), so both sides compare in the same zone.
-    const current = (t?: { dateTime?: string }) =>
-      t?.dateTime ? instant({ dateTime: t.dateTime, timeZone: zone }) : undefined;
-    const startMs = input.start ? instant(patch.start as GraphDateTime) : current(before.start);
-    const endMs = input.end ? instant(patch.end as GraphDateTime) : current(before.end);
+    // A side that isn't changing keeps its stored value (read in UTC above).
+    const stored = (t?: { dateTime?: string }) =>
+      t?.dateTime ? instant({ dateTime: t.dateTime, timeZone: "UTC" }) : undefined;
+    const storedStart = stored(before.start);
+    const storedEnd = stored(before.end);
+    const startMs = input.start ? instant(patch.start as GraphDateTime) : storedStart;
+    const endMs = input.end ? instant(patch.end as GraphDateTime) : storedEnd;
     if (startMs !== undefined && endMs !== undefined) {
       assertEndAfterStart(
         startMs,
@@ -429,6 +434,10 @@ export async function updateEvent(
         "After this change the event would end at or before it starts. Nothing was changed.",
       );
     }
+    // Report the stored times in the zone of the change, as Graph renders the result.
+    const inZone = (ms: number) => ({ dateTime: utcToZonedWallClock(ms, zone), timeZone: zone });
+    if (storedStart !== undefined) before.start = inZone(storedStart);
+    if (storedEnd !== undefined) before.end = inZone(storedEnd);
   }
   // Prepare the report's "before" side now: a failure here must not happen
   // after the write, where it would hide a change that was actually made.

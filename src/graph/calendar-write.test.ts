@@ -114,11 +114,12 @@ describe("end after start (#33)", () => {
   });
 
   it("update_event checks a new start against the event's current end, before writing", async () => {
+    // Read in UTC (as Graph renders with Prefer UTC): 10:00-11:00 Brisbane.
     const get = vi.fn<GetMock>(async () => ({
       id: "evt-1",
       "@odata.etag": 'W/"t1"',
-      start: { dateTime: "2026-07-20T10:00:00.0000000", timeZone: "Australia/Brisbane" },
-      end: { dateTime: "2026-07-20T11:00:00.0000000", timeZone: "Australia/Brisbane" },
+      start: { dateTime: "2026-07-20T00:00:00.0000000", timeZone: "UTC" },
+      end: { dateTime: "2026-07-20T01:00:00.0000000", timeZone: "UTC" },
     }));
     const patch = vi.fn<PatchMock>(async () => ({ id: "evt-1" }));
     await expect(
@@ -134,6 +135,30 @@ describe("end after start (#33)", () => {
       start: brisbane("2026-07-20T10:30"),
     });
     expect(patch).toHaveBeenCalledOnce();
+  });
+
+  it("knows which repeated daylight-saving hour a stored time is in (Copilot review on #116)", async () => {
+    // New York repeats 01:00-02:00 on 2026-11-01. The stored end is the second
+    // 01:30 (EST, 06:30Z); in local time it reads 01:30 either way.
+    const get = vi.fn<GetMock>(async () => ({
+      id: "evt-1",
+      "@odata.etag": 'W/"t1"',
+      start: { dateTime: "2026-11-01T05:00:00.0000000", timeZone: "UTC" }, // 01:00 EDT
+      end: { dateTime: "2026-11-01T06:30:00.0000000", timeZone: "UTC" }, // 01:30 EST
+    }));
+    const patch = vi.fn<PatchMock>(async () => ({ id: "evt-1" }));
+    // A new 01:45 start (first occurrence, 05:45Z) is still before that end.
+    const res = await updateEvent(graphWith({ get, patch }), {
+      id: "evt-1",
+      start: { dateTime: "2026-11-01T01:45", timeZone: "America/New_York" },
+    });
+    expect(patch).toHaveBeenCalledOnce();
+    // The read asked for UTC; the report shows the stored start in the new zone.
+    expect((get.mock.calls[0]![1] as ReqOpts).headers?.prefer).toBe('outlook.timezone="UTC"');
+    expect(res.changes[0]).toMatchObject({
+      field: "start",
+      before: { dateTime: "2026-11-01T01:00:00.0000000", timeZone: "America/New_York" },
+    });
   });
 });
 
@@ -171,7 +196,7 @@ describe("updateEvent", () => {
       id: "evt-1",
       "@odata.etag": 'W/"t1"',
       subject: "Old title",
-      start: { dateTime: "2026-07-20T10:00:00.0000000", timeZone: "Australia/Brisbane" },
+      start: { dateTime: "2026-07-20T00:00:00.0000000", timeZone: "UTC" }, // 10:00 Brisbane
     }));
     const patch = vi.fn<PatchMock>(async () => ({
       id: "evt-1",
@@ -188,10 +213,11 @@ describe("updateEvent", () => {
     expect(getPath).toBe("/me/events/evt-1");
     // end too: the new start is checked against the current end (#33).
     expect(getOpts.query.$select).toBe("id,attendees,subject,start,end");
-    // Same zone on both requests, so before/after times are comparable.
-    expect(getOpts.headers?.prefer).toBe('outlook.timezone="Australia/Brisbane"');
+    // The read is in UTC (exact); the write renders in the change's zone, and
+    // the report converts the stored value to it, so before/after compare.
+    expect(getOpts.headers?.prefer).toBe('outlook.timezone="UTC"');
     expect((patch.mock.calls[0]![2] as ReqOpts).headers).toEqual({
-      ...getOpts.headers,
+      prefer: 'outlook.timezone="Australia/Brisbane"',
       "if-match": 'W/"t1"',
     });
 

@@ -6,6 +6,7 @@ import {
   normalizeLocalDateTime,
   preferTimeZoneHeader,
   toGraphDateTime,
+  utcToZonedWallClock,
   zonedWallClockToUtcIso,
 } from "./time.js";
 
@@ -190,5 +191,15 @@ describe("preferTimeZoneHeader", () => {
   });
   it("rejects an unknown zone", () => {
     expect(() => preferTimeZoneHeader("Nope/Nope")).toThrow(ValidationError);
+  });
+});
+
+describe("utcToZonedWallClock", () => {
+  it("renders an instant as local wall-clock time, in Graph's form", () => {
+    const at = Date.parse("2026-11-01T06:30:00.250Z"); // the second 01:30 in New York
+    expect(utcToZonedWallClock(at, "America/New_York")).toBe("2026-11-01T01:30:00.2500000");
+    expect(utcToZonedWallClock(Date.parse("2026-07-20T00:00:00Z"), "Australia/Brisbane")).toBe(
+      "2026-07-20T10:00:00.0000000",
+    );
   });
 });
