@@ -104,7 +104,21 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
         expect(repeat).toBe("returned the same event");
       } finally {
         const cleanup = scopeToOperation(base, { deadline: Date.now() + CLEANUP_MS });
-        for (const id of created) {
+        // A create can succeed at Graph yet fail here (a lost response, the
+        // deadline), so also look the event up by its unique subject.
+        const ids = new Set(created);
+        try {
+          const day = await listEvents(cleanup, {
+            startDateTime: "2031-01-15",
+            endDateTime: "2031-01-16",
+            timeZone,
+            limit: 50,
+          });
+          for (const e of day) if (e.subject === subject) ids.add(e.id);
+        } catch (e) {
+          console.warn(`[live] Couldn't look for test events; check for "${subject}".`, e);
+        }
+        for (const id of ids) {
           await cancelEvent(cleanup, { id, confirmSubject: subject, timeZone }).catch(
             (e: unknown) =>
               console.warn(
