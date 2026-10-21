@@ -34,7 +34,8 @@ async function run(): Promise<void> {
   const log = createLogger({ name: "startup" });
   const config = getConfig();
   const store = createFileTokenStore(config.tokenCacheFile, { protector: defaultKeyProtector() });
-  const auth = createMicrosoftAuth({ config, store });
+  // At a terminal (`login`), a sign-in URL the user can copy beats failing.
+  const auth = createMicrosoftAuth({ config, store, printUrlIfBrowserFails: command === "login" });
   const graph = createGraphClient({ auth, baseUrl: config.graphBaseUrl });
 
   if (command === "login") {

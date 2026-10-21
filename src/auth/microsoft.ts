@@ -169,6 +169,13 @@ export interface MicrosoftAuthDeps {
   fetchImpl?: typeof fetch;
   /** Injectable browser launcher (defaults to `open`). */
   openBrowser?: (url: string) => Promise<void>;
+  /**
+   * If the browser can't be opened, print the sign-in URL on stderr and keep
+   * waiting (for the `login` command, where a person is at the terminal).
+   * Otherwise (default; the MCP server) the attempt ends at once, so a retry
+   * isn't stuck joining a sign-in that can never finish.
+   */
+  printUrlIfBrowserFails?: boolean;
   /** Injectable clock (defaults to Date.now). */
   now?: () => number;
   logger?: Logger;
@@ -357,10 +364,23 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         const launch = deps.openBrowser
           ? deps.openBrowser(authorizeUrl)
           : import("open").then((m) => m.default(authorizeUrl).then(() => undefined));
-        launch.catch(() => {
-          log.warn("Could not open a browser automatically. Visit the URL printed on stderr.");
-          // Print to stderr so the user can copy it (never stdout).
-          process.stderr.write(`\nOpen this URL to sign in:\n${authorizeUrl}\n\n`);
+        launch.catch((e: unknown) => {
+          if (deps.printUrlIfBrowserFails) {
+            log.warn("Could not open a browser automatically. Visit the URL printed on stderr.");
+            // Print to stderr so the user can copy it (never stdout).
+            process.stderr.write(`\nOpen this URL to sign in:\n${authorizeUrl}\n\n`);
+            return;
+          }
+          log.warn("Could not open a browser for Microsoft sign-in", {
+            error: e instanceof Error ? e.message : String(e),
+          });
+          cleanup();
+          reject(
+            new SignInRequiredError(
+              "Couldn't open a web browser for the Microsoft sign-in. Check that a default web " +
+                `browser is set, then ask me to try again ${LOGIN_HINT}.`,
+            ),
+          );
         });
       });
     });
@@ -438,6 +458,11 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         return cached.accessToken;
       }
 
+      // A browser sign-in is already pending (e.g. a previous call's window):
+      // join it, rather than racing it with a refresh whose failure could open
+      // a second window after the user has just signed in.
+      if (interactive && inflightSignIn) return signInOnDemand(options.interactiveWaitMs);
+
       if (cached?.refreshToken) {
         try {
           const refreshed = await refreshAndSave(cached);
@@ -451,6 +476,10 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       if (!interactive) {
         throw new AuthError("Not signed in. Interactive Microsoft sign-in is required.");
       }
+
+      // A sign-in may have completed while the refresh was in flight: use it.
+      const latest = await store.load().catch(() => null);
+      if (latest && latest.expiresAt - now() > minTtlMs) return latest.accessToken;
 
       return signInOnDemand(options.interactiveWaitMs);
     },

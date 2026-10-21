@@ -358,6 +358,115 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     await expect(pending).resolves.toMatchObject({ accessToken: "INTERACTIVE-AT" });
   });
 
+  it("ends the attempt at once if the browser can't be opened (server mode)", async () => {
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore(null),
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openBrowser: async () => {
+        throw new Error("no default browser");
+      },
+      now: () => 1_000,
+    });
+    const started = Date.now();
+    await expect(auth.getAccessToken({ interactiveWaitMs: 5_000 })).rejects.toThrow(
+      /Couldn't open a web browser/,
+    );
+    expect(Date.now() - started).toBeLessThan(2_000); // not stuck until the 5-minute timeout
+  });
+
+  it("with printUrlIfBrowserFails (login), keeps waiting so the printed URL still works", async () => {
+    const store = memoryStore(null);
+    let authorizeUrl = "";
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const auth = createMicrosoftAuth({
+        config,
+        store,
+        fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+        openBrowser: async (url) => {
+          authorizeUrl = url;
+          throw new Error("no default browser");
+        },
+        printUrlIfBrowserFails: true,
+        now: () => 1_000,
+      });
+      const pending = auth.signIn();
+      await until(() => stderr.mock.calls.some(([s]) => String(s).includes("Open this URL")));
+      await redirectBack(authorizeUrl, { code: "CODE" }); // the user pastes the URL
+      await expect(pending).resolves.toMatchObject({ accessToken: "INTERACTIVE-AT" });
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("joins a pending sign-in instead of refreshing again (no second window)", async () => {
+    const expired: TokenSet = {
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 0,
+      scopes: config.scopes,
+    };
+    const store = memoryStore(expired);
+    let authorizeUrl = "";
+    const openBrowser = vi.fn(async (url: string) => {
+      authorizeUrl = url;
+    });
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) =>
+      String(init?.body).includes("grant_type=refresh_token")
+        ? jsonResponse({ error: "invalid_grant" }, 400)
+        : tokenReply(),
+    );
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    const refreshCalls = () =>
+      fetchImpl.mock.calls.filter(([, i]) => String(i?.body).includes("refresh_token")).length;
+
+    await expect(auth.getAccessToken({ interactiveWaitMs: 20 })).rejects.toThrow(/has opened/);
+    await expect(auth.getAccessToken({ interactiveWaitMs: 20 })).rejects.toThrow(/Still waiting/);
+    expect(refreshCalls()).toBe(1); // the retry joined the sign-in, no second refresh
+    expect(openBrowser).toHaveBeenCalledOnce();
+
+    await redirectBack(authorizeUrl, { code: "CODE" });
+    await until(() => store.current?.accessToken === "INTERACTIVE-AT");
+    expect(await auth.getAccessToken({ interactiveWaitMs: 20 })).toBe("INTERACTIVE-AT");
+    expect(openBrowser).toHaveBeenCalledOnce();
+  });
+
+  it("uses tokens saved during a failed refresh instead of opening a browser", async () => {
+    const store = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 0,
+      scopes: config.scopes,
+    });
+    const openBrowser = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn(async () => {
+      // Meanwhile another sign-in completes and saves fresh tokens…
+      await store.save({
+        accessToken: "FRESH",
+        refreshToken: "RT2",
+        expiresAt: 10_000_000,
+        scopes: config.scopes,
+      });
+      return jsonResponse({ error: "invalid_grant" }, 400); // …and this refresh fails.
+    });
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    expect(await auth.getAccessToken({ interactiveWaitMs: 20 })).toBe("FRESH");
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
   it("cools down after a cancelled sign-in instead of reopening the browser", async () => {
     let clock = 1_000;
     const openBrowser = vi.fn(async (url: string) => {

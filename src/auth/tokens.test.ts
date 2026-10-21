@@ -1,4 +1,12 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -173,4 +181,42 @@ describe("createFileTokenStore with an OS key protector", () => {
     },
     30_000,
   );
+});
+
+describe("createFileTokenStore across processes (shared key file)", () => {
+  /** A protector slow enough to widen the window between reading and writing the key. */
+  const slowProtector = (): KeyProtector => ({
+    name: "slow",
+    protect: async (d) => {
+      await new Promise((r) => setTimeout(r, 15));
+      return Buffer.from(d).reverse();
+    },
+    unprotect: async (d) => Buffer.from(d).reverse(),
+  });
+
+  it("two stores racing to create the key end up sharing one key", async () => {
+    // Like two processes (Claude Desktop + Claude Code) starting on an empty cache.
+    const a = createFileTokenStore(file, { protector: slowProtector() });
+    const b = createFileTokenStore(file, { protector: slowProtector() });
+    await Promise.all([a.save(sample), b.save({ ...sample, account: "b@example.com" })]);
+    // Whichever cache write landed last, a fresh process can read it, and so can a and b.
+    const fresh = await createFileTokenStore(file, { protector: slowProtector() }).load();
+    expect(fresh).not.toBeNull();
+    await expect(a.load()).resolves.toEqual(fresh);
+    await expect(b.load()).resolves.toEqual(fresh);
+    expect(readdirSync(dir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+  });
+
+  it("re-reads the key when another process replaced the key file", async () => {
+    const a = createFileTokenStore(file);
+    await a.save(sample);
+    // Another process finds the key corrupt, regenerates it, and writes a new cache.
+    writeFileSync(join(dir, "token-cache.key"), "corrupt");
+    const b = createFileTokenStore(file);
+    await b.save({ ...sample, account: "after-reset@example.com" });
+    // `a` must not keep using its stale key, for reading or for writing.
+    await expect(a.load()).resolves.toMatchObject({ account: "after-reset@example.com" });
+    await a.save(sample);
+    await expect(createFileTokenStore(file).load()).resolves.toEqual(sample);
+  });
 });
