@@ -58,6 +58,9 @@
     },
     "vitest": {
       "vite": "8.1.6"
+    },
+    "@anthropic-ai/mcpb": {
+      "tmp": "0.2.7"
     }
   }
 }
