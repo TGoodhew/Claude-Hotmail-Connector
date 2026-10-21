@@ -251,6 +251,19 @@ describe("getMessage", () => {
     expect(get).toHaveBeenCalledTimes(1); // no attachments call
   });
 
+  it("reports the content type the body really has (#35)", async () => {
+    const plain = vi.fn(async () => ({
+      id: "m4",
+      hasAttachments: false,
+      body: { contentType: "text", content: "Just text" },
+    }));
+    // Asked for HTML, but the message is plain text: say so.
+    const asHtml = await getMessage(graphWith(undefined, plain), { id: "m4", format: "html" });
+    expect(asHtml.body).toMatchObject({ contentType: "text", content: "Just text" });
+    const asText = await getMessage(graphWith(undefined, plain), { id: "m4", format: "text" });
+    expect(asText.body.contentType).toBe("text");
+  });
+
   it("url-encodes the message id", async () => {
     const get = vi.fn<GetMock>(async () => ({
       id: "x",
