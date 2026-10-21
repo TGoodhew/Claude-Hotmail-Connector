@@ -276,8 +276,14 @@ signed in to that tenant. Registration settings:
 ### 8.3 Token handling
 - Silent refresh on expiry. Single-flight within the process. A 401 refreshes once and retries.
 - Refresh tokens MUST be stored **OS-protected**: DPAPI (CurrentUser) on Windows, Keychain on macOS,
-  libsecret on Linux. An AES-256-GCM file store is permitted only as a fallback where none is available
-  *(→ #42; today the AES key sits in a sibling file, `token-cache.key`, beside `token-cache.enc`)*.
+  libsecret on Linux. An AES-256-GCM file store is permitted only as a fallback where none is available.
+  - **Windows (implemented):** the cache (`token-cache.enc`) is AES-256-GCM encrypted. Its key file
+    (`token-cache.key`) holds only the DPAPI-wrapped key (`{"v":2,"protection":"dpapi",…}`, with
+    app-specific entropy), produced through PowerShell's `ProtectedData` with the key passed on stdin.
+    A legacy plain key is upgraded in place, so existing sign-ins survive. If DPAPI fails, a warning is
+    logged and the plain key file is used. A key that can't be unwrapped (another user or machine) is
+    reset, which means signing in again.
+  - **macOS / Linux:** plain owner-only key file for now *(→ #83)*.
 - Cache location: `%LOCALAPPDATA%\claude-hotmail-connector` (Windows) or `~/.claude-hotmail-connector`,
   overridable with `CLAUDE_HOTMAIL_CACHE_DIR`.
 - Tokens are never logged, returned to the client, or committed. Uninstall MUST remove the cache

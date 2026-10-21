@@ -232,10 +232,11 @@ with no duplicates if it retries.
   delete, no attendees/invitations.
 - **No client secret:** a public/native client using PKCE.
 - **Token storage:** the refresh token is encrypted with AES-256-GCM in your user profile
-  (`%LOCALAPPDATA%\claude-hotmail-connector` on Windows, `~/.claude-hotmail-connector` otherwise). The
-  key is currently in a sibling file in the same folder, which isn't strong protection on its own. Spec
-  v2 requires OS-protected storage (DPAPI / Keychain / libsecret), tracked in
-  [#42](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/42). Tokens are never committed,
+  (`%LOCALAPPDATA%\claude-hotmail-connector` on Windows, `~/.claude-hotmail-connector` otherwise).
+  On **Windows** the encryption key is protected with **DPAPI**, so only your Windows account on this
+  PC can unlock it; copying the folder elsewhere isn't enough. On macOS/Linux the key is currently an
+  owner-only file in the same folder; Keychain/libsecret support is tracked in
+  [#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83). Tokens are never committed,
   logged or returned to the client.
 - **Logging:** structured logs go to **stderr only** (stdout is reserved for MCP JSON-RPC) and are
   scrubbed of tokens, `Authorization` headers, OAuth codes and secrets.

@@ -108,5 +108,6 @@ uninstall. Claude Code is configured separately (see the main README).
 - ✅ Bring-your-own registration: installer page, `setup --client-id`, saved settings (#68).
 - ⏳ After the next release, the maintainer's old shared registration (used by v0.1.0) is retired
   (#68). v0.1.0 users need to create their own registration and run `setup --client-id` + `login`.
-- ⏳ Uninstall cleanup of the token cache and an explicit `AppId` (#43); OS-protected token storage
-  (#42); MCPB packaging evaluation (#63); macOS/Linux setup (#56).
+- ✅ The token-cache key is protected with Windows DPAPI (#42).
+- ⏳ Uninstall cleanup of the token cache and an explicit `AppId` (#43); MCPB packaging evaluation
+  (#63); macOS/Linux setup (#56) and key protection (#83).
