@@ -114,6 +114,18 @@ describe("zonedWallClockToUtcIso — calendar window pinning", () => {
       expect(zonedWallClockToUtcIso(v, "Australia/Brisbane")).toBe("2026-07-20T00:00:00.000Z");
     }
   });
+  it("keeps a nonzero fraction to the millisecond (Copilot review on #116)", () => {
+    expect(zonedWallClockToUtcIso("2026-07-20T10:00:00.1", "Australia/Brisbane")).toBe(
+      "2026-07-20T00:00:00.100Z",
+    );
+    expect(zonedWallClockToUtcIso("2026-07-20T10:00:00.9876543", "Australia/Brisbane")).toBe(
+      "2026-07-20T00:00:00.987Z",
+    );
+    // Across a DST change the fraction still lands on the right side of the second.
+    expect(zonedWallClockToUtcIso("2026-03-08T03:00:00.500", "America/New_York")).toBe(
+      "2026-03-08T07:00:00.500Z",
+    );
+  });
   it("rejects anything else instead of passing it on", () => {
     for (const v of ["next tuesday", "07/20/2026", "2026-07-20T25:00", "2026-02-30", "2026-07"]) {
       expect(() => zonedWallClockToUtcIso(v, "Australia/Brisbane"), v).toThrow(ValidationError);

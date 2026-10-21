@@ -21,7 +21,7 @@ export interface GraphDateTime {
 
 // `YYYY-MM-DDTHH:mm[:ss[.fraction]]`, with `T` or a space between date and time
 // (models write both; Graph returns seven fractional digits).
-const LOCAL_DT_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?$/;
+const LOCAL_DT_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?$/;
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const HAS_ZULU_RE = /[zZ]$/;
 const HAS_OFFSET_RE = /[+-]\d{2}:?\d{2}$/;
@@ -86,6 +86,8 @@ export function normalizeLocalDateTime(input: string): string {
         `pair it with an IANA timeZone instead (e.g. "2026-07-20T12:00:00" + "Australia/Brisbane").`,
     );
   }
+  // Event times are whole seconds, so a fraction is dropped here; callers check
+  // ordering on this normalised value, which is what gets written.
   const { y, mo, d, h, mi, se } = parseLocal(s, input, false);
   const p2 = (n: number): string => String(n).padStart(2, "0");
   return `${y}-${p2(mo)}-${p2(d)}T${p2(h)}:${p2(mi)}:${p2(se)}`;
@@ -98,10 +100,12 @@ interface LocalParts {
   h: number;
   mi: number;
   se: number;
+  /** Milliseconds from the fraction (finer digits are dropped: JS dates hold ms). */
+  ms: number;
 }
 
 /**
- * Parse and range-check a bare local date/time (fractional seconds dropped).
+ * Parse and range-check a bare local date/time.
  * With `allowDateOnly`, `YYYY-MM-DD` means midnight that day. Anything else is
  * a {@link ValidationError}, never passed on for Graph to read as UTC (#33).
  */
@@ -127,7 +131,8 @@ function parseLocal(s: string, input: string, allowDateOnly: boolean): LocalPart
   if (mi > 59) throw new ValidationError(`Minute out of range in "${input}".`);
   if (se > 59) throw new ValidationError(`Second out of range in "${input}".`);
   assertRealCalendarDate(y, mo, d, h, mi, se, input);
-  return { y, mo, d, h, mi, se };
+  const ms = Number((m[7] ?? "").padEnd(3, "0").slice(0, 3));
+  return { y, mo, d, h, mi, se, ms };
 }
 
 /**
@@ -197,7 +202,9 @@ export function zonedWallClockToUtcIso(dateTime: string, timeZone: string): stri
   // instant) resolve to the correct UTC time.
   const refined = tzOffsetMs(asUtc - offset, timeZone);
   if (refined !== offset) offset = refined;
-  return new Date(asUtc - offset).toISOString();
+  // The offset is found at whole seconds (zone formatting has no ms), then the
+  // fraction is added back, so sub-second bounds keep their order.
+  return new Date(asUtc - offset + p.ms).toISOString();
 }
 
 /**

@@ -96,4 +96,24 @@ describe("listEvents", () => {
     }
     expect(getAllPages).not.toHaveBeenCalled();
   });
+
+  it("orders sub-second bounds correctly, local or mixed with an offset (Copilot review on #116)", async () => {
+    const getAllPages = vi.fn<GetAllPagesMock>(async () => []);
+    const run = (startDateTime: string, endDateTime: string) =>
+      listEvents(graphWith(getAllPages), { ...validRange, startDateTime, endDateTime });
+
+    // An 800 ms local window is valid, and both bounds keep their milliseconds.
+    await run("2026-07-20T10:00:00.100", "2026-07-20T10:00:00.900");
+    expect(getAllPages.mock.calls[0]![1]?.query).toMatchObject({
+      startDateTime: "2026-07-20T00:00:00.100Z",
+      endDateTime: "2026-07-20T00:00:00.900Z",
+    });
+    // A local start after an offset end, by 800 ms, is reversed.
+    await expect(run("2026-07-20T10:00:00.900", "2026-07-20T10:00:00.100+10:00")).rejects.toThrow(
+      /endDateTime must be after startDateTime/,
+    );
+    // And the mixed case the right way round is fine.
+    await run("2026-07-20T10:00:00.100", "2026-07-20T10:00:00.900+10:00");
+    expect(getAllPages).toHaveBeenCalledTimes(2);
+  });
 });
