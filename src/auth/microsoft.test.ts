@@ -9,11 +9,53 @@ import {
   createMicrosoftAuth,
   decodeIdTokenUsername,
   generatePkce,
+  launcherSucceeded,
   SIGN_IN_RETRY_COOLDOWN_MS,
   toTokenSet,
   type TokenResponse,
 } from "./microsoft.js";
 import type { TokenSet, TokenStore } from "./tokens.js";
+
+describe("launcherSucceeded (browser launcher exit status)", () => {
+  /** A fake child process whose exit we control. */
+  function child(exitCode: number | null = null) {
+    const handlers: Record<string, (arg: unknown) => void> = {};
+    return {
+      exitCode,
+      once(event: string, fn: (arg: unknown) => void) {
+        handlers[event] = fn;
+        return this;
+      },
+      emit: (event: string, arg: unknown) => handlers[event]?.(arg),
+    };
+  }
+
+  it("fails when the launcher exits non-zero (e.g. xdg-open with no browser)", async () => {
+    const c = child();
+    const p = launcherSucceeded(c as never, 1_000);
+    c.emit("exit", 3);
+    await expect(p).rejects.toThrow(/exited with code 3/);
+  });
+
+  it("fails when the launcher is killed by a signal (exit code null)", async () => {
+    const c = child();
+    const p = launcherSucceeded(c as never, 1_000);
+    c.emit("exit", null);
+    await expect(p).rejects.toThrow(/terminated/);
+  });
+
+  it("fails for a launcher that had already exited non-zero", async () => {
+    await expect(launcherSucceeded(child(1) as never, 1_000)).rejects.toThrow(/code 1/);
+  });
+
+  it("succeeds on exit 0, or if the launcher is still running after the grace period", async () => {
+    const ok = child();
+    const p = launcherSucceeded(ok as never, 1_000);
+    ok.emit("exit", 0);
+    await expect(p).resolves.toBeUndefined();
+    await expect(launcherSucceeded(child() as never, 10)).resolves.toBeUndefined();
+  });
+});
 
 const config = loadConfig({ MICROSOFT_CLIENT_ID: "client-abc" });
 
@@ -356,6 +398,220 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     // Microsoft's real redirect still completes the sign-in.
     await redirectBack(authorizeUrl, { code: "CODE" });
     await expect(pending).resolves.toMatchObject({ accessToken: "INTERACTIVE-AT" });
+  });
+
+  it("ignores a launcher failure that arrives after Microsoft's redirect was accepted", async () => {
+    let releaseExchange!: () => void;
+    const exchangeGate = new Promise<void>((r) => (releaseExchange = r));
+    let failLauncher!: (e: Error) => void;
+    let authorizeUrl = "";
+    const store = memoryStore(null);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => {
+        await exchangeGate; // token exchange in progress…
+        return tokenReply();
+      }) as unknown as typeof fetch,
+      openBrowser: (url) => {
+        authorizeUrl = url;
+        return new Promise<void>((_, reject) => (failLauncher = reject));
+      },
+      now: () => 1_000,
+    });
+    const pending = auth.signIn();
+    await until(() => authorizeUrl !== "");
+    await redirectBack(authorizeUrl, { code: "CODE" }); // callback accepted
+    failLauncher(new Error("launcher exited 1")); // …the launcher reports failure late…
+    releaseExchange(); // …and the exchange then succeeds.
+    await expect(pending).resolves.toMatchObject({ accessToken: "INTERACTIVE-AT" });
+    expect(store.current?.accessToken).toBe("INTERACTIVE-AT");
+  });
+
+  it("ends the attempt at once if the browser can't be opened (server mode)", async () => {
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore(null),
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openBrowser: async () => {
+        throw new Error("no default browser");
+      },
+      now: () => 1_000,
+    });
+    const started = Date.now();
+    await expect(auth.getAccessToken({ interactiveWaitMs: 5_000 })).rejects.toThrow(
+      /Couldn't open a web browser/,
+    );
+    expect(Date.now() - started).toBeLessThan(2_000); // not stuck until the 5-minute timeout
+  });
+
+  it("with printUrlIfBrowserFails (login), keeps waiting so the printed URL still works", async () => {
+    const store = memoryStore(null);
+    let authorizeUrl = "";
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const auth = createMicrosoftAuth({
+        config,
+        store,
+        fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+        openBrowser: async (url) => {
+          authorizeUrl = url;
+          throw new Error("no default browser");
+        },
+        printUrlIfBrowserFails: true,
+        now: () => 1_000,
+      });
+      const pending = auth.signIn();
+      await until(() => stderr.mock.calls.some(([s]) => String(s).includes("Open this URL")));
+      await redirectBack(authorizeUrl, { code: "CODE" }); // the user pastes the URL
+      await expect(pending).resolves.toMatchObject({ accessToken: "INTERACTIVE-AT" });
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("joins a pending sign-in instead of refreshing again (no second window)", async () => {
+    const expired: TokenSet = {
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 0,
+      scopes: config.scopes,
+    };
+    const store = memoryStore(expired);
+    let authorizeUrl = "";
+    const openBrowser = vi.fn(async (url: string) => {
+      authorizeUrl = url;
+    });
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) =>
+      String(init?.body).includes("grant_type=refresh_token")
+        ? jsonResponse({ error: "invalid_grant" }, 400)
+        : tokenReply(),
+    );
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    const refreshCalls = () =>
+      fetchImpl.mock.calls.filter(([, i]) => String(i?.body).includes("refresh_token")).length;
+
+    await expect(auth.getAccessToken({ interactiveWaitMs: 20 })).rejects.toThrow(/has opened/);
+    await expect(auth.getAccessToken({ interactiveWaitMs: 20 })).rejects.toThrow(/Still waiting/);
+    expect(refreshCalls()).toBe(1); // the retry joined the sign-in, no second refresh
+    expect(openBrowser).toHaveBeenCalledOnce();
+
+    await redirectBack(authorizeUrl, { code: "CODE" });
+    await until(() => store.current?.accessToken === "INTERACTIVE-AT");
+    expect(await auth.getAccessToken({ interactiveWaitMs: 20 })).toBe("INTERACTIVE-AT");
+    expect(openBrowser).toHaveBeenCalledOnce();
+  });
+
+  it("uses tokens saved during a failed refresh instead of opening a browser", async () => {
+    const store = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 0,
+      scopes: config.scopes,
+    });
+    const openBrowser = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn(async () => {
+      // Meanwhile another sign-in completes and saves fresh tokens…
+      await store.save({
+        accessToken: "FRESH",
+        refreshToken: "RT2",
+        expiresAt: 10_000_000,
+        scopes: config.scopes,
+      });
+      return jsonResponse({ error: "invalid_grant" }, 400); // …and this refresh fails.
+    });
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    expect(await auth.getAccessToken({ interactiveWaitMs: 20 })).toBe("FRESH");
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("a caller whose cache re-check was stale uses the sign-in that just completed", async () => {
+    const expired: TokenSet = { accessToken: "OLD", refreshToken: "RT", expiresAt: 0, scopes: [] };
+    let current: TokenSet | null = expired;
+    let loads = 0;
+    let releaseStale!: () => void;
+    const staleGate = new Promise<void>((r) => (releaseStale = r));
+    const store: TokenStore = {
+      async load() {
+        const snapshot = current;
+        // The 4th read (caller B's re-check) is slow and returns what it saw at call time.
+        if (++loads === 4) await staleGate;
+        return snapshot;
+      },
+      async save(t) {
+        current = t;
+      },
+      async clear() {
+        current = null;
+      },
+    };
+    let authorizeUrl = "";
+    const openBrowser = vi.fn(async (url: string) => {
+      authorizeUrl = url;
+    });
+    const fetchImpl = vi.fn(async (_u: string, init?: RequestInit) =>
+      String(init?.body).includes("grant_type=refresh_token")
+        ? jsonResponse({ error: "invalid_grant" }, 400)
+        : tokenReply(),
+    );
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+
+    const a = auth.getAccessToken({ interactiveWaitMs: 5_000 });
+    const b = auth.getAccessToken({ interactiveWaitMs: 5_000 });
+    await until(() => authorizeUrl !== "");
+    await redirectBack(authorizeUrl, { code: "CODE" }); // A's sign-in completes…
+    await expect(a).resolves.toBe("INTERACTIVE-AT");
+    releaseStale(); // …then B's stale re-check returns the old, expired snapshot.
+    await expect(b).resolves.toBe("INTERACTIVE-AT");
+    expect(openBrowser).toHaveBeenCalledOnce(); // no second window
+  });
+
+  it("also uses them on the 401-recovery path (forced refresh, huge minTtlMs)", async () => {
+    const store = memoryStore({
+      accessToken: "REVOKED",
+      refreshToken: "RT",
+      expiresAt: 10_000_000, // still "valid" by the clock, but Graph said 401
+      scopes: config.scopes,
+    });
+    const openBrowser = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn(async () => {
+      await store.save({
+        accessToken: "FRESH",
+        refreshToken: "RT2",
+        expiresAt: 10_000_000,
+        scopes: config.scopes,
+      });
+      return jsonResponse({ error: "invalid_grant" }, 400);
+    });
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    expect(
+      await auth.getAccessToken({ interactiveWaitMs: 20, minTtlMs: Number.MAX_SAFE_INTEGER }),
+    ).toBe("FRESH");
+    expect(openBrowser).not.toHaveBeenCalled();
   });
 
   it("cools down after a cancelled sign-in instead of reopening the browser", async () => {

@@ -14,6 +14,7 @@
  * over HTTP with an injected browser launcher.
  */
 
+import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { z } from "zod";
@@ -169,6 +170,13 @@ export interface MicrosoftAuthDeps {
   fetchImpl?: typeof fetch;
   /** Injectable browser launcher (defaults to `open`). */
   openBrowser?: (url: string) => Promise<void>;
+  /**
+   * If the browser can't be opened, print the sign-in URL on stderr and keep
+   * waiting (for the `login` command, where a person is at the terminal).
+   * Otherwise (default; the MCP server) the attempt ends at once, so a retry
+   * isn't stuck joining a sign-in that can never finish.
+   */
+  printUrlIfBrowserFails?: boolean;
   /** Injectable clock (defaults to Date.now). */
   now?: () => number;
   logger?: Logger;
@@ -356,11 +364,27 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         log.info("Opening browser for Microsoft sign-in", { redirectUri });
         const launch = deps.openBrowser
           ? deps.openBrowser(authorizeUrl)
-          : import("open").then((m) => m.default(authorizeUrl).then(() => undefined));
-        launch.catch(() => {
-          log.warn("Could not open a browser automatically. Visit the URL printed on stderr.");
-          // Print to stderr so the user can copy it (never stdout).
-          process.stderr.write(`\nOpen this URL to sign in:\n${authorizeUrl}\n\n`);
+          : import("open").then((m) => m.default(authorizeUrl).then(launcherSucceeded));
+        launch.catch((e: unknown) => {
+          // The browser evidently worked: Microsoft's redirect has arrived and the
+          // token exchange is under way, so a late launcher failure is irrelevant.
+          if (completed) return;
+          if (deps.printUrlIfBrowserFails) {
+            log.warn("Could not open a browser automatically. Visit the URL printed on stderr.");
+            // Print to stderr so the user can copy it (never stdout).
+            process.stderr.write(`\nOpen this URL to sign in:\n${authorizeUrl}\n\n`);
+            return;
+          }
+          log.warn("Could not open a browser for Microsoft sign-in", {
+            error: e instanceof Error ? e.message : String(e),
+          });
+          cleanup();
+          reject(
+            new SignInRequiredError(
+              "Couldn't open a web browser for the Microsoft sign-in. Check that a default web " +
+                `browser is set, then ask me to try again ${LOGIN_HINT}.`,
+            ),
+          );
         });
       });
     });
@@ -371,6 +395,11 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   // the same attempt rather than opening another window.
   let inflightSignIn: Promise<TokenSet> | null = null;
   let lastSignInFailureAt: number | undefined;
+  // Completed sign-ins in this process, with the latest result: lets a caller
+  // whose refresh failed notice that a sign-in finished meanwhile, even if its
+  // own cache read raced with that save.
+  let signInsCompleted = 0;
+  let lastSignedIn: TokenSet | undefined;
   function signInAndSave(): Promise<TokenSet> {
     if (!inflightSignIn) {
       const attempt = (async () => {
@@ -378,6 +407,8 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
           const tokens = await interactiveSignIn();
           await store.save(tokens);
           lastSignInFailureAt = undefined;
+          lastSignedIn = tokens;
+          signInsCompleted += 1;
           return tokens;
         } catch (e) {
           lastSignInFailureAt = now();
@@ -424,6 +455,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     async getAccessToken(options: GetAccessTokenOptions = {}): Promise<string> {
       const interactive = options.interactive ?? true;
       const minTtlMs = options.minTtlMs ?? DEFAULT_MIN_TTL_MS;
+      const signInsAtStart = signInsCompleted;
 
       let cached: TokenSet | null = null;
       try {
@@ -438,6 +470,11 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         return cached.accessToken;
       }
 
+      // A browser sign-in is already pending (e.g. a previous call's window):
+      // join it, rather than racing it with a refresh whose failure could open
+      // a second window after the user has just signed in.
+      if (interactive && inflightSignIn) return signInOnDemand(options.interactiveWaitMs);
+
       if (cached?.refreshToken) {
         try {
           const refreshed = await refreshAndSave(cached);
@@ -450,6 +487,26 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
 
       if (!interactive) {
         throw new AuthError("Not signed in. Interactive Microsoft sign-in is required.");
+      }
+
+      // A sign-in may have completed while the refresh was in flight: use it.
+      // A *different* token than the one we started with is new, so judge it by
+      // the normal threshold. The 401-recovery path forces a refresh with a huge
+      // minTtlMs, which no fresh token could otherwise satisfy.
+      const latest = await store.load().catch(() => null);
+      if (latest) {
+        const isNew = latest.accessToken !== cached?.accessToken;
+        const threshold = isNew ? Math.min(minTtlMs, DEFAULT_MIN_TTL_MS) : minTtlMs;
+        if (latest.expiresAt - now() > threshold) return latest.accessToken;
+      }
+      // That read may itself have been stale: if a sign-in in this process
+      // completed since we started, use its tokens rather than opening another.
+      if (
+        signInsCompleted !== signInsAtStart &&
+        lastSignedIn &&
+        lastSignedIn.expiresAt - now() > DEFAULT_MIN_TTL_MS
+      ) {
+        return lastSignedIn.accessToken;
       }
 
       return signInOnDemand(options.interactiveWaitMs);
@@ -471,6 +528,44 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       }
     },
   };
+}
+
+/** How long a launcher (xdg-open, `start`, `open`) gets to fail before we assume it worked. */
+const LAUNCHER_GRACE_MS = 5_000;
+
+/**
+ * `open()` resolves once the launcher process has *started*. A launcher can
+ * still fail afterwards, e.g. `xdg-open` with no browser configured. Treat a
+ * non-zero exit within the grace period as a failed launch. A launcher still
+ * running (or exiting 0) counts as success; never wait for the browser itself.
+ */
+export function launcherSucceeded(
+  child: Pick<ChildProcess, "once" | "exitCode">,
+  graceMs = LAUNCHER_GRACE_MS,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const fail = (code: number | null) =>
+      reject(new Error(`Browser launcher exited with code ${code}.`));
+    if (child.exitCode !== null) {
+      if (child.exitCode === 0) resolve();
+      else fail(child.exitCode);
+      return;
+    }
+    const timer = setTimeout(resolve, graceMs);
+    timer.unref?.();
+    child.once("exit", (code: number | null, signal?: string | null) => {
+      clearTimeout(timer);
+      // Only a clean exit counts; a null code means it was killed by a signal.
+      if (code === 0) resolve();
+      else if (code === null)
+        reject(new Error(`Browser launcher was terminated (${signal ?? "signal"}).`));
+      else fail(code);
+    });
+    child.once("error", (e: Error) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+  });
 }
 
 /** `p`'s value if it settles within `ms`, else `undefined` (rejections propagate). */

@@ -17,7 +17,7 @@
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { AuthError } from "../util/errors.js";
@@ -146,7 +146,12 @@ export function createFileTokenStore(
     await bestEffortChmod(dir, 0o700);
   }
 
-  async function writeKeyFile(key: Buffer): Promise<void> {
+  /**
+   * Write the key file. `exclusive` publishes it only if none exists yet
+   * (atomically, via a hard link), and returns false if another process won
+   * the race to create it. Otherwise it replaces the file atomically.
+   */
+  async function writeKeyFile(key: Buffer, exclusive: boolean): Promise<boolean> {
     let contents = key.toString("base64");
     if (protector) {
       try {
@@ -163,16 +168,23 @@ export function createFileTokenStore(
         });
       }
     }
+    if (exclusive) return publishExclusive(resolvedKeyFile, contents);
     await writeAtomic(resolvedKeyFile, contents);
+    return true;
   }
 
-  /** Read the key file: the key, or null if absent/unusable (caller regenerates). */
-  async function readKey(): Promise<Buffer | null> {
+  type KeyRead =
+    | { status: "ok"; key: Buffer; rewrote?: boolean }
+    | { status: "absent" }
+    | { status: "unusable" };
+
+  /** Read the key file. "unusable" = present but corrupt or foreign (caller replaces it). */
+  async function readKey(): Promise<KeyRead> {
     let raw: string;
     try {
       raw = (await readFile(resolvedKeyFile, "utf8")).trim();
     } catch (e) {
-      if (isErrnoException(e) && e.code === "ENOENT") return null;
+      if (isErrnoException(e) && e.code === "ENOENT") return { status: "absent" };
       throw e;
     }
 
@@ -180,41 +192,86 @@ export function createFileTokenStore(
       const parsed = ProtectedKeyFileSchema.safeParse(safeJson(raw));
       if (!parsed.success || !protector || protector.name !== parsed.data.protection) {
         log.warn("Token-cache key is protected in a way this machine can't unwrap; resetting it");
-        return null;
+        return { status: "unusable" };
       }
       try {
         const key = await protector.unprotect(Buffer.from(parsed.data.key, "base64"));
-        return key.length === KEY_BYTES ? key : null;
+        return key.length === KEY_BYTES ? { status: "ok", key } : { status: "unusable" };
       } catch (e) {
         // e.g. copied from another user/machine: the cache can't be read here.
         log.warn("Could not unwrap the token-cache key; resetting it", {
           error: (e as Error).message,
         });
-        return null;
+        return { status: "unusable" };
       }
     }
 
     const key = Buffer.from(raw, "base64");
-    if (key.length !== KEY_BYTES) return null; // corrupt => regenerate (invalidates old cache)
-    if (protector) await writeKeyFile(key); // upgrade a legacy plain key in place
+    // Corrupt => regenerate (invalidates the old cache).
+    if (key.length !== KEY_BYTES) return { status: "unusable" };
+    if (protector) {
+      await writeKeyFile(key, false); // upgrade a legacy plain key in place
+      return { status: "ok", key, rewrote: true };
+    }
+    return { status: "ok", key };
+  }
+
+  /** Identity of the key file on disk; changes whenever any process replaces it. */
+  async function keyFileSignature(): Promise<string | null> {
+    try {
+      const st = await stat(resolvedKeyFile);
+      return `${st.ino}:${st.size}:${st.mtimeMs}`;
+    } catch (e) {
+      if (isErrnoException(e) && e.code === "ENOENT") return null;
+      throw e;
+    }
+  }
+
+  // The key is cached against the key file's identity: unwrapping may spawn a
+  // process (DPAPI), so it happens again only if another process replaced the
+  // file. A stale key would write a cache that fresh processes can't decrypt.
+  let cached: { key: Buffer; signature: string | null } | null = null;
+  let inflight: Promise<Buffer> | null = null;
+
+  async function remember(key: Buffer): Promise<Buffer> {
+    cached = { key, signature: await keyFileSignature() };
     return key;
   }
 
-  // Unwrapping may spawn a process (DPAPI), so do it once per store.
-  let keyPromise: Promise<Buffer> | null = null;
   function loadOrCreateKey(): Promise<Buffer> {
-    keyPromise ??= (async () => {
+    inflight ??= (async () => {
       await ensureDir();
-      const existing = await readKey();
-      if (existing) return existing;
-      const key = randomBytes(KEY_BYTES);
-      await writeKeyFile(key);
-      return key;
-    })().catch((e: unknown) => {
-      keyPromise = null;
-      throw e;
+      const signature = await keyFileSignature();
+      if (cached && signature !== null && signature === cached.signature) return cached.key;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        // Note the file's identity around the read: if another process replaced
+        // it meanwhile (e.g. while DPAPI was unwrapping), the key we got belongs
+        // to the old file, so read again rather than pair it with the new one.
+        const before = await keyFileSignature();
+        const read = await readKey();
+        if (read.status === "ok") {
+          const after = await keyFileSignature();
+          if (before !== after && !read.rewrote) continue;
+          cached = { key: read.key, signature: after };
+          return read.key;
+        }
+        const key = randomBytes(KEY_BYTES);
+        if (read.status === "unusable") {
+          // Only reset the file we judged unusable: if another process replaced it
+          // meanwhile (e.g. while our unwrap was failing), adopt its key instead.
+          if ((await keyFileSignature()) !== before) continue;
+          await writeKeyFile(key, false);
+          return remember(key);
+        }
+        // Absent: create it exclusively. If another process got there first,
+        // loop round and adopt its key rather than overwriting it.
+        if (await writeKeyFile(key, true)) return remember(key);
+      }
+      throw new AuthError("Could not establish the token-cache key.");
+    })().finally(() => {
+      inflight = null;
     });
-    return keyPromise;
+    return inflight;
   }
 
   async function writeAtomic(path: string, contents: string): Promise<void> {
@@ -224,25 +281,57 @@ export function createFileTokenStore(
     await rename(tmp, path); // atomic replace (POSIX and Windows via MoveFileEx)
   }
 
+  /** Create `path` only if it doesn't exist, atomically. Returns false if it already exists. */
+  async function publishExclusive(path: string, contents: string): Promise<boolean> {
+    const tmp = `${path}.tmp-${randomBytes(6).toString("hex")}`;
+    await writeFile(tmp, contents, { mode: 0o600 });
+    await bestEffortChmod(tmp, 0o600);
+    try {
+      await link(tmp, path); // fails with EEXIST if another process published first
+      return true;
+    } catch (e) {
+      if (isErrnoException(e) && e.code === "EEXIST") return false;
+      if (isErrnoException(e) && ["EPERM", "ENOTSUP", "EXDEV", "ENOSYS"].includes(e.code ?? "")) {
+        // No hard links here (e.g. some FAT/network volumes). An exclusive `wx`
+        // create would expose a half-written file to concurrent readers, so use an
+        // atomic rename instead: readers never see partial content, but two
+        // processes creating a key at the same instant can race (last one wins).
+        log.warn("Hard links unavailable for the token cache; key creation isn't exclusive here");
+        await writeAtomic(path, contents);
+        return true;
+      }
+      throw e;
+    } finally {
+      await unlink(tmp).catch(() => undefined);
+    }
+  }
+
   return {
     async load(): Promise<TokenSet | null> {
-      let raw: string;
-      try {
-        raw = await readFile(tokenCacheFile, "utf8");
-      } catch (e) {
-        if (isErrnoException(e) && e.code === "ENOENT") return null;
-        throw e;
-      }
-      try {
-        const container = JSON.parse(raw) as Container;
-        const key = await loadOrCreateKey();
-        const plaintext = decrypt(key, container);
-        return TokenSetSchema.parse(JSON.parse(plaintext));
-      } catch (e) {
-        throw new AuthError(
-          "Token cache is unreadable (corrupt, tampered, or key mismatch). Re-authenticate to reset it.",
-          e,
-        );
+      // Another process may replace the key *and* the cache between our reading
+      // the ciphertext and getting the key. The pair then doesn't match even though
+      // both files are fine, so read both again once before calling it corrupt
+      // (which makes the caller clear the cache and lose the fresh tokens).
+      for (let attempt = 0; ; attempt++) {
+        let raw: string;
+        try {
+          raw = await readFile(tokenCacheFile, "utf8");
+        } catch (e) {
+          if (isErrnoException(e) && e.code === "ENOENT") return null;
+          throw e;
+        }
+        try {
+          const container = JSON.parse(raw) as Container;
+          const key = await loadOrCreateKey();
+          const plaintext = decrypt(key, container);
+          return TokenSetSchema.parse(JSON.parse(plaintext));
+        } catch (e) {
+          if (attempt === 0) continue;
+          throw new AuthError(
+            "Token cache is unreadable (corrupt, tampered, or key mismatch). Re-authenticate to reset it.",
+            e,
+          );
+        }
       }
     },
 
