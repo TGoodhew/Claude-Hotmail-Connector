@@ -160,11 +160,18 @@ function backoffMs(attempt: number): number {
  * Whether sending the request again can't do its work twice. GET is safe;
  * PATCH and DELETE are idempotent (and ours carry `If-Match`, so a repeat after
  * a lost success is refused as a version mismatch); a POST only when it carries
- * a Graph `transactionId`, which Graph de-duplicates.
+ * a Graph `transactionId`, which Graph de-duplicates. The id must be a
+ * non-empty string the JSON body will actually contain (an own, enumerable
+ * property), and any other method is treated as unsafe.
  */
+const REPEATABLE_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "DELETE"]);
+
 function safeToRepeat(method: string, body: unknown): boolean {
-  if (method !== "POST") return true;
-  return typeof body === "object" && body !== null && "transactionId" in body;
+  const m = method.toUpperCase(); // fetch normalises "post" to POST, so must we
+  if (REPEATABLE_METHODS.has(m)) return true;
+  if (m !== "POST" || typeof body !== "object" || body === null) return false;
+  const id = Object.getOwnPropertyDescriptor(body, "transactionId");
+  return id?.enumerable === true && typeof id.value === "string" && id.value.length > 0;
 }
 
 /**

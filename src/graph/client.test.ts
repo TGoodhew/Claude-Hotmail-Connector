@@ -470,6 +470,34 @@ describe("retry policy, deadlines and cancellation (#37)", () => {
     expect(timingOut).toHaveBeenCalledOnce();
   });
 
+  it("doesn't repeat a POST whose dedup key won't be sent, however it's spelt (Copilot review on #120)", async () => {
+    const inherited = Object.create({ transactionId: "t" }) as object;
+    const hidden = Object.defineProperty({}, "transactionId", { value: "t", enumerable: false });
+    const cases: [string, unknown][] = [
+      ["post", { a: 1 }], // fetch sends lowercase "post" as POST
+      ["Post", { a: 1 }],
+      ["POST", { subject: "x", transactionId: undefined }], // dropped by JSON.stringify
+      ["POST", { transactionId: "" }],
+      ["POST", { transactionId: 42 }],
+      ["POST", inherited],
+      ["POST", hidden],
+      ["PROPFIND", undefined], // an unknown method isn't assumed safe
+    ];
+    for (const [method, body] of cases) {
+      const fetchImpl = fetchMock(async () => json({}, { status: 503 }));
+      await expect(client(fetchImpl).request(method, "/me/x", { body })).rejects.toMatchObject({
+        status: 503,
+      });
+      expect(fetchImpl, `${method} ${JSON.stringify(body)}`).toHaveBeenCalledOnce();
+    }
+    // Lowercase is still recognised as safe for idempotent methods.
+    const get = fetchMock()
+      .mockResolvedValueOnce(json({}, { status: 503 }))
+      .mockResolvedValueOnce(json({ ok: true }));
+    await client(get).request("get", "/me");
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
   it("does repeat a POST that Graph de-duplicates (transactionId), and any 429", async () => {
     const deduped = fetchMock()
       .mockResolvedValueOnce(json({}, { status: 503 }))
