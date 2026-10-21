@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ValidationError } from "../util/errors.js";
+import { GraphError, ValidationError } from "../util/errors.js";
 import type { GraphClient } from "./client.js";
 import {
   assertWritableEventPayload,
@@ -16,7 +16,10 @@ type ReqOpts = { query: Record<string, string>; headers?: Record<string, string>
 
 function graphWith(fns: { post?: PostMock; patch?: PatchMock; get?: GetMock }): GraphClient {
   // update_event reads the current values first; default to an empty event.
-  return { get: async () => ({ id: "evt-1" }), ...fns } as unknown as GraphClient;
+  return {
+    get: async () => ({ id: "evt-1", "@odata.etag": 'W/"t1"' }),
+    ...fns,
+  } as unknown as GraphClient;
 }
 
 const createdReply = {
@@ -118,6 +121,7 @@ describe("updateEvent", () => {
   it("reads the changed fields first and reports before/after values", async () => {
     const get = vi.fn<GetMock>(async () => ({
       id: "evt-1",
+      "@odata.etag": 'W/"t1"',
       subject: "Old title",
       start: { dateTime: "2026-07-20T10:00:00.0000000", timeZone: "Australia/Brisbane" },
     }));
@@ -134,10 +138,13 @@ describe("updateEvent", () => {
 
     const [getPath, getOpts] = get.mock.calls[0]! as [string, ReqOpts];
     expect(getPath).toBe("/me/events/evt-1");
-    expect(getOpts.query.$select).toBe("id,subject,start");
+    expect(getOpts.query.$select).toBe("id,attendees,subject,start");
     // Same zone on both requests, so before/after times are comparable.
     expect(getOpts.headers?.prefer).toBe('outlook.timezone="Australia/Brisbane"');
-    expect((patch.mock.calls[0]![2] as ReqOpts).headers).toEqual(getOpts.headers);
+    expect((patch.mock.calls[0]![2] as ReqOpts).headers).toEqual({
+      ...getOpts.headers,
+      "if-match": 'W/"t1"',
+    });
 
     expect(res.changes).toEqual([
       { field: "subject", before: "Old title", after: "New title" },
@@ -151,7 +158,11 @@ describe("updateEvent", () => {
   });
 
   it("sends no Prefer header when no time changes", async () => {
-    const get = vi.fn<GetMock>(async () => ({ id: "evt-1", location: { displayName: "A" } }));
+    const get = vi.fn<GetMock>(async () => ({
+      id: "evt-1",
+      "@odata.etag": 'W/"t1"',
+      location: { displayName: "A" },
+    }));
     const patch = vi.fn<PatchMock>(async () => ({ id: "evt-1", location: { displayName: "B" } }));
     const res = await updateEvent(graphWith({ get, patch }), { id: "evt-1", location: "B" });
     expect((get.mock.calls[0]![1] as ReqOpts).headers).toBeUndefined();
@@ -161,6 +172,7 @@ describe("updateEvent", () => {
   it("reports bodies as plain text, truncating long ones", async () => {
     const get = vi.fn<GetMock>(async () => ({
       id: "evt-1",
+      "@odata.etag": 'W/"t1"',
       body: { contentType: "html", content: "<p>Old <b>notes</b></p>" },
     }));
     const patch = vi.fn<PatchMock>(async () => ({
@@ -185,12 +197,58 @@ describe("updateEvent", () => {
     ).rejects.toThrow("404");
     expect(patch).not.toHaveBeenCalled();
   });
+
+  it("refuses events with attendees: a meeting update would email them (no PATCH)", async () => {
+    const get = vi.fn<GetMock>(async () => ({
+      id: "evt-1",
+      subject: "Team sync",
+      attendees: [{ emailAddress: { address: "colleague@example.com" } }],
+    }));
+    const patch = vi.fn<PatchMock>();
+    await expect(
+      updateEvent(graphWith({ get, patch }), { id: "evt-1", body: "copied mailbox text" }),
+    ).rejects.toThrow(/has attendees/);
+    expect((get.mock.calls[0]![1] as ReqOpts).query.$select).toContain("attendees");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("prepares the before-values before writing, so a conversion failure can't hide a write", async () => {
+    // An invalid numeric entity makes htmlToText throw (until #32 lands).
+    const get = vi.fn<GetMock>(async () => ({
+      id: "evt-1",
+      body: { contentType: "html", content: "<p>&#x110000;</p>" },
+    }));
+    const patch = vi.fn<PatchMock>();
+    await expect(
+      updateEvent(graphWith({ get, patch }), { id: "evt-1", body: "x" }),
+    ).rejects.toThrow();
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("sends If-Match for the checked version and reports a 412 as 'changed meanwhile'", async () => {
+    const get = vi.fn<GetMock>(async () => ({
+      id: "evt-1",
+      "@odata.etag": 'W/"v1"',
+      subject: "A",
+    }));
+    const ok = vi.fn<PatchMock>(async () => ({ id: "evt-1", subject: "B" }));
+    await updateEvent(graphWith({ get, patch: ok }), { id: "evt-1", subject: "B" });
+    expect((ok.mock.calls[0]![2] as ReqOpts).headers?.["if-match"]).toBe('W/"v1"');
+
+    const conflict = vi.fn<PatchMock>(async () => {
+      throw new GraphError("precondition failed", { status: 412 });
+    });
+    await expect(
+      updateEvent(graphWith({ get, patch: conflict }), { id: "evt-1", subject: "B" }),
+    ).rejects.toThrow(/no longer matches the version that was checked/);
+  });
 });
 
 describe("cancelEvent (guarded soft delete, #55)", () => {
-  type DeleteMock = (path: string) => Promise<void>;
+  type DeleteMock = (path: string, opts?: unknown) => Promise<void>;
   const trip = {
     id: "evt-1",
+    "@odata.etag": 'W/"t1"',
     subject: "Travel to Bundaberg",
     start: { dateTime: "2026-07-20T09:00:00.0000000", timeZone: "Australia/Brisbane" },
     end: { dateTime: "2026-07-20T10:00:00.0000000", timeZone: "Australia/Brisbane" },
@@ -216,8 +274,22 @@ describe("cancelEvent (guarded soft delete, #55)", () => {
     expect(path).toBe("/me/events/evt-1");
     expect(opts.query.$select).toContain("attendees");
     expect(opts.headers?.prefer).toBe('outlook.timezone="Australia/Brisbane"');
-    expect(g.del).toHaveBeenCalledWith("/me/events/evt-1");
+    expect(g.del.mock.calls[0]![0]).toBe("/me/events/evt-1");
     expect(removed).toMatchObject({ id: "evt-1", subject: "Travel to Bundaberg" });
+  });
+
+  it("deletes only the checked version (If-Match) and reports a 412 as 'changed meanwhile'", async () => {
+    const g = graph({ ...trip, "@odata.etag": 'W/"v7"' });
+    await cancelEvent(g.client, input);
+    expect((g.del.mock.calls[0]![1] as ReqOpts).headers?.["if-match"]).toBe('W/"v7"');
+
+    const get = vi.fn<GetMock>(async () => ({ ...trip, "@odata.etag": 'W/"v7"' }));
+    const del = vi.fn<DeleteMock>(async () => {
+      throw new GraphError("precondition failed", { status: 412 });
+    });
+    await expect(
+      cancelEvent({ get, delete: del } as unknown as GraphClient, input),
+    ).rejects.toThrow(/an earlier attempt of this request already went through/);
   });
 
   it("refuses when confirmSubject doesn't match the title (nothing deleted)", async () => {
@@ -234,20 +306,59 @@ describe("cancelEvent (guarded soft delete, #55)", () => {
     expect(g.del).not.toHaveBeenCalled();
   });
 
-  it("refuses a whole recurring series but allows a single occurrence", async () => {
+  it("refuses anything recurring: a whole series, an occurrence, or an exception", async () => {
     const series = graph({ ...trip, type: "seriesMaster" });
     await expect(cancelEvent(series.client, input)).rejects.toThrow(/whole recurring series/);
     expect(series.del).not.toHaveBeenCalled();
 
-    const occurrence = graph({ ...trip, type: "occurrence" });
-    await cancelEvent(occurrence.client, input);
-    expect(occurrence.del).toHaveBeenCalledOnce();
+    // Deleting an occurrence removes it from the series instead of using Deleted Items.
+    for (const type of ["occurrence", "exception"]) {
+      const g = graph({ ...trip, type });
+      await expect(cancelEvent(g.client, input)).rejects.toThrow(/one occurrence/);
+      expect(g.del).not.toHaveBeenCalled();
+    }
   });
 
   it("rejects a non-IANA time zone before calling Graph", async () => {
     const g = graph(trip);
     await expect(cancelEvent(g.client, { ...input, timeZone: "Not/AZone" })).rejects.toThrow();
     expect(g.get).not.toHaveBeenCalled();
+  });
+});
+
+describe("checked-version writes need a version tag", () => {
+  it("refuses to PATCH or DELETE when Graph returns no @odata.etag", async () => {
+    const untagged = { id: "evt-1", subject: "Trip", type: "singleInstance", attendees: [] };
+    const get = vi.fn<GetMock>(async () => untagged);
+    const patch = vi.fn<PatchMock>();
+    const del = vi.fn();
+    const client = { get, patch, delete: del } as unknown as GraphClient;
+
+    await expect(updateEvent(client, { id: "evt-1", subject: "x" })).rejects.toThrow(
+      /didn't return its version tag/,
+    );
+    await expect(
+      cancelEvent(client, { id: "evt-1", confirmSubject: "Trip", timeZone: "Australia/Brisbane" }),
+    ).rejects.toThrow(/didn't return its version tag/);
+    expect(patch).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("doesn't claim 'nothing changed' on a 412: a retried request may already have applied", async () => {
+    // e.g. the first PATCH committed but its response was lost; the retry then gets 412.
+    const get = vi.fn<GetMock>(async () => ({ id: "evt-1", "@odata.etag": 'W/"t1"' }));
+    const patch = vi.fn<PatchMock>(async () => {
+      throw new GraphError("precondition failed", { status: 412 });
+    });
+    const err: Error = await updateEvent(graphWith({ get, patch }), {
+      id: "evt-1",
+      subject: "B",
+    }).then(
+      () => new Error("expected a rejection"),
+      (e: unknown) => e as Error,
+    );
+    expect(err.message).toMatch(/already went through/);
+    expect(err.message).not.toMatch(/nothing was changed/i);
   });
 });
 

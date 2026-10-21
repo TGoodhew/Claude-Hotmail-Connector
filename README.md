@@ -48,7 +48,9 @@ three checks:
 
 - you've confirmed it and the event's exact title matches;
 - the event has no attendees, since deleting a meeting could email cancellations;
-- it isn't a whole recurring series.
+- it isn't recurring.
+
+`update_event` likewise refuses events with attendees, because changing a meeting emails its attendees.
 
 Full tool contracts are in spec v2 §7.
 
@@ -194,8 +196,10 @@ with no duplicates if it retries.
 - **Logging:** structured logs go to **stderr only** (stdout is reserved for MCP JSON-RPC) and are
   scrubbed of tokens, `Authorization` headers, OAuth codes and secrets.
 - **Email (and others' invites) are untrusted input:** they're written by strangers and may try to
-  steer the model. The connector can't send mail: no `Mail.Send`, no attendees, and no deleting
-  meetings with attendees. Writes and deletes are confirmation-gated. The full threat model is in
+  steer the model. The connector can't send mail: no `Mail.Send`, no attendees, and no changing or
+  deleting meetings with attendees. Writes and deletes are marked destructive so Claude asks before
+  running them, but only if your client's tool permissions ask. **Don't auto-approve the calendar
+  write tools.** The full threat model is in
   [spec v2 §9.2](docs/personal-outlook-mcp-connector-requirements.md#92-threat-model). Review what
   Claude proposes before approving calendar changes.
 - **Timezone-correct writes:** events are sent as local wall-clock time + an IANA time zone (never a
