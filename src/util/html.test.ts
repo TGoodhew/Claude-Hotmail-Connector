@@ -88,6 +88,36 @@ describe("htmlToText structure (#32)", () => {
     expect(htmlToText("Hi&zwnj;&nbsp;&#847;&zwnj;&shy; there")).toBe("Hi there");
   });
 
+  it("keeps joiners inside words and emoji (Copilot review on #109)", () => {
+    const ZWJ = String.fromCharCode(0x200d);
+    const ZWNJ = String.fromCharCode(0x200c);
+    const coder = String.fromCodePoint(0x1f469) + ZWJ + String.fromCodePoint(0x1f4bb);
+    const persian = "می" + ZWNJ + "خواهم"; // "I want": the joiner stops the letters joining
+    expect(htmlToText(`<p>${coder} dev</p>`)).toBe(`${coder} dev`);
+    expect(htmlToText(`<p>${persian}</p>`)).toBe(persian);
+    // Devanagari ka + virama + ZWJ + ssa: the joiner selects the half form.
+    expect(htmlToText("<p>&#2325;&#2381;&zwj;&#2359;</p>")).toBe(
+      String.fromCharCode(2325, 2381) + ZWJ + String.fromCharCode(2359),
+    );
+  });
+
+  it("keeps a column for every cell, empty ones included (Copilot review on #109)", () => {
+    const html =
+      "<table><tr><th>A</th><th>B</th><th>C</th></tr>" +
+      "<tr><td>1</td><td></td><td>3</td></tr>" +
+      "<tr><td></td><td>2</td><td></td></tr></table>";
+    expect(htmlToText(html)).toBe("A\tB\tC\n1\t\t3\n\t2\t");
+  });
+
+  it("keeps <pre> spacing, indentation and blank lines (Copilot review on #109)", () => {
+    expect(htmlToText("<pre>First\n  second\nthird    fourth</pre>")).toBe(
+      "First\n  second\nthird    fourth",
+    );
+    expect(
+      htmlToText("<p>Intro</p><pre>\n  if (a &lt; b) {\n\n\n\n    go();\n  }</pre><p>After</p>"),
+    ).toBe("Intro\n\n  if (a < b) {\n\n\n\n    go();\n  }\nAfter");
+  });
+
   it("lays out a table-based confirmation email row by row", () => {
     const html = `
       <table>

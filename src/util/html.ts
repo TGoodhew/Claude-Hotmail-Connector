@@ -12,7 +12,7 @@
 // Outlook's conditional comments (`<!--[if mso]>…<![endif]-->`) are comments.
 const COMMENT_RE = /<!--[\s\S]*?-->/g;
 const NON_CONTENT_RE = /<(script|style|head|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
-// Captured, so split() keeps the <pre> blocks at the odd indices.
+// Preformatted blocks keep their own spacing (see htmlToText).
 const PRE_RE = /(<pre\b[^>]*>[\s\S]*?<\/pre\s*>)/gi;
 const LINE_BREAK_RE = /<(br|hr)\b[^>]*>/gi;
 const BLOCK_BREAK_RE =
@@ -77,34 +77,62 @@ function decodeEntities(text: string): string {
   );
 }
 
-// Invisible characters (soft hyphens, zero-width joiners, the padding marketing
-// mail puts in its preheader) that cost tokens and add nothing to the text.
-const INVISIBLE_RE = /\u034f|[\u00ad\u200b-\u200f\u2060\ufeff]/g;
+const ch = (...codes: number[]): string => String.fromCharCode(...codes);
 
-/** Source whitespace (newlines included) is one space, as a browser renders it, except in <pre>. */
-function collapseWhitespace(html: string): string {
-  return html
-    .split(PRE_RE)
-    .map((part, i) => (i % 2 === 1 ? part : part.replace(/\s+/g, " ")))
-    .join("");
+// Always dropped: soft hyphens and byte-order marks render as nothing.
+const ALWAYS_INVISIBLE_RE = new RegExp(`[${ch(0xad, 0xfeff)}]`, "g");
+// Joiners and zero-width spaces carry meaning between letters (Persian and
+// Indic shaping, joined emoji), so they're dropped only next to whitespace or a
+// line end: the padding marketing mail puts in its preheader.
+const JOINERS = ch(0x34f, 0x200b, 0x200c, 0x200d, 0x2060);
+const PADDING_RE = new RegExp(`(?<=^|\\s)[${JOINERS}]+|[${JOINERS}]+(?=\\s|$)`, "gm");
+const NBSP_RE = new RegExp(ch(0xa0), "g");
+
+// Each <pre> block waits as a placeholder while the rest is normalised, so its
+// spacing and blank lines survive. The input can't contain the marker characters.
+const PRE_OPEN = ch(0xe000);
+const PRE_CLOSE = ch(0xe001);
+const MARKERS_RE = new RegExp(`[${PRE_OPEN}${PRE_CLOSE}]`, "g");
+const PLACEHOLDER_RE = new RegExp(`${PRE_OPEN}(\\d+)${PRE_CLOSE}`, "g");
+
+/** Markup to text: line breaks kept, tags stripped, entities decoded, invisibles dropped. */
+function inlineText(html: string): string {
+  return decodeEntities(html.replace(LINE_BREAK_RE, "\n").replace(TAG_RE, ""))
+    .replace(/\r\n?/g, "\n")
+    .replace(ALWAYS_INVISIBLE_RE, "")
+    .replace(NBSP_RE, " ");
+}
+
+/** A <pre> block's text, with its spacing and line breaks as written. */
+function preText(block: string): string {
+  const inner = block.replace(/^<pre\b[^>]*>/i, "").replace(/<\/pre\s*>$/i, "");
+  return inlineText(inner)
+    .replace(/^\n/, "") // HTML ignores a newline straight after <pre>
+    .replace(/\s+$/, "");
 }
 
 /** Convert an HTML string to readable plain text. */
 export function htmlToText(html: string): string {
   if (!html) return "";
-  const withBreaks = collapseWhitespace(html.replace(COMMENT_RE, "").replace(NON_CONTENT_RE, ""))
+  const pres: string[] = [];
+  const marked = html
+    .replace(MARKERS_RE, "")
+    .replace(COMMENT_RE, "")
+    .replace(NON_CONTENT_RE, "")
+    .replace(PRE_RE, (block) => `${PRE_OPEN}${pres.push(preText(block)) - 1}${PRE_CLOSE}`)
+    .replace(/\s+/g, " ") // source whitespace renders as one space
+    .replace(PLACEHOLDER_RE, "\n$&\n")
     .replace(LINE_BREAK_RE, "\n")
     .replace(BLOCK_BREAK_RE, "\n")
-    .replace(CELL_BREAK_RE, "\t");
-  const stripped = withBreaks.replace(TAG_RE, "");
-  const decoded = decodeEntities(stripped);
-  return decoded
-    .replace(/\r\n?/g, "\n")
-    .replace(INVISIBLE_RE, "")
-    .replace(/\u00a0/g, " ")
-    .replace(/[ \t]*\t[ \t]*/g, "\t") // one tab between table cells
+    .replace(CELL_BREAK_RE, "\t"); // one tab per cell, so empty cells keep their column
+  const text = inlineText(marked)
+    .replace(PADDING_RE, "")
+    .replace(/ *\t */g, "\t")
     .replace(/ {2,}/g, " ") // collapse runs of spaces
-    .replace(/^[ \t]+|[ \t]+$/gm, "") // trim each line
+    .replace(/\t$/gm, "") // the separator after a row's last cell
+    .replace(/^[\t ]+$/gm, "") // lines holding only empty (layout) cells
+    .replace(/^ +| +$/gm, "") // trim spaces; leading tabs are empty cells
     .replace(/\n{3,}/g, "\n\n") // collapse excessive blank lines
-    .trim();
+    .replace(/^[\n ]+|[\n ]+$/g, ""); // not tabs: they can be empty cells
+  return text.replace(PLACEHOLDER_RE, (_, i: string) => pres[Number(i)] ?? "");
 }
