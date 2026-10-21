@@ -38,8 +38,11 @@ function resolveTime(
 const listEventsShape = {
   startDateTime: z
     .string()
-    .describe("Range start, ISO 8601. Include a timezone offset/Z to pin it precisely."),
-  endDateTime: z.string().describe("Range end, ISO 8601."),
+    .describe(
+      'Range start: a local "YYYY-MM-DDTHH:mm[:ss]" (or "YYYY-MM-DD" for midnight), read in ' +
+        "timeZone; or an ISO 8601 value with an offset/Z for an exact instant.",
+    ),
+  endDateTime: z.string().describe("Range end, in the same forms. Must be after the start."),
   timeZone: z
     .string()
     .optional()

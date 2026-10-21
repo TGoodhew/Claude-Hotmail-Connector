@@ -101,9 +101,10 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 
 - **TypeScript on Node.js.** The MCP ecosystem is TypeScript-first; the reference SDK is
   `@modelcontextprotocol/sdk`.
-- **Runtime: Node.js 24 LTS** (`engines >=24`; CI and release on 24) *(→ #45; currently Node 20, which
-  reached EOL in April 2026)*. The Claude Desktop extension runs on Claude Desktop's own bundled Node
-  (version undocumented; the manifest requires `engines.node`, Node 20+, which dependencies such as `open` also need), so CI and source checkouts are what this pins.
+- **Runtime: Node.js 24 LTS** for development, CI and release *(#45)*. `engines.node` stays `>=20`:
+  the Claude Desktop extension runs on Claude Desktop's own bundled Node (version undocumented), and
+  its manifest declares `engines.node` as the minimum, so raising it could stop the extension
+  installing. CI also builds and tests on Node 20 to keep that minimum true.
 - **Libraries:** `zod` (input validation), `dotenv` (dev config), `open` (system browser). Build with
   `tsup`, test with `vitest`. Crypto (PKCE, AES-256-GCM, SHA-256) uses Node's built-in `crypto`; no
   hand-rolled primitives.
