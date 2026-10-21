@@ -173,7 +173,10 @@ export function createFileTokenStore(
     return true;
   }
 
-  type KeyRead = { status: "ok"; key: Buffer } | { status: "absent" } | { status: "unusable" };
+  type KeyRead =
+    | { status: "ok"; key: Buffer; rewrote?: boolean }
+    | { status: "absent" }
+    | { status: "unusable" };
 
   /** Read the key file. "unusable" = present but corrupt or foreign (caller replaces it). */
   async function readKey(): Promise<KeyRead> {
@@ -206,7 +209,10 @@ export function createFileTokenStore(
     const key = Buffer.from(raw, "base64");
     // Corrupt => regenerate (invalidates the old cache).
     if (key.length !== KEY_BYTES) return { status: "unusable" };
-    if (protector) await writeKeyFile(key, false); // upgrade a legacy plain key in place
+    if (protector) {
+      await writeKeyFile(key, false); // upgrade a legacy plain key in place
+      return { status: "ok", key, rewrote: true };
+    }
     return { status: "ok", key };
   }
 
@@ -238,8 +244,17 @@ export function createFileTokenStore(
       const signature = await keyFileSignature();
       if (cached && signature !== null && signature === cached.signature) return cached.key;
       for (let attempt = 0; attempt < 3; attempt++) {
+        // Note the file's identity around the read: if another process replaced
+        // it meanwhile (e.g. while DPAPI was unwrapping), the key we got belongs
+        // to the old file, so read again rather than pair it with the new one.
+        const before = await keyFileSignature();
         const read = await readKey();
-        if (read.status === "ok") return remember(read.key);
+        if (read.status === "ok") {
+          const after = await keyFileSignature();
+          if (before !== after && !read.rewrote) continue;
+          cached = { key: read.key, signature: after };
+          return read.key;
+        }
         const key = randomBytes(KEY_BYTES);
         if (read.status === "unusable") {
           await writeKeyFile(key, false);
@@ -274,14 +289,13 @@ export function createFileTokenStore(
     } catch (e) {
       if (isErrnoException(e) && e.code === "EEXIST") return false;
       if (isErrnoException(e) && ["EPERM", "ENOTSUP", "EXDEV", "ENOSYS"].includes(e.code ?? "")) {
-        // No hard links here (e.g. some network/FAT volumes): exclusive create instead.
-        try {
-          await writeFile(path, contents, { mode: 0o600, flag: "wx" });
-          return true;
-        } catch (e2) {
-          if (isErrnoException(e2) && e2.code === "EEXIST") return false;
-          throw e2;
-        }
+        // No hard links here (e.g. some FAT/network volumes). An exclusive `wx`
+        // create would expose a half-written file to concurrent readers, so use an
+        // atomic rename instead: readers never see partial content, but two
+        // processes creating a key at the same instant can race (last one wins).
+        log.warn("Hard links unavailable for the token cache; key creation isn't exclusive here");
+        await writeAtomic(path, contents);
+        return true;
       }
       throw e;
     } finally {

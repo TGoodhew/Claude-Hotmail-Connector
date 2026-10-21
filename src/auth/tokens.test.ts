@@ -207,6 +207,41 @@ describe("createFileTokenStore across processes (shared key file)", () => {
     expect(readdirSync(dir).filter((f) => f.includes(".tmp-"))).toEqual([]);
   });
 
+  it("doesn't cache a key whose file was replaced while it was being unwrapped", async () => {
+    const reversing: KeyProtector = {
+      name: "slow",
+      protect: async (d) => Buffer.from(d).reverse(),
+      unprotect: async (d) => Buffer.from(d).reverse(),
+    };
+    await createFileTokenStore(file, { protector: reversing }).save(sample);
+
+    // Pause the first unwrap; meanwhile another process resets the key and cache.
+    let release!: () => void;
+    const paused = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const pausing: KeyProtector = {
+      ...reversing,
+      unprotect: async (d) => {
+        if (calls++ === 0) await paused;
+        return reversing.unprotect(d);
+      },
+    };
+    const a = createFileTokenStore(file, { protector: pausing });
+    const loading = a.load().catch((e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 20));
+    writeFileSync(join(dir, "token-cache.key"), "corrupt");
+    const b = createFileTokenStore(file, { protector: reversing });
+    await b.save({ ...sample, account: "after-reset@example.com" });
+    release();
+    await loading;
+
+    // `a` must now hold b's key: what it saves is readable by a fresh process.
+    await a.save(sample);
+    await expect(createFileTokenStore(file, { protector: reversing }).load()).resolves.toEqual(
+      sample,
+    );
+  });
+
   it("re-reads the key when another process replaced the key file", async () => {
     const a = createFileTokenStore(file);
     await a.save(sample);

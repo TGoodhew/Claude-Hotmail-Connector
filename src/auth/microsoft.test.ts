@@ -467,6 +467,36 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
     expect(openBrowser).not.toHaveBeenCalled();
   });
 
+  it("also uses them on the 401-recovery path (forced refresh, huge minTtlMs)", async () => {
+    const store = memoryStore({
+      accessToken: "REVOKED",
+      refreshToken: "RT",
+      expiresAt: 10_000_000, // still "valid" by the clock, but Graph said 401
+      scopes: config.scopes,
+    });
+    const openBrowser = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn(async () => {
+      await store.save({
+        accessToken: "FRESH",
+        refreshToken: "RT2",
+        expiresAt: 10_000_000,
+        scopes: config.scopes,
+      });
+      return jsonResponse({ error: "invalid_grant" }, 400);
+    });
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    expect(
+      await auth.getAccessToken({ interactiveWaitMs: 20, minTtlMs: Number.MAX_SAFE_INTEGER }),
+    ).toBe("FRESH");
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
   it("cools down after a cancelled sign-in instead of reopening the browser", async () => {
     let clock = 1_000;
     const openBrowser = vi.fn(async (url: string) => {

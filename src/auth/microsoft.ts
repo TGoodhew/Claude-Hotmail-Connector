@@ -478,8 +478,15 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       }
 
       // A sign-in may have completed while the refresh was in flight: use it.
+      // A *different* token than the one we started with is new, so judge it by
+      // the normal threshold. The 401-recovery path forces a refresh with a huge
+      // minTtlMs, which no fresh token could otherwise satisfy.
       const latest = await store.load().catch(() => null);
-      if (latest && latest.expiresAt - now() > minTtlMs) return latest.accessToken;
+      if (latest) {
+        const isNew = latest.accessToken !== cached?.accessToken;
+        const threshold = isNew ? Math.min(minTtlMs, DEFAULT_MIN_TTL_MS) : minTtlMs;
+        if (latest.expiresAt - now() > threshold) return latest.accessToken;
+      }
 
       return signInOnDemand(options.interactiveWaitMs);
     },
