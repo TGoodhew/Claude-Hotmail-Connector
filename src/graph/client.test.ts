@@ -551,15 +551,70 @@ describe("retry policy, deadlines and cancellation (#37)", () => {
     ).rejects.toMatchObject({ reason: "cancelled" });
     expect(fetchImpl).toHaveBeenCalledOnce(); // page 2 never requested
 
-    const late = fetchMock()
-      .mockResolvedValueOnce(json({ value: [1], "@odata.nextLink": `${BASE}/me/messages?p=2` }))
-      .mockResolvedValueOnce(json({ value: [2] }));
     let clock = 0;
+    const late = fetchMock()
+      .mockImplementationOnce(async () => {
+        clock = 200; // page 1 took us past the deadline
+        return json({ value: [1], "@odata.nextLink": `${BASE}/me/messages?p=2` });
+      })
+      .mockResolvedValueOnce(json({ value: [2] }));
     const graph = client(late, { now: () => clock });
-    const run = graph.getAllPages("/me/messages", { deadline: 100 });
-    clock = 200; // past the deadline before page 2
-    await expect(run).rejects.toBeInstanceOf(TimeoutError);
+    await expect(graph.getAllPages("/me/messages", { deadline: 100 })).rejects.toBeInstanceOf(
+      TimeoutError,
+    );
     expect(late).toHaveBeenCalledOnce();
+  });
+
+  it("stops waiting for a slow sign-in or refresh on cancellation, sending nothing (Copilot review on #120)", async () => {
+    const controller = new AbortController();
+    let finishSignIn = (_t: string): void => undefined;
+    const auth = {
+      getAccessToken: vi.fn(() => new Promise<string>((resolve) => (finishSignIn = resolve))),
+    };
+    const fetchImpl = fetchMock(async () => json({}));
+    const graph = createGraphClient({ auth, baseUrl: BASE, fetchImpl: fetchImpl as never });
+    const call = graph.patch("/me/events/e", {}, { signal: controller.signal });
+    controller.abort();
+    await expect(call).rejects.toMatchObject({ reason: "cancelled" });
+    finishSignIn("AT"); // the shared sign-in still finishes, for others
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("gives up on token acquisition at the deadline, sending nothing (Copilot review on #120)", async () => {
+    let finishSignIn = (_t: string): void => undefined;
+    const auth = {
+      getAccessToken: vi.fn(() => new Promise<string>((resolve) => (finishSignIn = resolve))),
+    };
+    const fetchImpl = fetchMock(async () => json({}));
+    const graph = createGraphClient({ auth, baseUrl: BASE, fetchImpl: fetchImpl as never });
+    await expect(
+      graph.post("/me/events", { transactionId: "t" }, { deadline: Date.now() + 30 }),
+    ).rejects.toBeInstanceOf(TimeoutError);
+    finishSignIn("AT");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing when the token arrives after the deadline", async () => {
+    let clock = 0;
+    const auth = {
+      getAccessToken: vi.fn(async () => {
+        clock = 500; // the lookup itself outlasted the deadline
+        return "AT";
+      }),
+    };
+    const fetchImpl = fetchMock(async () => json({}));
+    const graph = createGraphClient({
+      auth,
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+      now: () => clock,
+    });
+    await expect(graph.delete("/me/events/e", { deadline: 100 })).rejects.toBeInstanceOf(
+      TimeoutError,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("scopeToOperation passes the signal and deadline to every request", async () => {

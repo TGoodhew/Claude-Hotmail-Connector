@@ -180,6 +180,39 @@ function cancelled(cause?: unknown): GraphError {
   return new GraphError("Graph request was cancelled.", { reason: "cancelled", cause });
 }
 
+function outOfTime(): TimeoutError {
+  return new TimeoutError("The request ran out of time before Microsoft Graph answered.");
+}
+
+/**
+ * Wait for `work`, but give up (rejecting) when `signal` aborts or `remainingMs`
+ * runs out. `work` itself isn't cancelled: it may be shared with other callers.
+ */
+async function withinLimits<T>(
+  work: Promise<T>,
+  signal: AbortSignal | undefined,
+  remainingMs: number,
+): Promise<T> {
+  const timed = Number.isFinite(remainingMs);
+  if (!signal && !timed) return work;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort = (): void => undefined;
+  const limit = new Promise<never>((_, reject) => {
+    if (timed) timer = setTimeout(() => reject(outOfTime()), Math.max(0, remainingMs));
+    if (signal) {
+      onAbort = () => reject(cancelled());
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+  try {
+    return await Promise.race([work, limit]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
 export function createGraphClient(deps: GraphClientDeps): GraphClient {
   const doFetch = deps.fetchImpl ?? fetch;
   const sleep = deps.sleep ?? defaultSleep;
@@ -310,18 +343,29 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       return true;
     };
 
-    for (;;) {
+    /** Stop if the caller cancelled or the deadline passed: before any wait or send. */
+    const ensureStillWanted = (): void => {
       if (opts.signal?.aborted) throw cancelled();
-      if (remainingMs() <= 0) {
-        throw new TimeoutError("The request ran out of time before Microsoft Graph answered.");
-      }
-      const token = await deps.auth.getAccessToken({
-        interactive: deps.interactiveSignIn !== undefined,
-        ...(deps.interactiveSignIn ? { interactiveWaitMs: deps.interactiveSignIn.waitMs } : {}),
-        // Force a refresh after a 401 (token may be revoked despite our clock).
-        ...(refreshed ? { minTtlMs: Number.MAX_SAFE_INTEGER } : {}),
-        ...(signOutEpoch !== undefined ? { signOutEpoch } : {}),
-      });
+      if (remainingMs() <= 0) throw outOfTime();
+    };
+
+    for (;;) {
+      ensureStillWanted();
+      // The token lookup can refresh or wait for a browser sign-in. This call
+      // stops waiting for it on cancellation or the deadline, but doesn't abort
+      // it: other calls may be sharing the same refresh or sign-in.
+      const token = await withinLimits(
+        deps.auth.getAccessToken({
+          interactive: deps.interactiveSignIn !== undefined,
+          ...(deps.interactiveSignIn ? { interactiveWaitMs: deps.interactiveSignIn.waitMs } : {}),
+          // Force a refresh after a 401 (token may be revoked despite our clock).
+          ...(refreshed ? { minTtlMs: Number.MAX_SAFE_INTEGER } : {}),
+          ...(signOutEpoch !== undefined ? { signOutEpoch } : {}),
+        }),
+        opts.signal,
+        remainingMs(),
+      );
+      ensureStillWanted(); // nothing is sent once the call is no longer wanted
 
       // Each attempt gets its usual timeout, cut to what's left of the deadline.
       const timeoutMs = Math.max(1, Math.min(opts.timeoutMs ?? defaultTimeoutMs, remainingMs()));
