@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
 import { createGraphClient } from "../graph/client.js";
 import { AuthError, SignedOutError, SignInRequiredError } from "../util/errors.js";
@@ -15,6 +18,7 @@ import {
   toTokenSet,
   type TokenResponse,
 } from "./microsoft.js";
+import { createFileCoordinator } from "./coordination.js";
 import type { TokenSet, TokenStore } from "./tokens.js";
 
 describe("launcherSucceeded (browser launcher exit status)", () => {
@@ -1029,3 +1033,132 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+// Two auth instances sharing one token cache and one file coordinator stand in
+// for two processes, e.g. Claude Desktop's server and the `logout` command (#95).
+describe("sign-in and sign-out across processes (#95)", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  function sharedDir(): string {
+    const d = mkdtempSync(join(tmpdir(), "hotmail-95-"));
+    dirs.push(d);
+    return d;
+  }
+  const reply = (at: string) => () =>
+    jsonResponse({ access_token: at, refresh_token: `RT-${at}`, expires_in: 3600 });
+
+  /** One "process": its own auth, sharing the cache and the coordinator directory. */
+  function processWith(
+    store: TokenStore,
+    dir: string,
+    fetchImpl: () => Response | Promise<Response>,
+  ): { auth: ReturnType<typeof createMicrosoftAuth>; authorizeUrl: () => string } {
+    let url = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      coordinator: createFileCoordinator(dir),
+      fetchImpl: vi.fn(async () => fetchImpl()) as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        url = u;
+      },
+      now: () => 1_000,
+    });
+    return { auth, authorizeUrl: () => url };
+  }
+
+  function redirectBack(authorizeUrl: string, params: Record<string, string>): Promise<Response> {
+    const u = new URL(authorizeUrl);
+    const redirect = new URL(u.searchParams.get("redirect_uri")!);
+    redirect.hostname = "127.0.0.1";
+    const q = new URLSearchParams({ state: u.searchParams.get("state")!, ...params });
+    return fetch(`${redirect.origin}/?${q}`);
+  }
+  async function until(cond: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(cond()).toBe(true);
+  }
+  /** Settle a promise into an outcome now, so a late rejection is never unhandled. */
+  const outcome = <T>(p: Promise<T>) =>
+    p.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+
+  it("a sign-out in another process wins over a pending browser sign-in", async () => {
+    const dir = sharedDir();
+    const store = memoryStore(null);
+    const server = processWith(store, dir, reply("SERVER-AT"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+
+    const pending = outcome(server.auth.signIn());
+    await until(() => server.authorizeUrl() !== "");
+    await cli.auth.signOut(); // `logout` while the browser flow is still open
+
+    await redirectBack(server.authorizeUrl(), { code: "CODE" }); // the user finishes it anyway
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(store.current).toBeNull(); // the logout wasn't undone
+
+    // A new sign-in after the logout saves normally.
+    const firstUrl = server.authorizeUrl();
+    const again = outcome(server.auth.signIn());
+    await until(() => server.authorizeUrl() !== firstUrl);
+    await redirectBack(server.authorizeUrl(), { code: "CODE2" });
+    expect((await again).ok).toBe(true);
+    expect(store.current?.accessToken).toBe("SERVER-AT");
+  });
+
+  it("a sign-out in another process wins over a refresh already in flight", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 500, // expired at now = 1000
+      scopes: config.scopes,
+    });
+    let sent = false;
+    let answer = (_r: Response): void => undefined;
+    const slowTokenEndpoint = () =>
+      new Promise<Response>((r) => {
+        sent = true;
+        answer = r;
+      });
+    const server = processWith(store, dir, slowTokenEndpoint);
+    const cli = processWith(store, dir, reply("UNUSED"));
+
+    const lookup = outcome(server.auth.getAccessToken({ interactive: false }));
+    await until(() => sent); // the refresh request is out
+    await cli.auth.signOut();
+    answer(reply("REFRESHED")());
+
+    const result = await lookup;
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(store.current).toBeNull(); // the refresh didn't put the sign-in back
+  });
+
+  it("of two pending browser sign-ins, the first to finish wins", async () => {
+    const dir = sharedDir();
+    const store = memoryStore(null);
+    const desktop = processWith(store, dir, reply("DESKTOP-AT"));
+    const code = processWith(store, dir, reply("CODE-AT"));
+
+    const desktopSignIn = outcome(desktop.auth.signIn());
+    const codeSignIn = outcome(code.auth.signIn());
+    await until(() => desktop.authorizeUrl() !== "" && code.authorizeUrl() !== "");
+
+    await redirectBack(code.authorizeUrl(), { code: "C1" });
+    const first = await codeSignIn;
+    expect(first.ok && first.value.accessToken).toBe("CODE-AT");
+
+    await redirectBack(desktop.authorizeUrl(), { code: "D1" }); // finished later
+    const second = await desktopSignIn;
+    // Its own tokens were dropped; it uses the sign-in that is saved.
+    expect(second.ok && second.value.accessToken).toBe("CODE-AT");
+    expect(store.current?.accessToken).toBe("CODE-AT");
+  });
+});

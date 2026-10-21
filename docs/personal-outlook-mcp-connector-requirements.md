@@ -160,7 +160,10 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Deletes the token cache **and** its encryption key on this computer. This is the extension's
   sign-out, since it has no command line. No Graph call or scope is needed (always registered).
 - A sign-in or refresh still in flight when the user signs out is **discarded**, not saved, so it
-  can't silently undo the sign-out (in-process; cross-process coordination is #95).
+  can't silently undo the sign-out. This holds across processes too (Claude Desktop, Claude Code,
+  `login`/`logout`): counters in `auth-state.json` next to the cache, updated under an exclusive
+  `auth.lock`, make a sign-out anywhere win over anything that began before it. Of two browser
+  sign-ins in different processes, the first to finish is saved and the other uses it *(#95)*.
 - Annotations: `destructiveHint: true` (local data), `idempotentHint: true`, `openWorldHint: false`.
   The description says to call it only when the user asks. Misuse only means signing in again.
 
