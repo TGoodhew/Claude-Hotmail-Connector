@@ -12,10 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 24 LTS (#45). The oldest supported runtime is tested below.
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -46,3 +47,27 @@ jobs:
 
       - name: Build Claude Desktop extension (.mcpb)
         run: npm run build:mcpb
+
+  # The .mcpb runs on Claude Desktop's own bundled Node, whose version isn't
+  # documented, so the bundle declares package.json engines.node (Node 20+) as
+  # its minimum. Keep that claim true: build and test on the oldest supported
+  # major as well.
+  minimum-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js (oldest supported)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
