@@ -28,6 +28,8 @@ const LIVE = process.env.HOTMAIL_LIVE_TESTS === "1";
 /** Deadlines for the write test's main steps and for removing what it created. */
 const MAIN_MS = 70_000;
 const CLEANUP_MS = 35_000;
+/** Part of the cleanup time for finding events by subject; the rest is for deleting. */
+const LOOKUP_MS = 10_000;
 
 describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
   const config = LIVE ? getConfig() : undefined;
@@ -108,7 +110,10 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
         // deadline), so also look the event up by its unique subject.
         const ids = new Set(created);
         try {
-          const day = await listEvents(cleanup, {
+          // A shorter deadline of its own, so a stalled lookup leaves time to
+          // delete the events whose ids are already known.
+          const lookup = scopeToOperation(base, { deadline: Date.now() + LOOKUP_MS });
+          const day = await listEvents(lookup, {
             startDateTime: "2031-01-15",
             endDateTime: "2031-01-16",
             timeZone,
