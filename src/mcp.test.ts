@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -9,6 +9,7 @@ import {
   allTools,
   createMcpServer,
   SERVER_INSTRUCTIONS,
+  SERVER_VERSION,
   TOOL_CALL_DEADLINE_MS,
   toolsForScopes,
 } from "./mcp.js";
@@ -211,6 +212,15 @@ describe("createMcpServer (in-memory transport)", () => {
 
     await client.close();
     await server.close();
+  });
+});
+
+describe("SERVER_VERSION (#46)", () => {
+  it("matches package.json, which the release tag and .mcpb manifest also use", () => {
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+      version: string;
+    };
+    expect(SERVER_VERSION).toBe(pkg.version);
   });
 });
 
