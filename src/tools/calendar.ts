@@ -10,6 +10,8 @@ import {
   defineTool,
   toolResult,
   toRegistered,
+  UNTRUSTED_CONTENT_DESCRIPTION,
+  untrustedResult,
   type RegisteredTool,
   type ToolContext,
   type ToolDefinition,
@@ -50,7 +52,8 @@ export const listEventsTool: ToolDefinition<typeof listEventsShape> = defineTool
   title: "List calendar events",
   description:
     "List calendar events in a date range (e.g. to check for conflicts before adding a booking). " +
-    "Times are returned in the requested IANA time zone. Read-only.",
+    "Times are returned in the requested IANA time zone. Read-only. " +
+    UNTRUSTED_CONTENT_DESCRIPTION,
   inputShape: listEventsShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
   scopesAnyOf: ["Calendars.Read", "Calendars.ReadWrite"],
@@ -66,7 +69,7 @@ export const listEventsTool: ToolDefinition<typeof listEventsShape> = defineTool
       events.length === 0
         ? "No events found in that range."
         : `Found ${events.length} event(s) (times in ${timeZone}).`;
-    return toolResult(summary, { count: events.length, timeZone, events });
+    return untrustedResult(summary, { count: events.length, timeZone, events });
   },
 });
 

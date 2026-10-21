@@ -6,8 +6,9 @@ import { z } from "zod";
 import { getMessage, listMessages } from "../graph/mail.js";
 import {
   defineTool,
-  toolResult,
   toRegistered,
+  UNTRUSTED_CONTENT_DESCRIPTION,
+  untrustedResult,
   type RegisteredTool,
   type ToolDefinition,
 } from "./types.js";
@@ -38,7 +39,8 @@ export const listMessagesTool: ToolDefinition<typeof listMessagesShape> = define
     "Search or list email messages (e.g. to find booking or confirmation emails). " +
     "Read-only. Returns id, subject, sender, receivedDateTime, webLink, a body preview, " +
     "and hasAttachments, plus a nextPageToken when more results exist. Use get_message to " +
-    "read a full message body.",
+    "read a full message body. " +
+    UNTRUSTED_CONTENT_DESCRIPTION,
   inputShape: listMessagesShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
   scopesAnyOf: ["Mail.Read"],
@@ -49,7 +51,7 @@ export const listMessagesTool: ToolDefinition<typeof listMessagesShape> = define
         ? "No matching messages found."
         : `Found ${result.messages.length} message(s)` +
           (result.nextPageToken ? " (more available — use nextPageToken)." : ".");
-    return toolResult(summary, {
+    return untrustedResult(summary, {
       count: result.messages.length,
       messages: result.messages,
       ...(result.nextPageToken ? { nextPageToken: result.nextPageToken } : {}),
@@ -71,14 +73,15 @@ export const getMessageTool: ToolDefinition<typeof getMessageShape> = defineTool
   description:
     "Read a single email message by id, returning subject, sender, receivedDateTime, webLink, " +
     "the body (HTML converted to plain text by default), and attachment metadata " +
-    "(names/sizes only — no file contents). Read-only.",
+    "(names/sizes only — no file contents). Read-only. " +
+    UNTRUSTED_CONTENT_DESCRIPTION,
   inputShape: getMessageShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
   scopesAnyOf: ["Mail.Read"],
   async handler(input, ctx) {
     const msg = await getMessage(ctx.graph, input);
-    const summary = `${msg.subject ?? "(no subject)"} — from ${msg.from?.address ?? "unknown"}`;
-    return toolResult(summary, msg);
+    // The summary stays free of the message's own text; that is all in the data.
+    return untrustedResult("Read the message; its details follow.", msg);
   },
 });
 
