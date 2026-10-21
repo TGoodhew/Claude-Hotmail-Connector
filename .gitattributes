@@ -1,6 +1,11 @@
 # Normalise line endings: LF in the repo, checked out natively per-OS.
 * text=auto eol=lf
 
+# Always treat source as text, so a stray control character can't make git
+# hide a file's diffs as "binary" (see #36; `npm run check:text` guards this).
+*.ts text diff
+*.mjs text diff
+
 # Binary / generated files
 *.png binary
 *.jpg binary

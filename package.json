@@ -25,7 +25,8 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "check:text": "node scripts/check-text.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
