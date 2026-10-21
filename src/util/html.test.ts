@@ -277,6 +277,35 @@ describe("htmlToText structure (#32)", () => {
     // An unclosed <pre> keeps its spacing to the end, as in a browser.
     expect(htmlToText("<p>Hi</p><pre>  a\n    b")).toBe("Hi\n\n  a\n    b");
   });
+
+  it("drops only the source newline straight after <pre>, not one from markup (#125)", () => {
+    const block = (html: string) => htmlToText(`<p>x</p>${html}`).split("\n\n")[1];
+    expect(block("<pre>\nA</pre>")).toBe("A"); // the source newline after the tag: ignored
+    expect(block("<pre>\r\nA</pre>")).toBe("A");
+    expect(block("<pre>\rA</pre>")).toBe("A"); // a bare CR too (Copilot review on #127)
+    expect(block("<pre>\r\rA</pre>")).toBe("\nA"); // still only one
+    expect(block("<pre>\n\nA</pre>")).toBe("\nA"); // only one is ignored
+    expect(block("<pre><br>A</pre>")).toBe("\nA"); // from markup: kept
+    expect(block("<pre><span>\nA</span></pre>")).toBe("\nA"); // after a tag: kept
+    expect(block("<pre><!-- c -->\nA</pre>")).toBe("\nA"); // after a comment: kept
+  });
+
+  it("ends open cells and rows at the end of input, keeping a trailing empty cell (#125)", () => {
+    expect(htmlToText("<table><tr><td>A<td>B<td>C<tr><td>1<td>2<td>")).toBe("A\tB\tC\n1\t2\t");
+    // The same with </table>, which already worked.
+    expect(htmlToText("<table><tr><td>A<td>B<td>C<tr><td>1<td>2<td></table>")).toBe(
+      "A\tB\tC\n1\t2\t",
+    );
+    // Nested tables left open end as if every closing tag were there.
+    expect(htmlToText("<table><tr><td>x<table><tr><td>in<td>")).toBe(
+      htmlToText("<table><tr><td>x<table><tr><td>in<td></td></tr></table></td></tr></table>"),
+    );
+    // Including an empty nested table (Copilot review on #127).
+    expect(htmlToText("<table><tr><td>A<td><table>")).toBe(
+      htmlToText("<table><tr><td>A<td><table></table></td></tr></table>"),
+    );
+    expect(htmlToText("<table><tr><td>A<td><table>")).toBe("A");
+  });
 });
 
 // Mail is untrusted and conversion is synchronous: none of these may be
