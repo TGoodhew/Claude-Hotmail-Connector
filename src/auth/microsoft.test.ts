@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
-import { AuthError, SignInRequiredError } from "../util/errors.js";
+import { createGraphClient } from "../graph/client.js";
+import { AuthError, SignedOutError, SignInRequiredError } from "../util/errors.js";
 import {
   buildAuthorizeUrl,
   buildCodeExchangeBody,
@@ -612,6 +613,364 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
       await auth.getAccessToken({ interactiveWaitMs: 20, minTtlMs: Number.MAX_SAFE_INTEGER }),
     ).toBe("FRESH");
     expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("a sign-in still pending when the user signs out is discarded, not saved (#43)", async () => {
+    const store = memoryStore(null);
+    let authorizeUrl = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      openBrowser: async (url) => {
+        authorizeUrl = url;
+      },
+      now: () => 1_000,
+    });
+    // Capture the outcome now: the attempt rejects while we're still signing out.
+    const outcome = auth.signIn().then(
+      () => new Error("expected the sign-in to be discarded"),
+      (e: unknown) => e as Error,
+    );
+    await until(() => authorizeUrl !== "");
+    await auth.signOut(); // user signs out while the browser flow is open
+    expect(await outcome).toBeInstanceOf(SignedOutError);
+    // The pending listener was closed, so finishing the old tab can't complete anything.
+    await expect(redirectBack(authorizeUrl, { code: "CODE" })).rejects.toThrow();
+    expect(store.current).toBeNull(); // the sign-out stands
+  });
+
+  it("after sign-out, a new sign-in starts a fresh browser flow straight away", async () => {
+    const store = memoryStore(null);
+    const urls: string[] = [];
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      openBrowser: async (url) => {
+        urls.push(url);
+      },
+      now: () => 1_000,
+    });
+    const old = auth.signIn().catch((e: unknown) => e);
+    await until(() => urls.length === 1);
+    await auth.signOut();
+    await old;
+
+    const fresh = auth.signIn(); // must not join the old, cancelled attempt
+    await until(() => urls.length === 2);
+    await redirectBack(urls[1]!, { code: "CODE" });
+    await expect(fresh).resolves.toMatchObject({ accessToken: "INTERACTIVE-AT" });
+    // No cooldown was imposed by the cancelled attempt.
+    expect(await auth.getAccessToken({ interactiveWaitMs: 20 })).toBe("INTERACTIVE-AT");
+  });
+
+  it("an interactive request whose refresh is cut off by sign-out doesn't open a browser", async () => {
+    const store = memoryStore({ accessToken: "OLD", refreshToken: "RT", expiresAt: 0, scopes: [] });
+    let releaseRefresh!: () => void;
+    const gate = new Promise<void>((r) => (releaseRefresh = r));
+    const fetchImpl = vi.fn(async () => {
+      await gate;
+      return tokenReply();
+    });
+    const openBrowser = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    const outcome = auth.getAccessToken({ interactiveWaitMs: 5_000 }).then(
+      () => new Error("expected the request to stop"),
+      (e: unknown) => e as Error,
+    );
+    await until(() => fetchImpl.mock.calls.length > 0);
+    await auth.signOut();
+    releaseRefresh();
+    expect(await outcome).toBeInstanceOf(SignedOutError);
+    expect(openBrowser).not.toHaveBeenCalled();
+    expect(store.current).toBeNull();
+  });
+
+  it("a request whose cache read straddles a sign-out doesn't adopt the new epoch", async () => {
+    let releaseLoad!: () => void;
+    const loadGate = new Promise<void>((r) => (releaseLoad = r));
+    let loads = 0;
+    let current: TokenSet | null = {
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 0,
+      scopes: [],
+    };
+    const store: TokenStore = {
+      async load() {
+        const snapshot = current;
+        if (++loads === 1) await loadGate; // the request's first read is slow…
+        return snapshot; // …and returns the pre-sign-out credentials
+      },
+      async save(t) {
+        current = t;
+      },
+      async clear() {
+        current = null;
+      },
+    };
+    const fetchImpl = vi.fn(async () => tokenReply());
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    const outcome = auth.getAccessToken({ interactive: false }).then(
+      () => new Error("expected the request to stop"),
+      (e: unknown) => e as Error,
+    );
+    await auth.signOut();
+    releaseLoad();
+    expect(await outcome).toBeInstanceOf(SignedOutError);
+    expect(fetchImpl).not.toHaveBeenCalled(); // no refresh with the stale credentials
+    expect(current).toBeNull();
+  });
+
+  it("a request starting while sign-out is still cleaning up waits instead of reviving tokens", async () => {
+    let releaseClear!: () => void;
+    const clearGate = new Promise<void>((r) => (releaseClear = r));
+    let current: TokenSet | null = {
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 0,
+      scopes: [],
+    };
+    let clearStarted = false;
+    const store: TokenStore = {
+      async load() {
+        return current;
+      },
+      async save(t) {
+        current = t;
+      },
+      async clear() {
+        clearStarted = true;
+        await clearGate; // slow cleanup (e.g. file I/O)
+        current = null;
+      },
+    };
+    const fetchImpl = vi.fn(async () => tokenReply());
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    const signingOut = auth.signOut();
+    await until(() => clearStarted);
+    // A new request (already in the new epoch) arrives mid-cleanup…
+    const request = auth.getAccessToken({ interactive: false }).catch((e: unknown) => e);
+    releaseClear();
+    await signingOut;
+    // …and finds nothing to refresh, rather than refreshing the old token back.
+    expect(await request).toBeInstanceOf(AuthError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(current).toBeNull();
+  });
+
+  it("a request waiting on one sign-out's cleanup is stopped by a second sign-out", async () => {
+    let releaseFirstClear!: () => void;
+    const firstClearGate = new Promise<void>((r) => (releaseFirstClear = r));
+    let clears = 0;
+    const store: TokenStore = {
+      async load() {
+        return null;
+      },
+      async save() {},
+      async clear() {
+        if (++clears === 1) await firstClearGate;
+      },
+    };
+    const openBrowser = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    const first = auth.signOut();
+    await until(() => clears === 1);
+    // A request arrives mid-cleanup and waits…
+    const request = auth.getAccessToken({ interactiveWaitMs: 20 }).then(
+      () => new Error("expected the request to stop"),
+      (e: unknown) => e as Error,
+    );
+    const second = auth.signOut(); // …then the user signs out again.
+    releaseFirstClear();
+    await Promise.all([first, second]);
+    expect(await request).toBeInstanceOf(SignedOutError);
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("a Graph request whose 401 retry spans a sign-out stops instead of signing in", async () => {
+    const store = memoryStore({
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000_000_000,
+      scopes: config.scopes,
+    });
+    const openBrowser = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    let releaseResponse!: () => void;
+    const responseGate = new Promise<void>((r) => (releaseResponse = r));
+    let graphCalls = 0;
+    const graph = createGraphClient({
+      auth,
+      baseUrl: "https://graph.microsoft.com/v1.0",
+      fetchImpl: (async () => {
+        graphCalls += 1;
+        await responseGate; // the response is slow…
+        return jsonResponse({ error: { code: "InvalidAuthenticationToken" } }, 401);
+      }) as unknown as typeof fetch,
+      interactiveSignIn: { waitMs: 5_000 },
+    });
+    const call = graph.get("/me").then(
+      () => new Error("expected the request to stop"),
+      (e: unknown) => e as Error,
+    );
+    await until(() => graphCalls === 1);
+    await auth.signOut(); // …the user signs out meanwhile…
+    releaseResponse(); // …then the 401 triggers the retry.
+    expect(await call).toBeInstanceOf(SignedOutError);
+    expect(openBrowser).not.toHaveBeenCalled();
+    expect(store.current).toBeNull();
+  });
+
+  it("paging stops at the next page if the user signed out during the first", async () => {
+    const store = memoryStore({
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000_000_000,
+      scopes: config.scopes,
+    });
+    const openBrowser = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    let releaseFirstPage!: () => void;
+    const firstPageGate = new Promise<void>((r) => (releaseFirstPage = r));
+    let graphCalls = 0;
+    const graph = createGraphClient({
+      auth,
+      baseUrl: "https://graph.microsoft.com/v1.0",
+      fetchImpl: (async () => {
+        graphCalls += 1;
+        await firstPageGate; // the first page is slow, but succeeds…
+        return jsonResponse({
+          value: [1],
+          "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/calendarView?$skip=1",
+        });
+      }) as unknown as typeof fetch,
+      interactiveSignIn: { waitMs: 5_000 },
+    });
+    const listing = graph.getAllPages("/me/calendarView").then(
+      () => new Error("expected paging to stop"),
+      (e: unknown) => e as Error,
+    );
+    await until(() => graphCalls === 1);
+    await auth.signOut(); // …while the user signs out.
+    releaseFirstPage();
+    expect(await listing).toBeInstanceOf(SignedOutError); // page 2 doesn't sign in again
+    expect(graphCalls).toBe(1);
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("a save already writing when the user signs out is removed by the cleanup", async () => {
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((r) => (releaseSave = r));
+    const order: string[] = [];
+    let current: TokenSet | null = {
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 0,
+      scopes: [],
+    };
+    let saveStarted = false;
+    const store: TokenStore = {
+      async load() {
+        return current;
+      },
+      async save(t) {
+        saveStarted = true;
+        order.push("save-start");
+        await saveGate; // e.g. slow key creation / file I/O
+        current = t;
+        order.push("save-end");
+      },
+      async clear() {
+        order.push("clear");
+        current = null;
+      },
+    };
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => tokenReply()) as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    const refreshing = auth.getAccessToken({ interactive: false }).catch((e: unknown) => e);
+    await until(() => saveStarted);
+    const signingOut = auth.signOut();
+    releaseSave();
+    await signingOut;
+    await refreshing;
+    expect(order).toEqual(["save-start", "save-end", "clear"]);
+    expect(current).toBeNull(); // the sign-out stands
+  });
+
+  it("a refresh in flight when the user signs out doesn't re-save tokens", async () => {
+    const store = memoryStore({ accessToken: "OLD", refreshToken: "RT", expiresAt: 0, scopes: [] });
+    let releaseRefresh!: () => void;
+    const gate = new Promise<void>((r) => (releaseRefresh = r));
+    const fetchImpl = vi.fn(async () => {
+      await gate;
+      return tokenReply();
+    });
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    const outcome = auth.getAccessToken({ interactive: false }).then(
+      () => new Error("expected the refresh to be discarded"),
+      (e: unknown) => e as Error,
+    );
+    await until(() => fetchImpl.mock.calls.length > 0); // the refresh request is in flight
+    await auth.signOut();
+    releaseRefresh();
+    expect(await outcome).toBeInstanceOf(AuthError);
+    expect(store.current).toBeNull();
+  });
+
+  it("signOut clears the cache including the key", async () => {
+    const clear = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store: { load: async () => null, save: async () => undefined, clear },
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    });
+    await auth.signOut();
+    expect(clear).toHaveBeenCalledWith({ includeKey: true });
   });
 
   it("cools down after a cancelled sign-in instead of reopening the browser", async () => {

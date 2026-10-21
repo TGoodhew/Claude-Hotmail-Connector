@@ -19,7 +19,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
-import { AuthError, LOGIN_HINT, SignInRequiredError } from "../util/errors.js";
+import { AuthError, LOGIN_HINT, SignedOutError, SignInRequiredError } from "../util/errors.js";
 import { createLogger, type Logger } from "../util/log.js";
 import type { TokenSet, TokenStore } from "./tokens.js";
 
@@ -194,6 +194,13 @@ export interface GetAccessTokenOptions {
   interactiveWaitMs?: number;
   /** Refresh if fewer than this many ms remain (default 60s). */
   minTtlMs?: number;
+  /**
+   * The sign-out epoch of the operation this lookup belongs to (from
+   * `signOutEpoch()` when the operation began). A Graph request makes several
+   * lookups (retries, 401 recovery); passing its epoch makes one that outlived
+   * a sign-out stop instead of signing in again. Defaults to "now".
+   */
+  signOutEpoch?: number;
 }
 
 export interface MicrosoftAuth {
@@ -201,6 +208,8 @@ export interface MicrosoftAuth {
   signIn(): Promise<TokenSet>;
   signOut(): Promise<void>;
   getAccount(): Promise<string | undefined>;
+  /** Current sign-out epoch: note it when an operation starts (see `signOutEpoch` above). */
+  signOutEpoch(): number;
 }
 
 export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
@@ -257,26 +266,70 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   // MSA refresh tokens rotate, so two parallel refreshes would spend the same
   // token twice — the loser gets `invalid_grant` and their `store.save()` could
   // clobber the freshly-rotated set. Concurrent callers await the same promise.
-  let inflightRefresh: Promise<TokenSet> | null = null;
-  function refreshAndSave(current: TokenSet): Promise<TokenSet> {
-    if (!inflightRefresh) {
-      inflightRefresh = (async () => {
-        try {
-          const refreshed = await refresh(current);
-          await store.save(refreshed);
-          return refreshed;
-        } finally {
-          inflightRefresh = null;
-        }
-      })();
-    }
-    return inflightRefresh;
+  // ── Sign-out ordering ──────────────────────────────────────────────────────
+  // `signOuts` is bumped synchronously by signOut(). Every request notes it
+  // when it starts, and anything still in flight from before a sign-out
+  // (a sign-in, a refresh, a tool call's token lookup) stops with
+  // SignedOutError instead of saving tokens or falling back to a new sign-in.
+  // Token saves and the sign-out cleanup run one at a time: a save already
+  // writing finishes first (and the cleanup then removes it), while a save
+  // queued after the sign-out sees it and is dropped.
+  let signOuts = 0;
+  // The sign-out cleanup in progress, if any. Requests that start meanwhile
+  // already belong to the new epoch, so they must wait for it rather than
+  // read (and refresh) the credentials being deleted.
+  let pendingSignOut: Promise<void> | null = null;
+  let commits: Promise<unknown> = Promise.resolve();
+  function serialized<T>(op: () => Promise<T>): Promise<T> {
+    const run = commits.then(op, op);
+    commits = run.catch(() => undefined);
+    return run;
+  }
+  function saveUnlessSignedOut(tokens: TokenSet, epoch: number, onSaved?: () => void) {
+    return serialized(async () => {
+      if (signOuts !== epoch) throw new SignedOutError();
+      await store.save(tokens);
+      onSaved?.();
+    });
   }
 
-  async function interactiveSignIn(): Promise<TokenSet> {
+  let inflightRefresh: { epoch: number; id: object; promise: Promise<TokenSet> } | null = null;
+  function refreshAndSave(current: TokenSet, epoch: number): Promise<TokenSet> {
+    // Only join a refresh from the same sign-out epoch.
+    if (inflightRefresh?.epoch !== epoch) {
+      const id = {}; // identity of this refresh, for its own finalizer
+      const promise = (async () => {
+        try {
+          const refreshed = await refresh(current);
+          await saveUnlessSignedOut(refreshed, epoch);
+          return refreshed;
+        } finally {
+          if (inflightRefresh?.id === id) inflightRefresh = null;
+        }
+      })();
+      inflightRefresh = { epoch, id, promise };
+    }
+    return inflightRefresh.promise;
+  }
+
+  async function interactiveSignIn(signal?: AbortSignal): Promise<TokenSet> {
     const pkce = generatePkce();
     const state = base64url(randomBytes(16));
     return await new Promise<TokenSet>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new SignedOutError());
+        return;
+      }
+      // Sign-out cancels the attempt: close the listener now rather than
+      // leaving an orphaned flow pending until its timeout.
+      signal?.addEventListener(
+        "abort",
+        () => {
+          cleanup();
+          reject(new SignedOutError());
+        },
+        { once: true },
+      );
       let completed = false;
       const server = createServer((req, res) => {
         const url = new URL(req.url ?? "/", `http://${config.loopbackHost}`);
@@ -394,6 +447,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   // (`interactiveWaitMs`) while the browser flow carries on; later callers join
   // the same attempt rather than opening another window.
   let inflightSignIn: Promise<TokenSet> | null = null;
+  let inflightAbort: AbortController | null = null;
   let lastSignInFailureAt: number | undefined;
   // Completed sign-ins in this process, with the latest result: lets a caller
   // whose refresh failed notice that a sign-in finished meanwhile, even if its
@@ -402,30 +456,45 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   let lastSignedIn: TokenSet | undefined;
   function signInAndSave(): Promise<TokenSet> {
     if (!inflightSignIn) {
+      const epoch = signOuts;
+      // Also this attempt's identity: sign-out replaces it, so `inflightAbort ===
+      // abort` means "this attempt is still the current one".
+      const abort = new AbortController();
       const attempt = (async () => {
         try {
-          const tokens = await interactiveSignIn();
-          await store.save(tokens);
-          lastSignInFailureAt = undefined;
-          lastSignedIn = tokens;
-          signInsCompleted += 1;
+          const tokens = await interactiveSignIn(abort.signal);
+          await saveUnlessSignedOut(tokens, epoch, () => {
+            lastSignInFailureAt = undefined;
+            lastSignedIn = tokens;
+            signInsCompleted += 1;
+          });
           return tokens;
         } catch (e) {
-          lastSignInFailureAt = now();
+          // Only the current attempt's genuine failures start the cooldown: not
+          // a sign-out, and not an attempt that sign-out already detached.
+          if (!(e instanceof SignedOutError) && inflightAbort === abort) {
+            lastSignInFailureAt = now();
+          }
           throw e;
         } finally {
-          inflightSignIn = null;
+          if (inflightAbort === abort) {
+            inflightSignIn = null;
+            inflightAbort = null;
+          }
         }
       })();
       // A caller that stopped waiting no longer observes the result; never let
       // a later failure surface as an unhandled rejection.
       attempt.catch(() => undefined);
       inflightSignIn = attempt;
+      inflightAbort = abort;
     }
     return inflightSignIn;
   }
 
-  async function signInOnDemand(waitMs: number | undefined): Promise<string> {
+  async function signInOnDemand(waitMs: number | undefined, epoch: number): Promise<string> {
+    // A request from before a sign-out must not start a new sign-in after it.
+    if (signOuts !== epoch) throw new SignedOutError();
     const joining = inflightSignIn !== null;
     if (
       !joining &&
@@ -455,16 +524,30 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     async getAccessToken(options: GetAccessTokenOptions = {}): Promise<string> {
       const interactive = options.interactive ?? true;
       const minTtlMs = options.minTtlMs ?? DEFAULT_MIN_TTL_MS;
+      // Noted before any await (or taken from the calling operation): if the user
+      // signs out while this request is in flight, including while it waits
+      // below, it stops (see "Sign-out ordering").
+      const epoch = options.signOutEpoch ?? signOuts;
+      const ensureNotSignedOut = () => {
+        if (signOuts !== epoch) throw new SignedOutError();
+      };
+      ensureNotSignedOut();
+      // A sign-out still cleaning up: wait, so this request can't read the
+      // credentials being deleted and refresh them back into existence.
+      while (pendingSignOut) await pendingSignOut.catch(() => undefined);
+      ensureNotSignedOut();
       const signInsAtStart = signInsCompleted;
 
       let cached: TokenSet | null = null;
       try {
         cached = await store.load();
       } catch (e) {
+        ensureNotSignedOut();
         // Corrupt cache: reset it and continue to (re)authenticate.
         log.warn("Token cache unreadable; clearing", { error: (e as Error).message });
         await store.clear();
       }
+      ensureNotSignedOut();
 
       if (cached && cached.expiresAt - now() > minTtlMs) {
         return cached.accessToken;
@@ -473,17 +556,21 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       // A browser sign-in is already pending (e.g. a previous call's window):
       // join it, rather than racing it with a refresh whose failure could open
       // a second window after the user has just signed in.
-      if (interactive && inflightSignIn) return signInOnDemand(options.interactiveWaitMs);
+      if (interactive && inflightSignIn) return signInOnDemand(options.interactiveWaitMs, epoch);
 
       if (cached?.refreshToken) {
         try {
-          const refreshed = await refreshAndSave(cached);
+          const refreshed = await refreshAndSave(cached, epoch);
+          ensureNotSignedOut();
           return refreshed.accessToken;
         } catch (e) {
+          // A sign-out mid-request ends it: no interactive fallback.
+          if (e instanceof SignedOutError) throw e;
           log.warn("Silent token refresh failed", { error: (e as Error).message });
           if (!interactive) throw e instanceof AuthError ? e : new AuthError("Refresh failed.", e);
         }
       }
+      ensureNotSignedOut();
 
       if (!interactive) {
         throw new AuthError("Not signed in. Interactive Microsoft sign-in is required.");
@@ -494,6 +581,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       // the normal threshold. The 401-recovery path forces a refresh with a huge
       // minTtlMs, which no fresh token could otherwise satisfy.
       const latest = await store.load().catch(() => null);
+      ensureNotSignedOut();
       if (latest) {
         const isNew = latest.accessToken !== cached?.accessToken;
         const threshold = isNew ? Math.min(minTtlMs, DEFAULT_MIN_TTL_MS) : minTtlMs;
@@ -509,7 +597,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         return lastSignedIn.accessToken;
       }
 
-      return signInOnDemand(options.interactiveWaitMs);
+      return signInOnDemand(options.interactiveWaitMs, epoch);
     },
 
     async signIn(): Promise<TokenSet> {
@@ -517,7 +605,28 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     },
 
     async signOut(): Promise<void> {
-      await store.clear();
+      // Synchronously, before any await: everything in flight is now stale.
+      signOuts += 1;
+      lastSignedIn = undefined;
+      // Cancel and detach a pending browser sign-in, so its listener closes and
+      // a fresh sign-in can start straight away instead of joining it.
+      inflightAbort?.abort();
+      inflightSignIn = null;
+      inflightAbort = null;
+      inflightRefresh = null;
+      // Cache and key: nothing of the sign-in stays on disk. Queued behind any
+      // save already in progress, so that save can't land after the cleanup.
+      const cleanup = serialized(() => store.clear({ includeKey: true }));
+      pendingSignOut = cleanup;
+      try {
+        await cleanup;
+      } finally {
+        if (pendingSignOut === cleanup) pendingSignOut = null;
+      }
+    },
+
+    signOutEpoch(): number {
+      return signOuts;
     },
 
     async getAccount(): Promise<string | undefined> {

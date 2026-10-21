@@ -89,6 +89,18 @@ describe("createFileTokenStore", () => {
     expect(await store.load()).toBeNull();
   });
 
+  it("clear({ includeKey }) also removes the key file, and a new sign-in starts afresh", async () => {
+    const store = createFileTokenStore(file);
+    await store.save(sample);
+    const key = join(dir, "token-cache.key");
+    expect(existsSync(key)).toBe(true);
+    await store.clear({ includeKey: true });
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(key)).toBe(false);
+    await store.save(sample); // same store, no stale cached key
+    await expect(createFileTokenStore(file).load()).resolves.toEqual(sample);
+  });
+
   it("clear() is a no-op when nothing is stored", async () => {
     const store = createFileTokenStore(file);
     await expect(store.clear()).resolves.toBeUndefined();
@@ -126,14 +138,51 @@ describe("createFileTokenStore with an OS key protector", () => {
     expect(await createFileTokenStore(file, { protector: fakeProtector() }).load()).toEqual(sample);
   });
 
-  it("upgrades a legacy plain key in place, keeping the existing sign-in", async () => {
+  it("upgrades a legacy plain key in place on the next save, keeping the existing sign-in", async () => {
     await createFileTokenStore(file).save(sample); // legacy: plain base64 key
     expect(readFileSync(keyFile(), "utf8")).not.toContain("{");
 
     const protector = fakeProtector();
-    expect(await createFileTokenStore(file, { protector }).load()).toEqual(sample);
+    const store = createFileTokenStore(file, { protector });
+    // Loads are read-only: the legacy key still decrypts the cache, untouched.
+    expect(await store.load()).toEqual(sample);
+    expect(readFileSync(keyFile(), "utf8")).not.toContain("{");
+    expect(protector.protect).not.toHaveBeenCalled();
+
+    // The next save (e.g. a token refresh) wraps it.
+    await store.save(sample);
     expect(JSON.parse(readFileSync(keyFile(), "utf8")).protection).toBe("fake");
     expect(protector.protect).toHaveBeenCalledOnce();
+    expect(await createFileTokenStore(file, { protector }).load()).toEqual(sample);
+  });
+
+  it("a load paused across a full cleanup can't put a key back on disk", async () => {
+    await createFileTokenStore(file, { protector: fakeProtector() }).save(sample);
+    let release!: () => void;
+    const paused = new Promise<void>((r) => (release = r));
+    let entered!: () => void;
+    const inUnwrap = new Promise<void>((r) => (entered = r));
+    const slow = fakeProtector({
+      unprotect: vi.fn(async (d: Buffer) => {
+        entered();
+        await paused;
+        return Buffer.from(d.subarray(MARK.length)).reverse();
+      }),
+    });
+    const store = createFileTokenStore(file, { protector: slow });
+    const loading = store.load().catch((e: unknown) => e);
+    await inUnwrap;
+    const clearing = store.clear({ includeKey: true }); // waits for the load's key work
+    // Grace period: a cleanup that did NOT wait would delete both files now, and the
+    // resumed load would then recreate the key. (With the fix, nothing is deleted yet.)
+    await new Promise((r) => setTimeout(r, 50));
+    release();
+    await clearing;
+    await loading;
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(keyFile())).toBe(false);
+    expect(await store.load()).toBeNull();
+    expect(existsSync(keyFile())).toBe(false); // a load with no cache creates nothing
   });
 
   it("falls back to a plain key file when protection fails", async () => {
