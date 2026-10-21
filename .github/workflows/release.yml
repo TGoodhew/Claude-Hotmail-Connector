@@ -12,6 +12,9 @@ on:
 
 permissions:
   contents: write
+  # Build provenance attestation for the .mcpb (#46).
+  id-token: write
+  attestations: write
 
 jobs:
   build-extension:
@@ -19,9 +22,9 @@ jobs:
     env:
       TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -59,11 +62,18 @@ jobs:
           sha256sum hotmail-connector.mcpb > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      # Signed SLSA provenance: anyone can check the bundle was built here, from
+      # this tag, with `gh attestation verify hotmail-connector.mcpb --repo <owner>/<repo>`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: build/hotmail-connector.mcpb
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="Claude Desktop extension for $TAG: download hotmail-connector.mcpb and double-click it (or drag it into Claude Desktop > Settings > Extensions), then enter your own Entra app's Application (client) ID. Verify against SHA256SUMS.txt. See the README for creating your app registration and for Claude Code (source) setup."
+          notes="Claude Desktop extension for $TAG: download hotmail-connector.mcpb and double-click it (or drag it into Claude Desktop > Settings > Extensions), then enter your own Entra app's Application (client) ID. Verify against SHA256SUMS.txt, or check its build provenance with: gh attestation verify hotmail-connector.mcpb --repo $GITHUB_REPOSITORY. See the README for creating your app registration and for Claude Code (source) setup."
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "$TAG" --notes "$notes" --target "$GITHUB_SHA"
           fi
