@@ -146,9 +146,11 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Carry accurate MCP **annotations** (`readOnlyHint`, `destructiveHint`, `idempotentHint`,
   `openWorldHint`).
 - Describe themselves as operating on the user's **personal Microsoft (Outlook.com/Hotmail)** account,
-  so the model doesn't confuse them with other mail connectors *(→ #65)*.
+  so the model doesn't confuse them with other mail connectors *(#65)*.
 - Return **actionable** errors: say what went wrong (not found, permission/consent missing, invalid
-  input, not signed in plus how to sign in) without leaking secrets *(→ #35)*.
+  input, not signed in plus how to sign in) without leaking secrets. Each Graph status class has its
+  own message; Graph's own error text is never passed on, and its error code only when it is a plain
+  identifier *(#35)*.
 
 ### 7.1 `whoami` — diagnostics
 - **Graph:** `GET /me` → `displayName`, `mail` / `userPrincipalName`. Read-only. `User.Read`.
@@ -396,7 +398,7 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | T5 | **Destructive edits.** An injected mail says "move all my events" or "delete the dentist appointment". | `destructiveHint` on `update_event`/`cancel_event`; descriptions require explicit confirmation; `update_event` echoes before/after; `cancel_event` needs a title match, soft-deletes only, and refuses recurring events. **These are server-side guards; per-call human approval is enforced by the MCP client's permission prompts, not the server.** The model can satisfy `confirmSubject` itself, so a client set to auto-approve these tools can still be steered (see residual risks). | Partial (client-enforced approval) |
 | T6 | **Data planted in the calendar.** Mail contents copied into event bodies, visible to anyone the calendar is shared with. | Writes require confirmation, and the created event is echoed. Residual risk if the calendar is shared or published (see residual risks). | Partial |
 | T7 | **Phishing presented as genuine.** A fake "booking" in Junk is read as real. | Exclude Junk/Deleted by default and report each message's folder (#53). | *→ #53* |
-| T8 | **Context flooding.** A huge newsletter fills the model's context and pushes out the user's instructions. | Result caps on lists; body truncation with a `truncated` flag. | *→ #38* |
+| T8 | **Context flooding.** A huge newsletter fills the model's context and pushes out the user's instructions. | Result caps on lists. `get_message` cuts bodies at `maxChars` (default 20,000) with `truncated`, `totalChars` and `nextStartChar`, so the rest can be read in parts. | ✅ #38 |
 | T9 | **Hostile launch environment.** A repo's `.env` swaps the client id, tenant, cache dir or scopes. | `.env` is read only from the checkout root, never the CWD (§8.4). Scope override can only narrow (§6). | ✅ #41, #70 |
 | T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; *→ #83* |
 | T11 | **Interference with the loopback sign-in.** A stray or hostile local request hits the redirect port. | Random `state`, checked in constant time. Mismatched requests get a 400 and neither abort nor complete the sign-in (§8.2). | ✅ #41 |
@@ -609,7 +611,7 @@ Decided by the owner on 2026-10-21. Details and rationale are in #59.
 | D15 | Runtime | Node 24 LTS | #45 |
 
 Later owner decisions (2026-10-21): `cancel_event` added with guards (#55); account audience defaults
-to personal accounts only (#62). Still open: default time zone (#34), error detail (#35).
+to personal accounts only (#62). Since resolved: the default time zone is the system zone (#34), and errors are specific (#35).
 
 ---
 

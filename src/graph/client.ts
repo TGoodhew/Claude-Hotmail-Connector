@@ -199,12 +199,15 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
     } catch (e) {
       // A caller-initiated cancellation must not be retried or reported as a timeout.
       if (opts.signal?.aborted) {
-        throw new GraphError("Graph request was cancelled.", { cause: e });
+        throw new GraphError("Graph request was cancelled.", { reason: "cancelled", cause: e });
       }
       if (controller.signal.aborted) {
         throw new TimeoutError(`Graph request timed out after ${timeoutMs}ms.`, e);
       }
-      throw new GraphError("Network error calling Microsoft Graph.", { cause: e });
+      throw new GraphError("Network error calling Microsoft Graph.", {
+        reason: "network",
+        cause: e,
+      });
     } finally {
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onExternalAbort);

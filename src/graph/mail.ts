@@ -226,9 +226,63 @@ export async function listMessages(
   return { messages, ...(nextPageToken ? { nextPageToken } : {}) };
 }
 
+/** Default cap on a returned body, so one newsletter can't flood the model's context (#38). */
+export const DEFAULT_MAX_BODY_CHARS = 20_000;
+
 export interface GetMessageInput {
   id: string;
   format: "text" | "html";
+  /** Most body characters to return (default {@link DEFAULT_MAX_BODY_CHARS}). */
+  maxChars?: number;
+  /** Where in the (converted) body to start, to read past a previous cut. */
+  startChar?: number;
+}
+
+export interface MessageBody {
+  contentType: "text" | "html";
+  content: string;
+  /** True when characters after this part were left out. */
+  truncated: boolean;
+  /** Length of the whole (converted) body. */
+  totalChars: number;
+  /** Where this part starts; present when reading past the beginning. */
+  startChar?: number;
+  /** Pass as `startChar` to read the next part; present when truncated. */
+  nextStartChar?: number;
+}
+
+/**
+ * The part of `content` from `startChar`, at most `maxChars` long. Cuts never
+ * split a surrogate pair, so emoji and other astral characters stay whole.
+ */
+export function sliceBody(
+  content: string,
+  contentType: "text" | "html",
+  maxChars = DEFAULT_MAX_BODY_CHARS,
+  startChar = 0,
+): MessageBody {
+  // True when `i` falls between the two units of a real pair. A lone surrogate
+  // (malformed mail) isn't a pair, so it never moves a cut.
+  const splitsPair = (i: number) => {
+    if (i <= 0 || i >= content.length) return false;
+    const hi = content.charCodeAt(i - 1);
+    const lo = content.charCodeAt(i);
+    return hi >= 0xd800 && hi <= 0xdbff && lo >= 0xdc00 && lo <= 0xdfff;
+  };
+  let start = Math.min(Math.max(0, startChar), content.length);
+  if (splitsPair(start)) start -= 1; // don't begin halfway through a pair
+  let end = Math.min(start + maxChars, content.length);
+  // Nor end halfway: back off, or take the whole pair if that would leave nothing.
+  if (splitsPair(end)) end = end - 1 > start ? end - 1 : end + 1;
+  const truncated = end < content.length;
+  return {
+    contentType,
+    content: content.slice(start, end),
+    truncated,
+    totalChars: content.length,
+    ...(start > 0 ? { startChar: start } : {}),
+    ...(truncated ? { nextStartChar: end } : {}),
+  };
 }
 
 export interface AttachmentMeta {
@@ -245,7 +299,7 @@ export interface MessageDetail {
   from: { name?: string; address?: string } | null;
   receivedDateTime: string | null;
   webLink: string | null;
-  body: { contentType: "text" | "html"; content: string };
+  body: MessageBody;
   hasAttachments: boolean;
   attachments: AttachmentMeta[];
 }
@@ -258,7 +312,10 @@ interface GraphAttachment {
   isInline?: boolean;
 }
 
-/** Read a single message, converting HTML to text unless html is requested. */
+/**
+ * Read a single message, converting HTML to text unless html is requested. The
+ * body is capped (see {@link sliceBody}); `startChar` reads further parts.
+ */
 export async function getMessage(
   graph: GraphClient,
   input: GetMessageInput,
@@ -274,6 +331,9 @@ export async function getMessage(
   if (input.format === "text" && rawType === "html") {
     content = htmlToText(rawContent);
   }
+  // What the content really is (#35): HTML only if it was HTML and HTML was
+  // asked for. A plain-text message stays text even when format=html.
+  const contentType = rawType === "html" && input.format === "html" ? "html" : "text";
 
   let attachments: AttachmentMeta[] = [];
   if (msg.hasAttachments) {
@@ -296,7 +356,7 @@ export async function getMessage(
     from: ea ? { name: ea.name, address: ea.address } : null,
     receivedDateTime: msg.receivedDateTime ?? null,
     webLink: msg.webLink ?? null,
-    body: { contentType: input.format, content },
+    body: sliceBody(content, contentType, input.maxChars, input.startChar),
     hasAttachments: Boolean(msg.hasAttachments),
     attachments,
   };
