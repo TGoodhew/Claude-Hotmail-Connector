@@ -118,6 +118,29 @@ describe("htmlToText structure (#32)", () => {
     ).toBe("Intro\n\n  if (a < b) {\n\n\n\n    go();\n  }\nAfter");
   });
 
+  it("can't be made to drop or repeat text with encoded placeholder markers (Copilot review on #109)", () => {
+    const FFFD = String.fromCharCode(0xfffd);
+    // Without a <pre> block: the text is kept, not taken for a missing placeholder.
+    expect(htmlToText("A&#57344;0&#57345;B")).toBe(`A${FFFD}0${FFFD}B`);
+    expect(htmlToText("A&#xE000;0&#xE001;B")).toBe(`A${FFFD}0${FFFD}B`);
+    // With one: the block appears once, however often the marker is repeated.
+    const out = htmlToText(`<pre>SAVED</pre>${"&#57344;0&#57345;".repeat(50)}`);
+    expect(out.split("SAVED")).toHaveLength(2);
+    // Literal markers in the input are removed before any placeholder exists.
+    const literal = String.fromCharCode(0xe000) + "0" + String.fromCharCode(0xe001);
+    expect(htmlToText(`<pre>SAVED</pre>${literal}`).split("SAVED")).toHaveLength(2);
+  });
+
+  it("keeps a row on one line when cells wrap their content in blocks (Copilot review on #109)", () => {
+    expect(
+      htmlToText(
+        "<table><tr><td><p>Total</p></td><td><div><p>&euro;240</p></div></td></tr>" +
+          "<tr><td>Ref<br></td><td><p>A</p><p>B</p></td></tr>" +
+          "<tr><td><p></p></td><td><p>x</p></td></tr></table>",
+      ),
+    ).toBe("Total\t€240\nRef\tA\nB\n\tx");
+  });
+
   it("lays out a table-based confirmation email row by row", () => {
     const html = `
       <table>

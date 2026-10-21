@@ -18,6 +18,10 @@ const LINE_BREAK_RE = /<(br|hr)\b[^>]*>/gi;
 const BLOCK_BREAK_RE =
   /<\/(p|div|li|tr|table|thead|tbody|tfoot|caption|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd|pre)\s*>/gi;
 const CELL_BREAK_RE = /<\/(td|th)\s*>/gi;
+// Breaks that end a cell's content (`<td><p>Total</p></td>`) would split a row
+// across lines, so they're dropped; breaks between blocks inside a cell stay.
+const CELL_END_BREAKS_RE =
+  /(?:\s*(?:<\/(?:p|div|li|h[1-6]|blockquote|section|article|header|footer|ul|ol|dl|dt|dd)\s*>|<br\b[^>]*>))+\s*(?=<\/t[dh]\s*>)/gi;
 const TAG_RE = /<[^>]+>/g;
 
 const ENTITY_RE = /&(?:#(\d+)|#x([0-9a-f]+)|([a-z][a-z0-9]*));/gi;
@@ -58,9 +62,13 @@ const WINDOWS_1252: Readonly<Record<number, number>> = {
   0x9c: 0x0153, 0x9e: 0x017e, 0x9f: 0x0178,
 };
 
-/** A numeric reference's character; NUL, surrogates and out-of-range values become U+FFFD. */
+/**
+ * A numeric reference's character. NUL, surrogates, out-of-range values and the
+ * converter's own placeholder markers (see PRE_OPEN) become U+FFFD.
+ */
 function fromReference(code: number): string {
   if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return "\ufffd";
+  if (code === PRE_OPEN_CODE || code === PRE_CLOSE_CODE) return "\ufffd";
   return String.fromCodePoint(WINDOWS_1252[code] ?? code);
 }
 
@@ -89,9 +97,12 @@ const PADDING_RE = new RegExp(`(?<=^|\\s)[${JOINERS}]+|[${JOINERS}]+(?=\\s|$)`, 
 const NBSP_RE = new RegExp(ch(0xa0), "g");
 
 // Each <pre> block waits as a placeholder while the rest is normalised, so its
-// spacing and blank lines survive. The input can't contain the marker characters.
-const PRE_OPEN = ch(0xe000);
-const PRE_CLOSE = ch(0xe001);
+// spacing and blank lines survive. The markers can't come from the message:
+// literal ones are removed first, and references to them decode to U+FFFD.
+const PRE_OPEN_CODE = 0xe000;
+const PRE_CLOSE_CODE = 0xe001;
+const PRE_OPEN = ch(PRE_OPEN_CODE);
+const PRE_CLOSE = ch(PRE_CLOSE_CODE);
 const MARKERS_RE = new RegExp(`[${PRE_OPEN}${PRE_CLOSE}]`, "g");
 const PLACEHOLDER_RE = new RegExp(`${PRE_OPEN}(\\d+)${PRE_CLOSE}`, "g");
 
@@ -122,6 +133,7 @@ export function htmlToText(html: string): string {
     .replace(PRE_RE, (block) => `${PRE_OPEN}${pres.push(preText(block)) - 1}${PRE_CLOSE}`)
     .replace(/\s+/g, " ") // source whitespace renders as one space
     .replace(PLACEHOLDER_RE, "\n$&\n")
+    .replace(CELL_END_BREAKS_RE, "")
     .replace(LINE_BREAK_RE, "\n")
     .replace(BLOCK_BREAK_RE, "\n")
     .replace(CELL_BREAK_RE, "\t"); // one tab per cell, so empty cells keep their column
