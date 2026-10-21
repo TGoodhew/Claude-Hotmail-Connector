@@ -14,6 +14,7 @@
  * a browser: with no cached sign-in it fails and asks you to run `login`.
  */
 
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createMicrosoftAuth } from "./auth/microsoft.js";
 import { defaultKeyProtector } from "./auth/protect.js";
@@ -30,6 +31,23 @@ const MAIN_MS = 70_000;
 const CLEANUP_MS = 35_000;
 /** Part of the cleanup time for finding events by subject; the rest is for deleting. */
 const LOOKUP_MS = 10_000;
+
+/**
+ * Only the test event's own 09:30-10:15 slot (with a margin), so unrelated
+ * events that day can't push it past the listing limit.
+ */
+const TEST_WINDOW = {
+  startDateTime: "2031-01-15T09:00:00",
+  endDateTime: "2031-01-15T10:45:00",
+  limit: 100,
+};
+
+/** A listing that hit its limit may have left the test event out: say so. */
+function warnIfCapped(count: number, subject: string): void {
+  if (count >= TEST_WINDOW.limit) {
+    console.warn(`[live] The calendar listing hit its limit; check for "${subject}" by hand.`);
+  }
+}
 
 describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
   const config = LIVE ? getConfig() : undefined;
@@ -64,10 +82,13 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
       const base = graph();
       const g = scopeToOperation(base, { deadline: Date.now() + MAIN_MS });
       const timeZone = "Australia/Sydney"; // a DST zone (#64)
-      const stamp = new Date()
+      // Unique per run (a timestamp plus a random suffix), so two runs on one
+      // account can't share a subject or transactionId; the repeat below reuses it.
+      const time = new Date()
         .toISOString()
         .replace(/[^0-9]/g, "")
         .slice(0, 14);
+      const stamp = `${time}-${randomUUID().slice(0, 8)}`;
       const subject = `Hotmail Connector live test ${stamp}`;
       const input = {
         subject,
@@ -83,12 +104,8 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
         // The wall-clock time is preserved, not shifted to UTC. The create
         // response's zone isn't requested, so this is checked through a listing
         // rendered in Sydney time.
-        const listed = await listEvents(g, {
-          startDateTime: "2031-01-15",
-          endDateTime: "2031-01-16",
-          timeZone,
-          limit: 50,
-        });
+        const listed = await listEvents(g, { ...TEST_WINDOW, timeZone });
+        warnIfCapped(listed.length, subject);
         const found = listed.find((e) => e.id === first.id);
         expect(found?.start?.dateTime?.startsWith("2031-01-15T09:30")).toBe(true);
         expect(found?.end?.dateTime?.startsWith("2031-01-15T10:15")).toBe(true);
@@ -114,11 +131,10 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
           // delete the events whose ids are already known.
           const lookup = scopeToOperation(base, { deadline: Date.now() + LOOKUP_MS });
           const day = await listEvents(lookup, {
-            startDateTime: "2031-01-15",
-            endDateTime: "2031-01-16",
+            ...TEST_WINDOW,
             timeZone,
-            limit: 50,
           });
+          warnIfCapped(day.length, subject);
           for (const e of day) if (e.subject === subject) ids.add(e.id);
         } catch (e) {
           console.warn(`[live] Couldn't look for test events; check for "${subject}".`, e);
