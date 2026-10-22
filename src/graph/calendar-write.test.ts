@@ -304,6 +304,18 @@ describe("all-day, free/busy and recurring creation (#51)", () => {
       end: { dateTime: "2026-07-21T00:00", timeZone: tz },
     };
     expect(await key(asDates)).toBe(await key(asMidnights));
+    // The same weekdays in another order, or repeated, are the same series.
+    const weekly = (daysOfWeek: RecurrenceInput["pattern"]["daysOfWeek"]): RecurrenceInput => ({
+      pattern: { type: "weekly", interval: 1, daysOfWeek },
+      range: { type: "noEnd", startDate: "2026-07-20" },
+    });
+    const monWed = await key({ recurrence: weekly(["monday", "wednesday"]) });
+    expect(await key({ recurrence: weekly(["wednesday", "monday"]) })).toBe(monWed);
+    expect(await key({ recurrence: weekly(["wednesday", "monday", "monday"]) })).toBe(monWed);
+    const { payload } = await posted({ recurrence: weekly(["wednesday", "monday", "monday"]) });
+    expect((payload.recurrence as { pattern: unknown }).pattern).toMatchObject({
+      daysOfWeek: ["monday", "wednesday"],
+    });
   });
 });
 

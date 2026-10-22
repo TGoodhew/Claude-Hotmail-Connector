@@ -391,19 +391,22 @@ export function buildRecurrence(r: RecurrenceInput, start: GraphDateTime): Recor
     }
     return value;
   };
+  // Days in week order, each once: the same days in another order are the same
+  // series, so they must also give the same idempotency key (Copilot review on #134).
+  const weekdays = (days: string[]) => DAYS_OF_WEEK.filter((d) => days.includes(d));
   const pattern: Record<string, unknown> = { type: p.type, interval: p.interval };
   switch (p.type) {
     case "daily":
       break;
     case "weekly":
-      pattern.daysOfWeek = need(p.daysOfWeek, "pattern.daysOfWeek");
+      pattern.daysOfWeek = weekdays(need(p.daysOfWeek, "pattern.daysOfWeek"));
       if (p.firstDayOfWeek) pattern.firstDayOfWeek = p.firstDayOfWeek;
       break;
     case "absoluteMonthly":
       pattern.dayOfMonth = need(p.dayOfMonth, "pattern.dayOfMonth");
       break;
     case "relativeMonthly":
-      pattern.daysOfWeek = need(p.daysOfWeek, "pattern.daysOfWeek");
+      pattern.daysOfWeek = weekdays(need(p.daysOfWeek, "pattern.daysOfWeek"));
       pattern.index = need(p.index, "pattern.index");
       break;
     case "absoluteYearly":
@@ -411,7 +414,7 @@ export function buildRecurrence(r: RecurrenceInput, start: GraphDateTime): Recor
       pattern.month = need(p.month, "pattern.month");
       break;
     case "relativeYearly":
-      pattern.daysOfWeek = need(p.daysOfWeek, "pattern.daysOfWeek");
+      pattern.daysOfWeek = weekdays(need(p.daysOfWeek, "pattern.daysOfWeek"));
       pattern.index = need(p.index, "pattern.index");
       pattern.month = need(p.month, "pattern.month");
       break;
