@@ -5,6 +5,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -157,6 +158,17 @@ describe.skipIf(name === null)("the OS-held lock (Windows, Linux; Copilot review
     const dir = tempDir();
     const cs = Array.from({ length: 4 }, () => createFileCoordinator(dir));
     expect(await overlapCheck(...cs)).toBe(false);
+  });
+
+  it("is one lock for a cache reached through a symlink or junction and its target", async () => {
+    const dir = tempDir();
+    const alias = join(tempDir(), "cache-alias");
+    symlinkSync(dir, alias, "junction"); // a junction on Windows, a symlink elsewhere
+    expect(await overlapCheck(createFileCoordinator(dir), createFileCoordinator(alias))).toBe(
+      false,
+    );
+    // They share the counters too, as they share the files.
+    expect(await createFileCoordinator(alias).snapshot()).toEqual({ signOuts: 0, signIns: 4 });
   });
 });
 

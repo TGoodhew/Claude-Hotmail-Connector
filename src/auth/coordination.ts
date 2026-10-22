@@ -23,7 +23,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { join, resolve } from "node:path";
 import { AuthError } from "../util/errors.js";
@@ -263,7 +263,16 @@ export function createFileCoordinator(
   const staleMs = options.staleLockMs ?? 120_000;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const osName = options.mechanism === "file" ? null : osLockName(dir);
+  // Named after the directory's real path, once it exists: two processes that
+  // reach one cache through a symlink or junction and its target must share
+  // one lock, as they share its files (Copilot review on #126).
+  let osName: string | null | undefined;
+  async function lockName(): Promise<string | null> {
+    if (osName === undefined) {
+      osName = options.mechanism === "file" ? null : osLockName(await realpath(dir));
+    }
+    return osName;
+  }
   // One lock attempt at a time within this process, so local callers queue here
   // instead of polling the lock against each other.
   let local: Promise<unknown> = Promise.resolve();
@@ -375,7 +384,8 @@ export function createFileCoordinator(
     withLock(fn) {
       const run = local.then(async () => {
         await mkdir(dir, { recursive: true });
-        const letGo = osName ? await acquireOs(osName) : await acquireFile();
+        const name = await lockName();
+        const letGo = name ? await acquireOs(name) : await acquireFile();
         try {
           const { value, next } = await fn(await read());
           if (next) await write(next);
