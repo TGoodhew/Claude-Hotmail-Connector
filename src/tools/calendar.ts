@@ -288,7 +288,14 @@ export const createEventTool: ToolDefinition<typeof createEventShape> = defineTo
       showAs: input.showAs,
       recurrence: input.recurrence,
     });
-    return toolResult(`Created event "${result.subject ?? input.subject}".`, { event: result });
+    const title = result.subject ?? input.subject;
+    return toolResult(
+      result.matchedExisting
+        ? `An event with these details already exists ("${title}"): nothing new was created. ` +
+            "It is in `event`; to create a second copy on purpose, pass a new transactionId."
+        : `Created event "${title}".`,
+      { event: result },
+    );
   },
 });
 

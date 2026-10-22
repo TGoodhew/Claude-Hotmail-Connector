@@ -243,6 +243,8 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   exclusive (the day after the last day). They are sent as midnight wall-clock in that zone, never
   shifted; anything that isn't whole days is refused before writing.
 - **showAs** *(#51)*: `free` / `tentative` / `busy` / `oof` / `workingElsewhere`, e.g. `free` for travel-time blocks.
+  An all-day event defaults to `free`, as in Outlook; a timed one to Graph's `busy` *(#135, owner decision)*.
+  The idempotency key covers availability other than that default.
 - **Recurrence** *(#51)*: Graph's `patternedRecurrence`, built field by field.
   - Each pattern type gets exactly the fields it uses and is refused without them (`weekly`: `daysOfWeek`;
     `absoluteMonthly`: `dayOfMonth`; `relativeMonthly`: `daysOfWeek` + `index`; `absoluteYearly`:
@@ -273,6 +275,11 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - **Safety:** a write. The description instructs the model to confirm details with the user first. The
   tool returns the created event (id, webLink, normalized start/end, `isAllDay`, `showAs`, `recurrence`)
   so Claude can echo it.
+  - `matchedExisting` is true when Graph returned an event that an earlier identical create had made
+    (created more than 2 minutes before the request). The summary then says nothing new was created,
+    rather than "Created" *(#135)*.
+  - A recurrence zone that Graph echoes by its Windows name ("Pacific Standard Time") is reported by
+    the IANA name it was written with.
 - Annotations: `destructiveHint: false`, `idempotentHint: true`. `Calendars.ReadWrite`.
 
 ### 7.6 `update_event` — edit an event

@@ -349,6 +349,86 @@ describe("all-day, free/busy and recurring creation (#51)", () => {
   });
 });
 
+describe("create_event polish from the live run (#135)", () => {
+  const tz = "America/Los_Angeles";
+  const allDay: Partial<CreateEventInput> = {
+    isAllDay: true,
+    start: { dateTime: "2026-11-20", timeZone: tz },
+    end: { dateTime: "2026-11-21", timeZone: tz },
+  };
+  const create = async (
+    input: Partial<CreateEventInput>,
+    reply: object = createdReply,
+    now = () => Date.parse("2026-10-22T15:00:00Z"),
+  ) => {
+    const post = vi.fn<PostMock>(async () => reply);
+    const result = await createEvent(
+      graphWith({ post }),
+      {
+        subject: "Trip",
+        start: { dateTime: "2026-11-23T09:00:00", timeZone: tz },
+        end: { dateTime: "2026-11-23T09:30:00", timeZone: tz },
+        ...input,
+      },
+      undefined,
+      now,
+    );
+    return { payload: post.mock.calls[0]![1] as Record<string, unknown>, result };
+  };
+
+  it("shows an all-day event as free unless told otherwise, as Outlook does", async () => {
+    expect((await create(allDay)).payload.showAs).toBe("free");
+    expect((await create({ ...allDay, showAs: "busy" })).payload.showAs).toBe("busy");
+    expect((await create({})).payload).not.toHaveProperty("showAs"); // timed: Graph's busy
+    // The implicit free keys like an explicit one, and busy differs.
+    const key = async (input: Partial<CreateEventInput>) =>
+      (await create(input)).payload.transactionId as string;
+    expect(await key({ ...allDay, showAs: "free" })).toBe(await key(allDay));
+    expect(await key({ ...allDay, showAs: "busy" })).not.toBe(await key(allDay));
+  });
+
+  it("says when Graph returned an existing event for a repeated transactionId", async () => {
+    const at = (createdDateTime: string) => ({ ...createdReply, createdDateTime });
+    // Made minutes before this request: an earlier identical create made it.
+    expect((await create({}, at("2026-10-22T14:50:00Z"))).result.matchedExisting).toBe(true);
+    // Made just now (or a little off by clock skew): this call created it.
+    expect((await create({}, at("2026-10-22T15:00:01Z"))).result.matchedExisting).toBe(false);
+    expect((await create({}, at("2026-10-22T14:59:00Z"))).result.matchedExisting).toBe(false);
+    // No creation time: assume created.
+    expect((await create({}, createdReply)).result.matchedExisting).toBe(false);
+  });
+
+  it("reports a recurrence's zone by its IANA name, as written", async () => {
+    const recurrence = {
+      pattern: { type: "weekly" as const, interval: 1, daysOfWeek: ["monday" as const] },
+      range: { type: "numbered" as const, startDate: "2026-11-23", numberOfOccurrences: 4 },
+    };
+    const graphEcho = {
+      ...createdReply,
+      recurrence: {
+        pattern: { type: "weekly", interval: 1, daysOfWeek: ["monday"] },
+        range: {
+          type: "numbered",
+          recurrenceTimeZone: "Pacific Standard Time",
+          numberOfOccurrences: 4,
+        },
+      },
+    };
+    const { result } = await create({ recurrence }, graphEcho);
+    expect(result.recurrence).toMatchObject({
+      range: { recurrenceTimeZone: tz, numberOfOccurrences: 4 },
+    });
+    // An IANA name Graph echoes is kept as is.
+    const iana = {
+      ...graphEcho,
+      recurrence: { ...graphEcho.recurrence, range: { recurrenceTimeZone: "Europe/London" } },
+    };
+    expect((await create({ recurrence }, iana)).result.recurrence).toMatchObject({
+      range: { recurrenceTimeZone: "Europe/London" },
+    });
+  });
+});
+
 describe("buildRecurrence (#51)", () => {
   const start = { dateTime: "2026-07-20T06:00:00", timeZone: "Australia/Brisbane" };
   const range = { type: "noEnd" as const, startDate: "2026-07-20" };
