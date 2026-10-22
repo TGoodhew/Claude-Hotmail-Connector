@@ -58,6 +58,25 @@ describe("create_event tool", () => {
     expect(res.structuredContent).toMatchObject({ event: { id: "e1", isAllDay: false } });
   });
 
+  it("says so when an identical create matched an existing event, rather than 'Created' (#135)", async () => {
+    const created = (createdDateTime: string) =>
+      vi.fn<PostMock>(async () => ({ id: "e1", subject: "Swim", createdDateTime }));
+    const call = (post: ReturnType<typeof created>) =>
+      createEventTool.handler(
+        {
+          subject: "Swim",
+          start: { dateTime: "2026-11-23T09:00:00" },
+          end: { dateTime: "2026-11-23T09:30:00" },
+        },
+        ctxWith({ post: post as unknown as GraphClient["post"] }),
+      );
+    const old = await call(created("2000-01-01T00:00:00Z"));
+    expect(old.content[0]!.text).toMatch(/already exists \("Swim"\): nothing new was created/);
+    expect(old.structuredContent).toMatchObject({ event: { matchedExisting: true } });
+    const fresh = await call(created(new Date().toISOString()));
+    expect(fresh.content[0]!.text).toMatch(/^Created event "Swim"\./);
+  });
+
   it("schema rejects an unknown showAs or recurrence type", () => {
     const schema = z.object(createEventTool.inputShape);
     const base = { subject: "x", start: { dateTime: "a" }, end: { dateTime: "b" } };

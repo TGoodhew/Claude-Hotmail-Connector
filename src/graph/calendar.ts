@@ -14,6 +14,7 @@ import { htmlToText } from "../util/html.js";
 import {
   assertValidTimeZone,
   type GraphDateTime,
+  isValidTimeZone,
   normalizeLocalDateTime,
   preferTimeZoneHeader,
   toGraphDateTime,
@@ -558,6 +559,8 @@ function deterministicTransactionId(input: CreateEventInput, written: WrittenTim
   // share a key rather than creating a duplicate on retry (Copilot review on
   // #134). That matters most for a series, which cancel_event can't remove.
   const times = input.isAllDay || written.recurrence ? written : input;
+  // The availability written: an all-day event's is free unless given.
+  const showAs = input.showAs ?? (input.isAllDay ? "free" : "busy");
   const material = [
     input.subject,
     times.start.dateTime,
@@ -567,9 +570,12 @@ function deterministicTransactionId(input: CreateEventInput, written: WrittenTim
     input.location ?? "",
     // Only when set, so a plain event's id is what it always was.
     ...(input.isAllDay ? ["isAllDay"] : []),
-    // Availability other than the default: a "free" block and a "busy" one
-    // are different events, not a retry of each other.
-    ...(input.showAs && input.showAs !== "busy" ? [`showAs:${input.showAs}`] : []),
+    // The availability written, in the encoding keys have always used: a token
+    // unless it's busy. A "free" block and a "busy" one are different events,
+    // not a retry of each other; an all-day event's implicit free keys like an
+    // explicit one; and a key made before all-day events defaulted to free is
+    // unchanged, so a retry across versions still matches (Copilot review on #140).
+    ...(showAs !== "busy" ? [`showAs:${showAs}`] : []),
     ...(written.recurrence ? [JSON.stringify(written.recurrence)] : []),
   ].join(String.fromCharCode(0));
   return createHash("sha256").update(material).digest("hex").slice(0, 36);
@@ -583,13 +589,19 @@ function deterministicTransactionId(input: CreateEventInput, written: WrittenTim
  * time. When no `transactionId` is supplied a deterministic one is derived from
  * the event details, so a retried identical create does not duplicate. An
  * all-day event is midnight to midnight in one zone, and a recurrence is built
- * by {@link buildRecurrence} (#51).
- * `deriveId` is injectable for tests.
+ * by {@link buildRecurrence} (#51). An all-day event shows as free unless
+ * `showAs` says otherwise, as Outlook does.
+ *
+ * Graph answers a repeated `transactionId` with the event it already made
+ * (verified live, #48), so the result says whether this call created the
+ * event or matched an existing one (`matchedExisting`).
+ * `deriveId` and `now` are injectable for tests.
  */
 export async function createEvent(
   graph: GraphClient,
   input: CreateEventInput,
   deriveId: (input: CreateEventInput, written: WrittenTimes) => string = deterministicTransactionId,
+  now: () => number = Date.now,
 ): Promise<CreatedEvent> {
   let start: GraphDateTime;
   let end: GraphDateTime;
@@ -626,20 +638,54 @@ export async function createEvent(
       ? { reminderMinutesBeforeStart: input.reminderMinutesBeforeStart }
       : {}),
     ...(input.isAllDay ? { isAllDay: true } : {}),
-    ...(input.showAs ? { showAs: input.showAs } : {}),
+    // An all-day event shows as free unless told otherwise, as in Outlook.
+    ...(input.showAs || input.isAllDay ? { showAs: input.showAs ?? "free" } : {}),
     ...(recurrence ? { recurrence } : {}),
   };
   assertWritableEventPayload(payload);
-  const created = await graph.post<GraphEvent & { recurrence?: Record<string, unknown> | null }>(
-    calendarPath(input.calendarId, "events"),
-    payload,
-  );
+  const sentAt = now();
+  const created = await graph.post<
+    GraphEvent & { recurrence?: Record<string, unknown> | null; createdDateTime?: string }
+  >(calendarPath(input.calendarId, "events"), payload);
+  // An event made well before this request is one an earlier create with the
+  // same transactionId made: Graph returned it rather than a duplicate.
+  const createdAt = Date.parse(created.createdDateTime ?? "");
+  const matchedExisting = Number.isFinite(createdAt) && createdAt < sentAt - MATCHED_EXISTING_MS;
   return {
     ...shapeWrite(created, transactionId),
     isAllDay: Boolean(created.isAllDay),
     showAs: created.showAs ?? null,
-    recurrence: created.recurrence ?? null,
+    // A matched event may be a series written in another zone (an explicit
+    // transactionId reused) or since edited: then Graph's zone stands.
+    recurrence: matchedExisting
+      ? (created.recurrence ?? null)
+      : withIanaZone(created.recurrence ?? null, start.timeZone),
+    matchedExisting,
   };
+}
+
+/**
+ * An event created more than this long before the request counts as matched
+ * rather than new. Generous, so a slow request or a skewed clock doesn't
+ * misreport a new event; a retry within it is reported as created, as before.
+ */
+const MATCHED_EXISTING_MS = 2 * 60_000;
+
+/**
+ * Graph may echo a recurrence's zone by its Windows name ("Pacific Standard
+ * Time"). For a series this call just created, that is the zone it was
+ * written with, so report its IANA name instead, for consistent results.
+ */
+function withIanaZone(
+  recurrence: Record<string, unknown> | null,
+  timeZone: string,
+): Record<string, unknown> | null {
+  const range = recurrence?.range as Record<string, unknown> | undefined;
+  const zone = range?.recurrenceTimeZone;
+  if (!recurrence || !range || typeof zone !== "string" || isValidTimeZone(zone)) {
+    return recurrence;
+  }
+  return { ...recurrence, range: { ...range, recurrenceTimeZone: timeZone } };
 }
 
 /** What a create writes, after validation: the idempotency key is derived from it. */
@@ -654,6 +700,8 @@ export interface CreatedEvent extends EventWriteResult {
   isAllDay: boolean;
   showAs: string | null;
   recurrence: Record<string, unknown> | null;
+  /** True when Graph returned an event an earlier identical create made: nothing new was created. */
+  matchedExisting: boolean;
 }
 
 /** Fields `update_event` can change, in the order changes are reported. */
