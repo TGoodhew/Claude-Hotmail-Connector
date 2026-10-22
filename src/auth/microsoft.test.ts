@@ -1885,12 +1885,56 @@ describe("re-opening a pending sign-in page (#139)", () => {
       },
       now: () => clock,
     });
-    await auth.getAccessToken({ interactiveWaitMs: 10 }).catch(() => undefined);
-    await auth.signOut();
-    clock += 60_000;
-    // A new call starts a fresh sign-in (a new page), not the cancelled one.
-    await auth.getAccessToken({ interactiveWaitMs: 10 }).catch(() => undefined);
-    expect(opened).toHaveLength(2);
-    expect(opened[1]).not.toBe(opened[0]);
+    try {
+      await auth.getAccessToken({ interactiveWaitMs: 10 }).catch(() => undefined);
+      await auth.signOut();
+      clock += 60_000;
+      // A new call starts a fresh sign-in (a new page), not the cancelled one.
+      await auth.getAccessToken({ interactiveWaitMs: 10 }).catch(() => undefined);
+      expect(opened).toHaveLength(2);
+      expect(opened[1]).not.toBe(opened[0]);
+    } finally {
+      await auth.signOut(); // cancels that last sign-in: its listener and timeout
+    }
+  });
+
+  it("says so, and tries again next time, when the page can't be reopened", async () => {
+    let clock = 1_000;
+    const launches: ("ok" | "fail" | "hang")[] = ["ok", "fail", "ok"];
+    let calls = 0;
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore(null),
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openBrowser: async () => {
+        calls += 1;
+        const how = launches.shift() ?? "hang";
+        if (how === "fail") throw new Error("no browser");
+        if (how === "hang") await new Promise(() => undefined);
+      },
+      now: () => clock,
+    });
+    const ask = () =>
+      auth.getAccessToken({ interactiveWaitMs: 10 }).then(
+        (t) => t,
+        (e: unknown) => e as Error,
+      );
+    try {
+      await ask();
+      clock += 20_000;
+      const failed = String(await ask());
+      expect(failed).toMatch(/couldn't be opened again/);
+      expect(failed).not.toMatch(/has been opened again/);
+      // No 15-second wait after a failed launch: the next request tries again.
+      expect(String(await ask())).toMatch(/has been opened again/);
+      expect(calls).toBe(3);
+      // A launch that hasn't answered by the time the wait ends isn't claimed as opened.
+      clock += 20_000;
+      const pending = String(await ask());
+      expect(pending).toMatch(/asked it to show the page again/);
+      expect(calls).toBe(4);
+    } finally {
+      await auth.signOut();
+    }
   });
 });

@@ -727,19 +727,34 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   /** Minimum gap between openings of the same pending sign-in page. */
   const REOPEN_AFTER_MS = 15_000;
 
-  /** Open the pending sign-in's page again, unless it was opened just now; true if it was. */
-  function reopenPendingPage(): boolean {
+  /**
+   * Open the pending sign-in's page again, unless it was opened just now. Returns
+   * how that launch went, as far as known so far: undefined if not reopened.
+   */
+  function reopenPendingPage(): { outcome: "pending" | "opened" | "failed" } | undefined {
     const page = inflightPage;
-    if (!page || now() - page.openedAt < REOPEN_AFTER_MS) return false;
+    if (!page || now() - page.openedAt < REOPEN_AFTER_MS) return undefined;
     page.openedAt = now();
     log.info("Opening the pending Microsoft sign-in page again");
-    // Best effort: the sign-in carries on whether or not this launch works.
-    openInBrowser(page.url).catch((e: unknown) =>
-      log.warn("Could not reopen the Microsoft sign-in page", {
-        error: e instanceof Error ? e.message : String(e),
-      }),
+    const relaunch: { outcome: "pending" | "opened" | "failed" } = { outcome: "pending" };
+    // The sign-in carries on whether or not this launch works.
+    openInBrowser(page.url).then(
+      () => {
+        relaunch.outcome = "opened";
+      },
+      (e: unknown) => {
+        relaunch.outcome = "failed";
+        // Let the next request try again straight away.
+        page.openedAt = 0;
+        log.warn("Could not reopen the Microsoft sign-in page", {
+          error: e instanceof Error ? e.message : String(e),
+        });
+        if (deps.printUrlIfBrowserFails) {
+          process.stderr.write(`\nOpen this URL to sign in:\n${page.url}\n\n`);
+        }
+      },
     );
-    return true;
+    return relaunch;
   }
 
   async function signInOnDemand(
@@ -770,20 +785,37 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     // Joining a pending sign-in: open its page again, in case the user closed
     // the tab and has no other way back to it. Not again within a short while,
     // so quick repeat calls don't stack up tabs (#139).
-    const reopened = joining && reopenPendingPage();
+    const relaunch = joining ? reopenPendingPage() : undefined;
     const tokens = waitMs === undefined ? await pending : await settleWithin(pending, waitMs);
     if (tokens) {
       await ensureStillCurrent();
       return held(tokens);
     }
+    // Only claim the page opened again if the launch said so.
+    switch (relaunch?.outcome) {
+      case "opened":
+        throw new SignInRequiredError(
+          "The Microsoft sign-in that's in progress has been opened again in your browser (in " +
+            "case its tab was closed). Finish signing in there, then ask me to try again.",
+        );
+      case "failed":
+        throw new SignInRequiredError(
+          "A Microsoft sign-in is still in progress, but its page couldn't be opened again in " +
+            "your browser. If you've closed its tab, check that a default web browser is set, " +
+            `then ask me to try again ${LOGIN_HINT}.`,
+        );
+      case "pending":
+        throw new SignInRequiredError(
+          "Still waiting for you to finish the Microsoft sign-in in your browser; I've asked it " +
+            "to show the page again in case its tab was closed. Once you've signed in, ask me " +
+            "to try again.",
+        );
+    }
     throw new SignInRequiredError(
-      reopened
-        ? "The Microsoft sign-in that's in progress has been opened again in your browser (in " +
-            "case its tab was closed). Finish signing in there, then ask me to try again."
-        : joining
-          ? "Still waiting for you to finish the Microsoft sign-in in your browser. " +
+      joining
+        ? "Still waiting for you to finish the Microsoft sign-in in your browser. " +
             "Once you have, ask me to try again."
-          : "A Microsoft sign-in window has opened in your browser. Finish signing in there, " +
+        : "A Microsoft sign-in window has opened in your browser. Finish signing in there, " +
             "then ask me to try again. If no browser window appeared, check that a default web " +
             `browser is set and ask me again ${LOGIN_HINT}.`,
     );
