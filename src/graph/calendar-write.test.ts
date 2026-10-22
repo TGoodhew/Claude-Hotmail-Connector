@@ -65,6 +65,31 @@ describe("createEvent", () => {
     expect(result.transactionId).toBe("fixed-txn-id");
   });
 
+  it("creates in another calendar when given its calendarId (#49)", async () => {
+    const post = vi.fn<PostMock>(async () => createdReply);
+    await createEvent(graphWith({ post }), {
+      subject: "Trip",
+      start: { dateTime: "2026-07-20T10:00:00", timeZone: "Australia/Brisbane" },
+      end: { dateTime: "2026-07-20T11:00:00", timeZone: "Australia/Brisbane" },
+      calendarId: "cal/2",
+    });
+    expect(post.mock.calls[0]![0]).toBe("/me/calendars/cal%2F2/events");
+    // The calendar is in the path, never in the payload.
+    expect(post.mock.calls[0]![1]).not.toHaveProperty("calendarId");
+  });
+
+  it("updates within another calendar when given its calendarId (#49)", async () => {
+    const get = vi.fn<GetMock>(async () => ({ id: "evt-1", "@odata.etag": 'W/"t1"' }));
+    const patch = vi.fn<PatchMock>(async () => createdReply);
+    await updateEvent(graphWith({ get, patch }), {
+      id: "evt-1",
+      calendarId: "cal/2",
+      subject: "X",
+    });
+    expect(get.mock.calls[0]![0]).toBe("/me/calendars/cal%2F2/events/evt-1");
+    expect(patch.mock.calls[0]![0]).toBe("/me/calendars/cal%2F2/events/evt-1");
+  });
+
   it("uses a caller-supplied transactionId for idempotency", async () => {
     const post = vi.fn<PostMock>(async () => createdReply);
     await createEvent(graphWith({ post }), {
@@ -351,6 +376,13 @@ describe("cancelEvent (guarded soft delete, #55)", () => {
     expect(opts.headers?.prefer).toBe('outlook.timezone="Australia/Brisbane"');
     expect(g.del.mock.calls[0]![0]).toBe("/me/events/evt-1");
     expect(removed).toMatchObject({ id: "evt-1", subject: "Travel to Bundaberg" });
+  });
+
+  it("addresses the event within another calendar when given its calendarId (#49)", async () => {
+    const g = graph(trip);
+    await cancelEvent(g.client, { ...input, calendarId: "cal/2" });
+    expect(g.get.mock.calls[0]![0]).toBe("/me/calendars/cal%2F2/events/evt-1");
+    expect(g.del.mock.calls[0]![0]).toBe("/me/calendars/cal%2F2/events/evt-1");
   });
 
   it("deletes only the checked version (If-Match) and reports a 412 as 'changed meanwhile'", async () => {

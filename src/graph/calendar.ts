@@ -8,6 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { GraphError, ValidationError } from "../util/errors.js";
 import { htmlToText } from "../util/html.js";
 import {
@@ -18,9 +19,19 @@ import {
   utcToZonedWallClock,
   zonedWallClockToUtcIso,
 } from "../util/time.js";
-import type { GraphClient } from "./client.js";
+import type { GraphClient, ODataPage } from "./client.js";
+import { CursorBase, decodeCursor, encodeCursor } from "./paging.js";
 
-const EVENT_SELECT = "id,subject,start,end,location,isAllDay,webLink";
+const EVENT_SELECT =
+  "id,subject,start,end,location,isAllDay,webLink,type,seriesMasterId,showAs,organizer,isCancelled";
+
+/**
+ * Where a calendar's events live: the default calendar, or the one
+ * `calendarId` names (from list_calendars).
+ */
+function calendarPath(calendarId: string | undefined, rest: string): string {
+  return calendarId ? `/me/calendars/${encodeURIComponent(calendarId)}/${rest}` : `/me/${rest}`;
+}
 
 /** The UTC instant (ms) of a local wall-clock time in its zone. */
 function instant(t: { dateTime: string; timeZone: string }): number {
@@ -37,6 +48,10 @@ export interface ListEventsInput {
   endDateTime: string;
   timeZone: string;
   limit: number;
+  /** A calendar from list_calendars; the default calendar if omitted. */
+  calendarId?: string;
+  /** A previous call's nextPageToken; the other inputs are then ignored. */
+  pageToken?: string;
 }
 
 export interface EventTime {
@@ -52,6 +67,24 @@ export interface EventSummary {
   location: string | null;
   isAllDay: boolean;
   webLink: string | null;
+  /** singleInstance | occurrence | exception | seriesMaster */
+  type: string | null;
+  /** The series an occurrence or exception belongs to. */
+  seriesMasterId: string | null;
+  /** free | tentative | busy | oof | workingElsewhere | unknown */
+  showAs: string | null;
+  organizer: { name?: string; address?: string } | null;
+  isCancelled: boolean;
+}
+
+export interface ListEventsResult {
+  events: EventSummary[];
+  /** The zone the times are in (from the cursor when paging). */
+  timeZone: string;
+  /** True when the range has more events than were returned. */
+  truncated: boolean;
+  /** Pass as `pageToken` for the next events; present when there is a next page. */
+  nextPageToken?: string;
 }
 
 interface GraphEvent {
@@ -68,6 +101,10 @@ interface GraphEvent {
   attendees?: unknown[];
   /** singleInstance | occurrence | exception | seriesMaster */
   type?: string;
+  seriesMasterId?: string;
+  showAs?: string;
+  organizer?: { emailAddress?: { name?: string; address?: string } };
+  isCancelled?: boolean;
   /** Version tag; sent back as `If-Match` so writes apply only to the checked version. */
   "@odata.etag"?: string;
 }
@@ -86,8 +123,23 @@ function shapeEvent(e: GraphEvent): EventSummary {
     location: e.location?.displayName ?? null,
     isAllDay: Boolean(e.isAllDay),
     webLink: e.webLink ?? null,
+    type: e.type ?? null,
+    seriesMasterId: e.seriesMasterId ?? null,
+    showAs: e.showAs ?? null,
+    organizer: e.organizer?.emailAddress
+      ? { name: e.organizer.emailAddress.name, address: e.organizer.emailAddress.address }
+      : null,
+    isCancelled: Boolean(e.isCancelled),
   };
 }
+
+// A list_events cursor (see ./paging.ts) also holds the display zone, since the
+// `Prefer` header that renders it isn't part of Graph's nextLink. `kind` keeps
+// a list_messages cursor from being followed here.
+const EventsCursorSchema = CursorBase.extend({
+  kind: z.literal("events"),
+  timeZone: z.string().min(1),
+});
 
 /**
  * List events in a date range via calendarView, rendered in `timeZone`.
@@ -97,11 +149,22 @@ function shapeEvent(e: GraphEvent): EventSummary {
  * are rendered in — a naive "today in Brisbane" query won't silently miss or
  * include boundary events); a value carrying an offset/`Z` pins the instant
  * directly. The `Prefer` header controls the zone of the times in the response.
+ *
+ * Returns one page of at most `limit` events. When the range holds more,
+ * `truncated` is set (#49), so a capped list is never mistaken for the whole
+ * range, and `nextPageToken` continues it.
  */
 export async function listEvents(
   graph: GraphClient,
   input: ListEventsInput,
-): Promise<EventSummary[]> {
+): Promise<ListEventsResult> {
+  if (input.pageToken) {
+    // The cursor alone decides the request, like list_messages.
+    const cursor = decodeCursor(input.pageToken, EventsCursorSchema, "list_events");
+    assertValidTimeZone(cursor.timeZone);
+    return eventsPage(graph, cursor.next, undefined, cursor.timeZone);
+  }
+
   assertValidTimeZone(input.timeZone);
 
   // Pin bare local bounds to the display zone so the query window and the
@@ -115,22 +178,41 @@ export async function listEvents(
     "endDateTime must be after startDateTime.",
   );
 
-  const events = await graph.getAllPages<GraphEvent>(
-    "/me/calendarView",
+  return eventsPage(
+    graph,
+    calendarPath(input.calendarId, "calendarView"),
     {
-      query: {
-        startDateTime,
-        endDateTime,
-        $select: EVENT_SELECT,
-        $orderby: "start/dateTime",
-        $top: input.limit,
-      },
-      headers: { prefer: preferTimeZoneHeader(input.timeZone) },
+      startDateTime,
+      endDateTime,
+      $select: EVENT_SELECT,
+      $orderby: "start/dateTime",
+      $top: input.limit,
     },
-    { maxItems: input.limit },
+    input.timeZone,
   );
+}
 
-  return events.map(shapeEvent);
+async function eventsPage(
+  graph: GraphClient,
+  path: string,
+  query: Record<string, string | number> | undefined,
+  timeZone: string,
+): Promise<ListEventsResult> {
+  const page = (
+    await graph.request<ODataPage<GraphEvent>>("GET", path, {
+      query,
+      headers: { prefer: preferTimeZoneHeader(timeZone) },
+    })
+  ).data;
+  const nextLink = page["@odata.nextLink"];
+  const nextPageToken = encodeCursor(nextLink, { kind: "events", timeZone });
+  return {
+    events: (page.value ?? []).map(shapeEvent),
+    timeZone,
+    // Set even if the nextLink can't be followed: the list is still incomplete.
+    truncated: Boolean(nextLink),
+    ...(nextPageToken ? { nextPageToken } : {}),
+  };
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────
@@ -152,10 +234,14 @@ export interface CreateEventInput {
   reminderMinutesBeforeStart?: number;
   /** Idempotency key; generated if omitted. */
   transactionId?: string;
+  /** A calendar from list_calendars; the default calendar if omitted. */
+  calendarId?: string;
 }
 
 export interface UpdateEventInput {
   id: string;
+  /** The event's calendar, when it isn't the default one. */
+  calendarId?: string;
   subject?: string;
   start?: EventDateTime;
   end?: EventDateTime;
@@ -270,7 +356,7 @@ export async function createEvent(
       : {}),
   };
   assertWritableEventPayload(payload);
-  const created = await graph.post<GraphEvent>("/me/events", payload);
+  const created = await graph.post<GraphEvent>(calendarPath(input.calendarId, "events"), payload);
   return shapeWrite(created, transactionId);
 }
 
@@ -402,7 +488,7 @@ export async function updateEvent(
   const fields = UPDATABLE_FIELDS.filter((f) => f in patch);
   const zone = input.start?.timeZone ?? input.end?.timeZone;
   const headers = zone ? { prefer: preferTimeZoneHeader(zone) } : undefined;
-  const path = `/me/events/${encodeURIComponent(input.id)}`;
+  const path = calendarPath(input.calendarId, `events/${encodeURIComponent(input.id)}`);
   // Changing either side needs both, to check the result still ends after it starts.
   const select = new Set(["id", "attendees", ...fields, ...(zone ? ["start", "end"] : [])]);
 
@@ -460,6 +546,8 @@ export async function updateEvent(
 
 export interface CancelEventInput {
   id: string;
+  /** The event's calendar, when it isn't the default one. */
+  calendarId?: string;
   /** Must match the event's title (case-insensitive): guards against a wrong id. */
   confirmSubject: string;
   /** IANA zone for the echoed start/end. */
@@ -486,7 +574,7 @@ export async function cancelEvent(
   input: CancelEventInput,
 ): Promise<EventWriteResult> {
   assertValidTimeZone(input.timeZone);
-  const path = `/me/events/${encodeURIComponent(input.id)}`;
+  const path = calendarPath(input.calendarId, `events/${encodeURIComponent(input.id)}`);
   const event = await graph.get<GraphEvent>(path, {
     query: { $select: "id,subject,start,end,location,webLink,attendees,type" },
     headers: { prefer: preferTimeZoneHeader(input.timeZone) },
@@ -521,4 +609,42 @@ export async function cancelEvent(
   const precondition = ifMatch(event, "delete");
   await onCheckedVersion(() => graph.delete(path, { headers: precondition }));
   return shapeWrite(event);
+}
+
+// ── Calendars ────────────────────────────────────────────────────────────────
+
+export interface CalendarSummary {
+  id: string;
+  name: string | null;
+  isDefaultCalendar: boolean;
+  /** Whether events can be created or changed in it. */
+  canEdit: boolean;
+  owner: { name?: string; address?: string } | null;
+}
+
+interface GraphCalendar {
+  id: string;
+  name?: string;
+  isDefaultCalendar?: boolean;
+  canEdit?: boolean;
+  owner?: { name?: string; address?: string };
+}
+
+/** Most calendars list_calendars returns. */
+export const MAX_CALENDARS = 100;
+
+/** The user's calendars (`GET /me/calendars`), for list_events' `calendarId`. */
+export async function listCalendars(graph: GraphClient): Promise<CalendarSummary[]> {
+  const calendars = await graph.getAllPages<GraphCalendar>(
+    "/me/calendars",
+    { query: { $select: "id,name,isDefaultCalendar,canEdit,owner", $top: MAX_CALENDARS } },
+    { maxItems: MAX_CALENDARS },
+  );
+  return calendars.map((c) => ({
+    id: c.id,
+    name: c.name ?? null,
+    isDefaultCalendar: Boolean(c.isDefaultCalendar),
+    canEdit: Boolean(c.canEdit),
+    owner: c.owner ? { name: c.owner.name, address: c.owner.address } : null,
+  }));
 }

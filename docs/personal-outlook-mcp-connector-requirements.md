@@ -197,21 +197,36 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Read-only. `Mail.Read`.
 
 ### 7.4 `list_events` — read calendar
-- **Graph:** `GET /me/calendarView?startDateTime=…&endDateTime=…`.
+- **Graph:** `GET /me/calendarView?startDateTime=…&endDateTime=…`, or
+  `/me/calendars/{calendarId}/calendarView` for another calendar.
 - **Inputs:** `startDateTime`, `endDateTime` (required), `timeZone?` (IANA, default §9.5), `limit?` (1–100,
-  default 25).
+  default 25), `calendarId?` (from `list_calendars`; default calendar if omitted), `pageToken?`.
 - MUST send `Prefer: outlook.timezone="<IANA tz>"` so returned times are in the requested zone.
 - A bare local `startDateTime`/`endDateTime` MUST be interpreted in `timeZone`. This includes date-only
   and fractional-second forms *(→ #33)*. `end` MUST be after `start`.
-- **Output per event:** `id`, `subject`, `start` / `end` (with timeZone), `location`, `isAllDay`, `webLink`.
-  SHOULD add `showAs`, `type`, `seriesMasterId` and a truncation flag / cursor *(→ #49)*.
+- **Output per event:** `id`, `subject`, `start` / `end` (with timeZone), `location`, `isAllDay`, `webLink`,
+  `type` (singleInstance / occurrence / exception / seriesMaster), `seriesMasterId`, `showAs`
+  (free / tentative / busy / …), `organizer` and `isCancelled` *(#49)*.
+- **Never silently capped.** One page of at most `limit` events is returned. `truncated: true` means the
+  range has more, and the description tells the model to page before concluding a time is free.
+  `nextPageToken` is an opaque cursor, like §7.2's: base64url JSON `{v, next, kind: "events", timeZone}`.
+  It carries the display zone because Graph's nextLink doesn't carry the `Prefer` header, and
+  `kind` stops a `list_messages` cursor from being followed here. With a `pageToken`, the other inputs
+  are ignored. A nextLink outside the Graph base still sets `truncated`, but gives no cursor.
 - Read-only. `Calendars.Read`.
 
+### 7.4a `list_calendars` — the user's calendars
+- **Graph:** `GET /me/calendars` (at most 100).
+- **Output per calendar:** `id`, `name`, `isDefaultCalendar`, `canEdit`, `owner`. The names of
+  calendars shared by others are their text, so the result carries the untrusted-content notice (T12).
+- `calendarId` is accepted by `list_events`, `create_event`, `update_event` and `cancel_event`. It goes in
+  the path (`/me/calendars/{id}/…`), never in a write payload. Read-only. `Calendars.Read`.
+
 ### 7.5 `create_event` — write calendar
-- **Graph:** `POST /me/events` → `201 Created`.
+- **Graph:** `POST /me/events` → `201 Created` (or `POST /me/calendars/{calendarId}/events`).
 - **Inputs:** `subject`; `start` / `end` as `{ dateTime, timeZone }`, where `dateTime` is **local wall-clock,
   no offset/`Z`** and `timeZone` is IANA; `location?`; `body?` (plain text); `isReminderOn?`;
-  `reminderMinutesBeforeStart?`; `transactionId?`.
+  `reminderMinutesBeforeStart?`; `transactionId?`; `calendarId?`.
 - **Timezone correctness (critical):** send local wall-clock + IANA `timeZone`. Values with `Z` or an
   offset MUST be rejected. `end` MUST be after `start` *(→ #33)*.
 - **Idempotency.** If the caller omits `transactionId`, the server derives a **deterministic** one
@@ -404,7 +419,7 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | T9 | **Hostile launch environment.** A repo's `.env` swaps the client id, tenant, cache dir or scopes. | `.env` is read only from the checkout root, never the CWD (§8.4). Scope override can only narrow (§6). | ✅ #41, #70 |
 | T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; *→ #83* |
 | T11 | **Interference with the loopback sign-in.** A stray or hostile local request hits the redirect port. | Random `state`, checked in constant time. Mismatched requests get a 400 and neither abort nor complete the sign-in (§8.2). | ✅ #41 |
-| T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message` and `list_events` descriptions repeat it. Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
+| T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message`, `list_events` and `list_calendars` descriptions repeat it. Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
 
 **Rules (normative)**
 1. All mail and calendar content returned by tools is **untrusted data**, never instructions.

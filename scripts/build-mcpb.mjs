@@ -98,6 +98,7 @@ const manifest = {
     { name: "whoami", description: "Show the connected personal Microsoft account." },
     { name: "list_messages", description: "Search or list email (read-only)." },
     { name: "get_message", description: "Read one email as text (read-only)." },
+    { name: "list_calendars", description: "List your calendars (own and shared)." },
     { name: "list_events", description: "List calendar events in a date range." },
     { name: "create_event", description: "Add a calendar event (timezone-correct, idempotent)." },
     { name: "update_event", description: "Edit a calendar event; reports before/after values." },
