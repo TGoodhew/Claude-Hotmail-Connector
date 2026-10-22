@@ -662,3 +662,50 @@ describe("retry policy, deadlines and cancellation (#37)", () => {
     ]);
   });
 });
+
+describe("the sign-out catch-up is bounded by cancellation and deadline (Copilot review on #126)", () => {
+  /** An auth whose catch-up with other processes never finishes. */
+  function stalledAuth() {
+    return {
+      ...makeAuth(),
+      signOutEpoch: () => 0,
+      syncSignOuts: vi.fn(() => new Promise<number>(() => undefined)),
+    };
+  }
+
+  it("a request and a paged read stop at their deadline", async () => {
+    const fetchImpl = fetchMock(async () => json({ value: [] }));
+    const client = createGraphClient({
+      auth: stalledAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+    });
+    const deadline = Date.now() + 30;
+    await expect(client.get("/me", { deadline })).rejects.toBeInstanceOf(TimeoutError);
+    await expect(
+      client.getAllPages("/me/messages", { deadline: Date.now() + 30 }),
+    ).rejects.toBeInstanceOf(TimeoutError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("a request and a paged read stop when cancelled", async () => {
+    const fetchImpl = fetchMock(async () => json({ value: [] }));
+    const client = createGraphClient({
+      auth: stalledAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+    });
+    for (const read of [
+      (signal: AbortSignal) => client.get("/me", { signal }),
+      (signal: AbortSignal) => client.getAllPages("/me/messages", { signal }),
+    ]) {
+      const controller = new AbortController();
+      const pending = read(controller.signal).catch((e: unknown) => e);
+      controller.abort();
+      const e = await pending;
+      expect(e).toBeInstanceOf(GraphError);
+      expect((e as GraphError).reason).toBe("cancelled");
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});

@@ -360,11 +360,27 @@ export function createFileCoordinator(
   async function acquire(): Promise<string> {
     await mkdir(dir, { recursive: true });
     const deadline = now() + timeoutMs;
+    // Times in a row the lock wasn't there yet couldn't be taken.
+    let missedFree = 0;
     for (;;) {
       const token = await take(lockPath);
       if (token) return token;
       const held = await inspect(lockPath);
-      if (!held) continue; // released between our attempts: try again at once
+      if (!held) {
+        // Released between our attempts: try again at once, the first time.
+        // Again and again means it can't be created at all (e.g. a folder that
+        // isn't writable): back off, and stop at the deadline saying so
+        // (Copilot review on #126).
+        if (missedFree++ === 0) continue;
+        if (now() >= deadline) {
+          throw new AuthError(
+            `Couldn't take the sign-in lock in ${dir}. Check that the folder is writable.`,
+          );
+        }
+        await sleep(20 + Math.floor(Math.random() * 30));
+        continue;
+      }
+      missedFree = 0;
       if (held !== "busy" && holderGone(held, now(), staleMs) && (await reap(held.content))) {
         continue;
       }

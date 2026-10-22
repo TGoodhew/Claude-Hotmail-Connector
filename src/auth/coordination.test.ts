@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   readdirSync,
@@ -279,6 +280,25 @@ describe.skipIf(process.platform === "win32")("the lock file (#95)", () => {
     await expect(c.withLock(async () => ({ value: 1 }))).rejects.toBeInstanceOf(AuthError);
     expect(readFileSync(lock, "utf8")).toBe(`${process.ppid}-paused-holder`);
   });
+
+  // Root ignores directory permissions, so this needs an ordinary user.
+  it.skipIf(process.getuid?.() === 0)(
+    "stops at the deadline, saying why, when the lock can't be created (Copilot review on #126)",
+    async () => {
+      const dir = tempDir();
+      chmodSync(dir, 0o555); // no lock there, and none can be made
+      try {
+        const started = Date.now();
+        const c = file(dir, { lockTimeoutMs: 150 });
+        await expect(c.withLock(async () => ({ value: 1 }))).rejects.toThrow(
+          /Check that the folder is writable/,
+        );
+        expect(Date.now() - started).toBeLessThan(5_000); // not a spin past the deadline
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+    },
+  );
 
   it("recovers when a reaper also died holding its guard, without two waiters reaping at once (Copilot review on #126)", async () => {
     const dir = tempDir();

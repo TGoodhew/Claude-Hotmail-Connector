@@ -196,7 +196,7 @@ function outOfTime(): TimeoutError {
  * Wait for `work`, but give up (rejecting) when `signal` aborts or `remainingMs`
  * runs out. `work` itself isn't cancelled: it may be shared with other callers.
  */
-async function withinLimits<T>(
+export async function withinLimits<T>(
   work: Promise<T>,
   signal: AbortSignal | undefined,
   remainingMs: number,
@@ -346,7 +346,15 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
     let refreshed = false;
     // One epoch for the whole request, retries included: a retry or 401
     // recovery that outlives a sign-out must stop, not sign in again.
-    const signOutEpoch = opts.signOutEpoch ?? (await currentEpoch());
+    // The catch-up with other processes is bounded too: a stalled state-file
+    // read mustn't outlive the caller's cancellation or deadline.
+    const signOutEpoch =
+      opts.signOutEpoch ??
+      (await withinLimits(
+        currentEpoch(),
+        opts.signal,
+        opts.deadline === undefined ? Number.POSITIVE_INFINITY : opts.deadline - now(),
+      ));
     const repeatable = safeToRepeat(method, opts.body);
     const remainingMs = (): number =>
       opts.deadline === undefined ? Number.POSITIVE_INFINITY : opts.deadline - now();
@@ -459,7 +467,13 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       let pages = 0;
       const maxPages = cap + MAX_EXTRA_PAGES;
       // Every page belongs to the same operation: page 2 after a sign-out stops.
-      const signOutEpoch = opts.signOutEpoch ?? (await currentEpoch());
+      const signOutEpoch =
+        opts.signOutEpoch ??
+        (await withinLimits(
+          currentEpoch(),
+          opts.signal,
+          opts.deadline === undefined ? Number.POSITIVE_INFINITY : opts.deadline - now(),
+        ));
       const epochOpt = signOutEpoch !== undefined ? { signOutEpoch } : {};
       do {
         // On the first request send the full opts; for nextLink pages keep the
