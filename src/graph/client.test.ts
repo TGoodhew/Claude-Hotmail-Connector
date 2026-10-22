@@ -3,6 +3,7 @@ import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
 import {
   buildUrl,
   createGraphClient,
+  isTransientGraphFailure,
   retryAfterMs,
   scopeToOperation,
   type GraphClient,
@@ -75,6 +76,7 @@ type AuthFn = (opts?: {
   interactiveWaitMs?: number;
   minTtlMs?: number;
   signOutEpoch?: number;
+  cachedOnly?: boolean;
 }) => Promise<string>;
 
 function fetchMock(impl?: FetchFn) {
@@ -369,6 +371,122 @@ describe("createGraphClient", () => {
     expect(data.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a sendOnce request once: no back-off retry, no 401 recovery (#137)", async () => {
+    const sleep = vi.fn(async () => {});
+    for (const status of [429, 503, 401]) {
+      const fetchImpl = fetchMock(async () => json({ error: { code: "x" } }, { status }));
+      const auth = makeAuth();
+      const client = createGraphClient({
+        auth,
+        baseUrl: BASE,
+        fetchImpl: fetchImpl as never,
+        sleep,
+      });
+      const e = await client.delete("/me/events/e1", { sendOnce: true }).catch((x: unknown) => x);
+      expect((e as GraphError).status, `status ${status}`).toBe(status);
+      expect(fetchImpl, `status ${status}`).toHaveBeenCalledTimes(1);
+      expect(auth.getAccessToken, `status ${status}`).toHaveBeenCalledTimes(1);
+      // With the token already in hand: no refresh or sign-in wait.
+      expect(auth.getAccessToken.mock.calls[0]![0], `status ${status}`).toMatchObject({
+        cachedOnly: true,
+      });
+    }
+    expect(sleep).not.toHaveBeenCalled();
+    // A timeout isn't retried either.
+    const hanging = fetchMock(
+      (_url, init) =>
+        new Promise((_r, reject) =>
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("t", "TimeoutError")),
+          ),
+        ),
+    );
+    const client = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: hanging as never,
+      sleep,
+      defaultTimeoutMs: 5,
+    });
+    await expect(client.delete("/me/events/e1", { sendOnce: true })).rejects.toBeInstanceOf(
+      TimeoutError,
+    );
+    expect(hanging).toHaveBeenCalledTimes(1);
+  });
+
+  it("waitBeforeMs: waits first, within the deadline, and stops on cancellation (Copilot review on #137)", async () => {
+    const fetchImpl = fetchMock(async () => json({ ok: true }));
+    // Waits, then sends.
+    const sleep = vi.fn(async () => {});
+    const client = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+      sleep,
+    });
+    await client.get("/me", { waitBeforeMs: 2_000 });
+    expect(sleep).toHaveBeenCalledWith(2_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // A wait that wouldn't fit the deadline fails at once, without waiting or sending.
+    sleep.mockClear();
+    fetchImpl.mockClear();
+    await expect(
+      client.get("/me", { waitBeforeMs: 30_000, deadline: Date.now() + 1_000 }),
+    ).rejects.toBeInstanceOf(TimeoutError);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    // Cancelling during the wait ends it.
+    const never = vi.fn(() => new Promise<void>(() => undefined));
+    const stuck = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+      sleep: never,
+    });
+    const controller = new AbortController();
+    const pending = stuck
+      .get("/me", { waitBeforeMs: 30_000, signal: controller.signal })
+      .catch((e: unknown) => e);
+    await vi.waitFor(() => expect(never).toHaveBeenCalled());
+    controller.abort();
+    const e = await pending;
+    expect((e as GraphError).reason).toBe("cancelled");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("keeps Graph's Retry-After on the error, for a caller that retries itself (#137)", async () => {
+    const fetchImpl = fetchMock(async () =>
+      json(
+        { error: { code: "TooManyRequests" } },
+        { status: 429, headers: { "retry-after": "7" } },
+      ),
+    );
+    const client = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+    });
+    const e = await client.delete("/me/events/e1", { sendOnce: true }).catch((x: unknown) => x);
+    expect((e as GraphError).retryAfterMs).toBe(7_000);
+    const plain = fetchMock(async () => json({ error: { code: "x" } }, { status: 403 }));
+    const c2 = createGraphClient({ auth: makeAuth(), baseUrl: BASE, fetchImpl: plain as never });
+    const e2 = await c2.delete("/me/events/e1", { sendOnce: true }).catch((x: unknown) => x);
+    expect((e2 as GraphError).retryAfterMs).toBeUndefined();
+  });
+
+  it("isTransientGraphFailure: what may succeed if tried again", () => {
+    for (const s of [401, 429, 500, 502, 503, 504]) {
+      expect(isTransientGraphFailure(new GraphError("x", { status: s })), String(s)).toBe(true);
+    }
+    expect(isTransientGraphFailure(new GraphError("network", {}))).toBe(true);
+    expect(isTransientGraphFailure(new TimeoutError("t"))).toBe(true);
+    for (const s of [400, 403, 404, 409, 412]) {
+      expect(isTransientGraphFailure(new GraphError("x", { status: s })), String(s)).toBe(false);
+    }
+    expect(isTransientGraphFailure(new GraphError("c", { reason: "cancelled" }))).toBe(false);
+    expect(isTransientGraphFailure(new Error("other"))).toBe(false);
   });
 
   it("retries 503 and 504 like 429", async () => {

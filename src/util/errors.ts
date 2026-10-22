@@ -42,6 +42,16 @@ export class AuthError extends AppError {
 }
 
 /**
+ * A `cachedOnly` token lookup found no unexpired token. Nothing was sent;
+ * the caller can try again normally (which refreshes or signs in).
+ */
+export class NoCurrentTokenError extends AuthError {
+  constructor() {
+    super("No current Microsoft access token; it needs refreshing first.");
+  }
+}
+
+/**
  * The user must act in their browser before the call can succeed: an
  * on-demand sign-in has been started, is still pending, or just failed. Its
  * message is written for the user, contains nothing sensitive, and is returned
@@ -76,6 +86,8 @@ export class GraphError extends AppError {
   readonly status?: number;
   readonly graphCode?: string;
   readonly reason?: "network" | "cancelled";
+  /** How long Graph asked the caller to wait before trying again (`Retry-After`). */
+  readonly retryAfterMs?: number;
 
   constructor(
     message: string,
@@ -83,6 +95,7 @@ export class GraphError extends AppError {
       status?: number;
       graphCode?: string;
       reason?: "network" | "cancelled";
+      retryAfterMs?: number;
       cause?: unknown;
     } = {},
   ) {
@@ -90,6 +103,7 @@ export class GraphError extends AppError {
     this.status = options.status;
     this.graphCode = options.graphCode;
     this.reason = options.reason;
+    this.retryAfterMs = options.retryAfterMs;
   }
 }
 

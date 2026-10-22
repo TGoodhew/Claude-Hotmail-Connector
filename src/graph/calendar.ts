@@ -9,7 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { GraphError, ValidationError } from "../util/errors.js";
+import { GraphError, NoCurrentTokenError, ValidationError } from "../util/errors.js";
 import { htmlToText } from "../util/html.js";
 import {
   assertValidTimeZone,
@@ -21,7 +21,7 @@ import {
   utcToZonedWallClock,
   zonedWallClockToUtcIso,
 } from "../util/time.js";
-import type { GraphClient, ODataPage } from "./client.js";
+import { type GraphClient, isTransientGraphFailure, type ODataPage } from "./client.js";
 import { type MessageBody, sliceBody } from "./mail.js";
 import { CursorBase, decodeCursor, encodeCursor } from "./paging.js";
 
@@ -909,8 +909,14 @@ export interface CancelEventInput {
  *  - anything recurring is refused: deleting a series master removes every
  *    occurrence, and deleting an occurrence removes it from its series rather
  *    than moving it to Deleted Items, so neither fits the soft-delete promise.
- * The DELETE carries `If-Match` for the checked version, so an event that
- * changed in between (e.g. gained attendees) is not deleted.
+ * The DELETE carries `If-Match` for the checked version, but Graph ignores it
+ * on event deletes (found by the live test, #48), so the guards must be fresh
+ * at every DELETE: each one is sent once, and a transient failure (throttling,
+ * a 5xx, a timeout) doesn't retry it blindly but starts over with a new read
+ * and the guards again (owner decision, 2026-10-22; spec §7.8). The header is
+ * kept so the check works if Graph starts enforcing it.
+ * The wait between attempts is the Graph client's (`waitBeforeMs` on the
+ * re-read), so it ends on cancellation and never outlasts the call's deadline.
  * Returns the removed event so it can be echoed to the user.
  */
 export async function cancelEvent(
@@ -919,15 +925,89 @@ export async function cancelEvent(
 ): Promise<EventWriteResult> {
   assertValidTimeZone(input.timeZone);
   const path = calendarPath(input.calendarId, `events/${encodeURIComponent(input.id)}`);
-  const event = await graph.get<GraphEvent>(path, {
-    query: { $select: "id,subject,start,end,location,webLink,attendees,type" },
-    headers: { prefer: preferTimeZoneHeader(input.timeZone) },
-  });
+  // The event as last checked, once a DELETE of it failed in a way that may
+  // have come after Graph did the work (a 5xx or a timeout).
+  let mayBeDeleted: EventWriteResult | undefined;
+  // How long to wait before the next read, after a failed DELETE.
+  let waitBeforeMs = 0;
+  for (let attempt = 1; ; attempt++) {
+    let event: GraphEvent;
+    try {
+      event = await graph.get<GraphEvent>(path, {
+        query: { $select: "id,subject,start,end,location,webLink,attendees,type" },
+        headers: { prefer: preferTimeZoneHeader(input.timeZone) },
+        ...(waitBeforeMs > 0 ? { waitBeforeMs } : {}),
+      });
+    } catch (e) {
+      // Gone now, after a DELETE whose answer was lost: that DELETE did it.
+      if (mayBeDeleted && e instanceof GraphError && e.status === 404) return mayBeDeleted;
+      if (mayBeDeleted) throw unconfirmedCancel(e);
+      throw e;
+    }
+    let precondition: Record<string, string>;
+    try {
+      assertCancellable(event, input.confirmSubject);
+      precondition = ifMatch(event, "delete");
+    } catch (e) {
+      // A DELETE that timed out may still complete at Graph, whatever the
+      // event looks like now: never say nothing was deleted then.
+      if (mayBeDeleted) throw unconfirmedCancel(e);
+      throw e;
+    }
+    try {
+      await onCheckedVersion(() => graph.delete(path, { headers: precondition, sendOnce: true }));
+      return shapeWrite(event);
+    } catch (e) {
+      // Throttling and 401s are refused before any work; any other transient
+      // failure may have come after it (a 5xx, a timeout): recorded first, so
+      // no exit below can drop it.
+      // So is a DELETE that never went out for want of a current token. One
+      // cancelled or timed out in flight may have reached Graph (Copilot review
+      // on #137): uncertain too.
+      const refusedUnprocessed =
+        e instanceof NoCurrentTokenError ||
+        (e instanceof GraphError && (e.status === 429 || e.status === 401));
+      const cancelledInFlight = e instanceof GraphError && e.reason === "cancelled";
+      if ((isTransientGraphFailure(e) && !refusedUnprocessed) || cancelledInFlight) {
+        mayBeDeleted = shapeWrite(event);
+      }
+      // Read, checked and still there, then gone: an earlier DELETE did it.
+      if (mayBeDeleted && e instanceof GraphError && e.status === 404) return mayBeDeleted;
+      if (!isTransientGraphFailure(e) || attempt >= CANCEL_ATTEMPTS) {
+        throw mayBeDeleted ? unconfirmedCancel(e) : e;
+      }
+      // Graph's own wait, when it gave one (e.g. throttling), else a short one;
+      // the client waits it out before the re-read (Copilot review on #137).
+      const asked = e instanceof GraphError ? (e.retryAfterMs ?? 0) : 0;
+      waitBeforeMs = Math.max(asked, CANCEL_RETRY_PAUSE_MS * attempt);
+    }
+  }
+}
 
+/** DELETE attempts `cancel_event` makes, each after a fresh read and check. */
+const CANCEL_ATTEMPTS = 3;
+/** Wait before the second attempt (doubled before the third). */
+const CANCEL_RETRY_PAUSE_MS = 1_000;
+
+/**
+ * A failure after a DELETE that may have gone through: never say nothing
+ * happened. A ValidationError, so its message reaches the caller as written
+ * (a GraphError would be replaced by a generic "try again").
+ */
+function unconfirmedCancel(cause: unknown): ValidationError {
+  return new ValidationError(
+    "Microsoft Graph didn't confirm the cancellation, and an earlier attempt may have gone " +
+      "through. Check with list_events whether the event is still there before trying again.",
+    cause,
+  );
+}
+
+/** cancel_event's guards against the event as just read (see {@link cancelEvent}). */
+function assertCancellable(event: GraphEvent, confirmSubject: string): void {
   const title = (event.subject ?? "").trim();
-  if (title.toLowerCase() !== input.confirmSubject.trim().toLowerCase()) {
+  if (title.toLowerCase() !== confirmSubject.trim().toLowerCase()) {
     throw new ValidationError(
-      `confirmSubject "${input.confirmSubject}" does not match the event's title "${title}". ` +
+      `confirmSubject "${confirmSubject}" does not match the event's title "${title}". ` +
         "Nothing was deleted. Check the id with list_events and confirm with the user.",
     );
   }
@@ -949,10 +1029,6 @@ export async function cancelEvent(
         "instead of moving it to Deleted Items. Cancel it in Outlook instead. Nothing was deleted.",
     );
   }
-
-  const precondition = ifMatch(event, "delete");
-  await onCheckedVersion(() => graph.delete(path, { headers: precondition }));
-  return shapeWrite(event);
 }
 
 // ── Calendars ────────────────────────────────────────────────────────────────

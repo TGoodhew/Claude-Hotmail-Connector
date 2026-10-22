@@ -11,7 +11,7 @@
  */
 
 import type { MicrosoftAuth } from "../auth/microsoft.js";
-import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
+import { GraphError, NoCurrentTokenError, TimeoutError, ValidationError } from "../util/errors.js";
 import { createLogger, type Logger } from "../util/log.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -41,6 +41,29 @@ export interface GraphRequestOptions {
    * request of one tool call (pages, follow-ups) stops if the user signed out.
    */
   signOutEpoch?: number;
+  /**
+   * Send at most once: no back-off retries and no 401 recovery. For a write
+   * whose caller must re-check before trying again (`cancel_event` re-runs its
+   * guards before each DELETE); see {@link isTransientGraphFailure}.
+   */
+  sendOnce?: boolean;
+  /**
+   * Wait this long before sending: a caller's own pause between its retries
+   * (`cancel_event`). It ends early on cancellation, and if it wouldn't fit
+   * the deadline the request fails at once as out of time.
+   */
+  waitBeforeMs?: number;
+}
+
+/**
+ * Whether a failed request might succeed if tried again: throttling, a 5xx,
+ * an expired token (401, or none current for a send-once request), a timeout
+ * or a network error. Not a cancellation.
+ */
+export function isTransientGraphFailure(e: unknown): boolean {
+  if (e instanceof TimeoutError || e instanceof NoCurrentTokenError) return true;
+  if (!(e instanceof GraphError) || e.reason === "cancelled") return false;
+  return e.status === undefined || [401, 429, 500, 502, 503, 504].includes(e.status);
 }
 
 export interface GraphResponse<T> {
@@ -319,7 +342,13 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
         // non-JSON body; keep the generic message.
       }
     }
-    return new GraphError(message, { status: res.status, graphCode: code });
+    // Kept for a caller that retries itself (a send-once request).
+    const wait = retryAfterMs(res.headers.get("retry-after"));
+    return new GraphError(message, {
+      status: res.status,
+      graphCode: code,
+      ...(wait !== undefined ? { retryAfterMs: wait } : {}),
+    });
   }
 
   function parseBody<T>(res: RawResponse): T {
@@ -356,6 +385,8 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
         opts.deadline === undefined ? Number.POSITIVE_INFINITY : opts.deadline - now(),
       ));
     const repeatable = safeToRepeat(method, opts.body);
+    // A send-once request is never retried here; its caller decides.
+    const retries = opts.sendOnce ? 0 : maxRetries;
     const remainingMs = (): number =>
       opts.deadline === undefined ? Number.POSITIVE_INFINITY : opts.deadline - now();
     /** Back off before a retry, or report false if the wait wouldn't fit the deadline. */
@@ -371,6 +402,11 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       if (remainingMs() <= 0) throw outOfTime();
     };
 
+    if (opts.waitBeforeMs) {
+      ensureStillWanted();
+      if (!(await waitToRetry(opts.waitBeforeMs))) throw outOfTime();
+    }
+
     for (;;) {
       ensureStillWanted();
       // The token lookup can refresh or wait for a browser sign-in. This call
@@ -379,6 +415,9 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       const token = await withinLimits(
         deps.auth.getAccessToken({
           interactive: deps.interactiveSignIn !== undefined,
+          // A send-once request goes out with the token in hand or not at all:
+          // no refresh or sign-in wait after its caller's checks (#137).
+          ...(opts.sendOnce ? { cachedOnly: true } : {}),
           ...(deps.interactiveSignIn ? { interactiveWaitMs: deps.interactiveSignIn.waitMs } : {}),
           // Force a refresh after a 401 (token may be revoked despite our clock).
           ...(refreshed ? { minTtlMs: Number.MAX_SAFE_INTEGER } : {}),
@@ -399,7 +438,7 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
         // network errors may have reached Graph, so retry them (with the same
         // backoff budget as throttling) only when repeating is safe.
         if (opts.signal?.aborted) throw e;
-        if (isRetriableThrow(e) && repeatable && attempt < maxRetries) {
+        if (isRetriableThrow(e) && repeatable && attempt < retries) {
           const delay = backoffMs(attempt);
           if (await waitToRetry(delay)) {
             attempt += 1;
@@ -414,13 +453,13 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
         throw e;
       }
 
-      if (res.status === 401 && !refreshed) {
+      if (res.status === 401 && !refreshed && !opts.sendOnce) {
         refreshed = true;
         log.warn("Graph returned 401; refreshing token and retrying once", { url: redactUrl(url) });
         continue;
       }
 
-      if (isRetriableStatus(res.status, repeatable) && attempt < maxRetries) {
+      if (isRetriableStatus(res.status, repeatable) && attempt < retries) {
         const delay = retryAfterMs(res.headers.get("retry-after")) ?? backoffMs(attempt);
         if (await waitToRetry(delay)) {
           attempt += 1;

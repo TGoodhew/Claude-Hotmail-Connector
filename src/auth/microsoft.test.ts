@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
 import { createGraphClient } from "../graph/client.js";
-import { AuthError, SignedOutError, SignInRequiredError } from "../util/errors.js";
+import {
+  AuthError,
+  NoCurrentTokenError,
+  SignedOutError,
+  SignInRequiredError,
+} from "../util/errors.js";
 import {
   buildAuthorizeUrl,
   buildCodeExchangeBody,
@@ -207,6 +212,69 @@ describe("createMicrosoftAuth.getAccessToken", () => {
     expiresAt: future,
     scopes: config.scopes,
   };
+
+  it("cachedOnly: the token last handed out, from memory: no store read, refresh or sign-in (Copilot review on #137)", async () => {
+    let clock = 1_000;
+    const base = memoryStore({ ...validCached, expiresAt: 100_000 });
+    let loads = 0;
+    let slowLoad = false;
+    const store: TokenStore = {
+      async load() {
+        loads += 1;
+        if (slowLoad) await new Promise(() => undefined); // a key unwrap that hangs
+        return base.load();
+      },
+      save: (t) => base.save(t),
+      clear: (o) => base.clear(o),
+    };
+    const fetchImpl = vi.fn();
+    const openBrowser = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openBrowser,
+      now: () => clock,
+    });
+    // Nothing handed out yet: no token, and no store read to find one.
+    await expect(auth.getAccessToken({ cachedOnly: true })).rejects.toBeInstanceOf(
+      NoCurrentTokenError,
+    );
+    expect(loads).toBe(0);
+    // A normal lookup hands one out; the store then stalls, and the cachedOnly
+    // lookup doesn't touch it.
+    expect(await auth.getAccessToken()).toBe("CACHED-AT");
+    slowLoad = true;
+    const before = loads;
+    expect(await auth.getAccessToken({ cachedOnly: true })).toBe("CACHED-AT");
+    expect(loads).toBe(before);
+    // Expired: an error at once, with no refresh or browser.
+    clock = 200_000;
+    await expect(auth.getAccessToken({ cachedOnly: true })).rejects.toBeInstanceOf(
+      NoCurrentTokenError,
+    );
+    expect(loads).toBe(before);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("cachedOnly: a sign-out drops the held token, and a lookup from before it stops", async () => {
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore(validCached),
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    await auth.getAccessToken();
+    const epoch = auth.signOutEpoch();
+    await auth.signOut();
+    await expect(
+      auth.getAccessToken({ cachedOnly: true, signOutEpoch: epoch }),
+    ).rejects.toBeInstanceOf(SignedOutError);
+    await expect(auth.getAccessToken({ cachedOnly: true })).rejects.toBeInstanceOf(
+      NoCurrentTokenError,
+    );
+  });
 
   it("returns a cached access token that is still valid", async () => {
     const fetchImpl = vi.fn();
