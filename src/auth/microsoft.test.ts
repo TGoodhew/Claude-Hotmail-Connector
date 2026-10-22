@@ -1827,3 +1827,70 @@ describe("sign-out during the start of an operation (Copilot review on #126)", (
     expect(result).not.toBeInstanceOf(Error);
   });
 });
+
+describe("re-opening a pending sign-in page (#139)", () => {
+  it("opens the same page again when a later call joins it, at most every 15 s", async () => {
+    let clock = 1_000;
+    const opened: string[] = [];
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore(null),
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ access_token: "AT", refresh_token: "RT", expires_in: 3600 }),
+      ) as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        opened.push(u);
+      },
+      now: () => clock,
+    });
+    const ask = () =>
+      auth.getAccessToken({ interactiveWaitMs: 10 }).then(
+        (t) => t,
+        (e: unknown) => e as Error,
+      );
+
+    // The first call opens the page and stops waiting.
+    expect(String(await ask())).toMatch(/has opened in your browser/);
+    expect(opened).toHaveLength(1);
+    // A call soon after joins without opening another tab.
+    clock += 5_000;
+    expect(String(await ask())).toMatch(/Still waiting/);
+    expect(opened).toHaveLength(1);
+    // Later, the user may have closed the tab: the same page opens again.
+    clock += 20_000;
+    expect(String(await ask())).toMatch(/opened again in your browser/);
+    expect(opened).toEqual([opened[0], opened[0]]);
+
+    // Finishing that page completes the original sign-in.
+    const u = new URL(opened[0]!);
+    const redirect = new URL(u.searchParams.get("redirect_uri")!);
+    redirect.hostname = "127.0.0.1";
+    await fetch(
+      `${redirect.origin}/?${new URLSearchParams({ state: u.searchParams.get("state")!, code: "C" })}`,
+    );
+    await vi.waitFor(async () =>
+      expect(await auth.getAccessToken({ interactive: false })).toBe("AT"),
+    );
+  });
+
+  it("forgets the page once a sign-out cancels the sign-in", async () => {
+    let clock = 1_000;
+    const opened: string[] = [];
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore(null),
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        opened.push(u);
+      },
+      now: () => clock,
+    });
+    await auth.getAccessToken({ interactiveWaitMs: 10 }).catch(() => undefined);
+    await auth.signOut();
+    clock += 60_000;
+    // A new call starts a fresh sign-in (a new page), not the cancelled one.
+    await auth.getAccessToken({ interactiveWaitMs: 10 }).catch(() => undefined);
+    expect(opened).toHaveLength(2);
+    expect(opened[1]).not.toBe(opened[0]);
+  });
+});
