@@ -135,6 +135,32 @@ describe("all-day, free/busy and recurring creation (#51)", () => {
     return { payload: post.mock.calls[0]![1] as Record<string, unknown>, result, post };
   };
 
+  it("writes an event on a DST change day as the wall clock given, never shifted (#64)", async () => {
+    // Sydney springs forward on 2026-10-04 and falls back on 2026-04-05; the
+    // times go to Graph exactly as given, with the zone, for Graph to place.
+    for (const [day, start, end] of [
+      ["2026-10-04", "2026-10-04T09:00:00", "2026-10-04T10:00:00"],
+      ["2026-04-05", "2026-04-05T09:00:00", "2026-04-05T10:00:00"],
+    ] as const) {
+      const { payload } = await posted({
+        start: { dateTime: start, timeZone: "Australia/Sydney" },
+        end: { dateTime: end, timeZone: "Australia/Sydney" },
+      });
+      expect(payload.start, day).toEqual({ dateTime: start, timeZone: "Australia/Sydney" });
+      expect(payload.end, day).toEqual({ dateTime: end, timeZone: "Australia/Sydney" });
+    }
+    // And an all-day event on the change day is midnight to midnight there.
+    const { payload } = await posted({
+      isAllDay: true,
+      start: { dateTime: "2026-10-04", timeZone: "Australia/Sydney" },
+      end: { dateTime: "2026-10-05", timeZone: "Australia/Sydney" },
+    });
+    expect(payload).toMatchObject({
+      start: { dateTime: "2026-10-04T00:00:00", timeZone: "Australia/Sydney" },
+      end: { dateTime: "2026-10-05T00:00:00", timeZone: "Australia/Sydney" },
+    });
+  });
+
   it("writes an all-day event as midnight to midnight in its own zone, never shifted", async () => {
     for (const timeZone of ["Australia/Brisbane", "America/New_York", "Asia/Kolkata", "UTC"]) {
       const { payload } = await posted({

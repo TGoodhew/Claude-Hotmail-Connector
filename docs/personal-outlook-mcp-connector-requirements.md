@@ -546,7 +546,17 @@ cancellation guards are covered by unit tests (#61, #55).
   `DEFAULT_TIMEZONE` names another. An invalid `DEFAULT_TIMEZONE` is a startup `ConfigError`, not a
   failure on every calendar call *(#34)*.
 - Tests MUST cover a **DST zone** (e.g. `Australia/Sydney`, `America/New_York`) across transitions,
-  because Brisbane has no DST and cannot catch those bugs *(→ #64)*.
+  because Brisbane has no DST and cannot catch those bugs *(#64)*. A bare local time is resolved by
+  Temporal's "compatible" rule:
+  - a time that never occurs (spring forward) moves on by the gap, like the clocks: Sydney 02:30 on
+    2026-10-04 is 03:30 (+11);
+  - a time that occurs twice (fall back) takes the **first** occurrence: Sydney 02:30 on 2026-04-05 is
+    the +11 one;
+  - a date-only bound is the start of that local day, even where the day skips midnight;
+  - event times written to Graph are never converted: the wall clock goes as given, with its zone.
+
+  Tests cover Sydney and New York both ways, a `list_events` window spanning a change, and writes on a
+  change day.
 
 ---
 
@@ -601,7 +611,7 @@ Claude-Hotmail-Connector/
   retry/paging with mocked `fetch`, auth refresh paths, the token store, HTML-to-text, and setup config
   merging.
 - **Coverage threshold** enforced in `vitest.config.ts` *(→ #47)*.
-- **DST-zone tests** (§9.5) *(→ #64)*.
+- **DST-zone tests** (§9.5): Sydney and New York across both transitions *(#64)*.
 - **stdio subprocess smoke test:** launch `dist/index.js` and list tools (in `mcp.test.ts`).
 - **Source hygiene:** `npm run check:text` rejects raw control characters in tracked files (CI step).
 - **Live integration (opt-in), required.** Behind an env flag with a signed-in cache, run

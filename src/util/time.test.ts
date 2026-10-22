@@ -183,6 +183,50 @@ describe("zonedWallClockToUtcIso around DST changes (Copilot review on #116)", (
   });
 });
 
+// Southern-hemisphere DST, both ways (#64). Cases first proposed by
+// @masyarakatai in #76; the rule is Temporal's "compatible" one (spec §9.5).
+describe("zonedWallClockToUtcIso in Sydney and New York across DST (#64)", () => {
+  it("handles a normal Sydney time in daylight saving (+11) and in standard time (+10)", () => {
+    expect(zonedWallClockToUtcIso("2026-01-15T12:00:00", "Australia/Sydney")).toBe(
+      "2026-01-15T01:00:00.000Z",
+    );
+    expect(zonedWallClockToUtcIso("2026-07-15T12:00:00", "Australia/Sydney")).toBe(
+      "2026-07-15T02:00:00.000Z",
+    );
+  });
+  it("moves a time that never occurs (spring forward) on by the gap, like the clocks", () => {
+    // Sydney skips 02:00-03:00 on 2026-10-04: 02:30 lands at 03:30 (+11).
+    expect(zonedWallClockToUtcIso("2026-10-04T02:30:00", "Australia/Sydney")).toBe(
+      "2026-10-03T16:30:00.000Z",
+    );
+    // New York skips 02:00-03:00 on 2026-03-08: 02:30 lands at 03:30 EDT.
+    expect(zonedWallClockToUtcIso("2026-03-08T02:30:00", "America/New_York")).toBe(
+      "2026-03-08T07:30:00.000Z",
+    );
+  });
+  it("takes the first occurrence of a time that happens twice (fall back)", () => {
+    // Sydney repeats 02:00-03:00 on 2026-04-05: the first 02:30 is still +11.
+    expect(zonedWallClockToUtcIso("2026-04-05T02:30:00", "Australia/Sydney")).toBe(
+      "2026-04-04T15:30:00.000Z",
+    );
+    // Just outside the repeated hour, there's only one answer either side.
+    expect(zonedWallClockToUtcIso("2026-04-05T01:59:00", "Australia/Sydney")).toBe(
+      "2026-04-04T14:59:00.000Z",
+    );
+    expect(zonedWallClockToUtcIso("2026-04-05T03:00:00", "Australia/Sydney")).toBe(
+      "2026-04-04T17:00:00.000Z",
+    );
+  });
+  it("renders both Sydney 02:30s back as 02:30, so a listing shows the wall clock", () => {
+    expect(utcToZonedWallClock(Date.parse("2026-04-04T15:30:00Z"), "Australia/Sydney")).toBe(
+      "2026-04-05T02:30:00.0000000",
+    );
+    expect(utcToZonedWallClock(Date.parse("2026-04-04T16:30:00Z"), "Australia/Sydney")).toBe(
+      "2026-04-05T02:30:00.0000000",
+    );
+  });
+});
+
 describe("preferTimeZoneHeader", () => {
   it("formats the Prefer header value", () => {
     expect(preferTimeZoneHeader("Australia/Brisbane")).toBe(
