@@ -20,6 +20,7 @@ import {
   zonedWallClockToUtcIso,
 } from "../util/time.js";
 import type { GraphClient, ODataPage } from "./client.js";
+import { type MessageBody, sliceBody } from "./mail.js";
 import { CursorBase, decodeCursor, encodeCursor } from "./paging.js";
 
 const EVENT_SELECT =
@@ -212,6 +213,77 @@ async function eventsPage(
     // Set even if the nextLink can't be followed: the list is still incomplete.
     truncated: Boolean(nextLink),
     ...(nextPageToken ? { nextPageToken } : {}),
+  };
+}
+
+export interface GetEventInput {
+  id: string;
+  /** IANA zone for the returned times. */
+  timeZone: string;
+  /** The event's calendar, when it isn't the default one. */
+  calendarId?: string;
+  /** Most body characters to return (default: as for get_message). */
+  maxChars?: number;
+  /** Where in the (converted) body to start, to read past a previous cut. */
+  startChar?: number;
+}
+
+export interface EventAttendee {
+  name?: string;
+  address?: string;
+  /** required | optional | resource */
+  type: string | null;
+  /** none | organizer | tentativelyAccepted | accepted | declined | notResponded */
+  response: string | null;
+}
+
+export interface EventDetail extends EventSummary {
+  /** The notes, as plain text, capped like an email body (see `sliceBody`). */
+  body: MessageBody;
+  attendees: EventAttendee[];
+  isReminderOn: boolean | null;
+  reminderMinutesBeforeStart: number | null;
+  /** Graph's `patternedRecurrence` ({ pattern, range }); only a series master has one. */
+  recurrence: Record<string, unknown> | null;
+}
+
+interface GraphAttendee {
+  type?: string;
+  status?: { response?: string };
+  emailAddress?: { name?: string; address?: string };
+}
+
+/**
+ * Read one event in full (#50): its notes (HTML converted to text and capped,
+ * like get_message), attendees, reminder and recurrence, with times rendered in
+ * `timeZone`. An occurrence has no recurrence of its own: its series master
+ * (`seriesMasterId`) does.
+ */
+export async function getEvent(graph: GraphClient, input: GetEventInput): Promise<EventDetail> {
+  assertValidTimeZone(input.timeZone);
+  const e = await graph.get<GraphEvent & { recurrence?: Record<string, unknown> | null }>(
+    calendarPath(input.calendarId, `events/${encodeURIComponent(input.id)}`),
+    {
+      query: {
+        $select: `${EVENT_SELECT},body,attendees,isReminderOn,reminderMinutesBeforeStart,recurrence`,
+      },
+      headers: { prefer: preferTimeZoneHeader(input.timeZone) },
+    },
+  );
+  const raw = e.body?.content ?? "";
+  const text = e.body?.contentType?.toLowerCase() === "html" ? htmlToText(raw) : raw;
+  return {
+    ...shapeEvent(e),
+    body: sliceBody(text, "text", input.maxChars, input.startChar),
+    attendees: ((e.attendees ?? []) as GraphAttendee[]).map((a) => ({
+      name: a.emailAddress?.name,
+      address: a.emailAddress?.address,
+      type: a.type ?? null,
+      response: a.status?.response ?? null,
+    })),
+    isReminderOn: e.isReminderOn ?? null,
+    reminderMinutesBeforeStart: e.reminderMinutesBeforeStart ?? null,
+    recurrence: e.recurrence ?? null,
   };
 }
 

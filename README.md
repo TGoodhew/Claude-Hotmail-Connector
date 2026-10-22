@@ -39,6 +39,7 @@ phase ([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58)).
 | `get_message`    | Read one email as text                              | `Mail.Read`           |
 | `list_calendars` | List your calendars (own and shared)                | `Calendars.Read`      |
 | `list_events`    | Read the calendar over a date range                 | `Calendars.Read`      |
+| `get_event`      | Read one event in full (notes, attendees, pattern)  | `Calendars.Read`      |
 | `create_event`   | Add a calendar event (timezone-correct, idempotent) | `Calendars.ReadWrite` |
 | `update_event`   | Edit a calendar event (destructive: overwrites)     | `Calendars.ReadWrite` |
 | `cancel_event`   | Delete an event, guarded (see below)                | `Calendars.ReadWrite` |

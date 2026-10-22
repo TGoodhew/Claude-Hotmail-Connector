@@ -222,6 +222,16 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - `calendarId` is accepted by `list_events`, `create_event`, `update_event` and `cancel_event`. It goes in
   the path (`/me/calendars/{id}/…`), never in a write payload. Read-only. `Calendars.Read`.
 
+### 7.4b `get_event` — read one event in full
+- **Graph:** `GET /me/events/{id}` (or `/me/calendars/{calendarId}/events/{id}`) with `Prefer: outlook.timezone`.
+- **Inputs:** `id` (required), `timeZone?`, `calendarId?`, and `maxChars?` / `startChar?` for the notes (as §7.3).
+- **Output:** everything `list_events` gives, plus the notes as plain text (HTML converted, capped and
+  resumable like an email body, §7.3), `attendees` (name, address, type, response), `isReminderOn`,
+  `reminderMinutesBeforeStart` and `recurrence` (Graph's `patternedRecurrence`; only a series master has
+  one, so an occurrence points at it through `seriesMasterId`) *(#50)*.
+- The result carries the untrusted-content notice (T12), and the summary line holds none of the event's
+  text. Read-only. `Calendars.Read`.
+
 ### 7.5 `create_event` — write calendar
 - **Graph:** `POST /me/events` → `201 Created` (or `POST /me/calendars/{calendarId}/events`).
 - **Inputs:** `subject`; `start` / `end` as `{ dateTime, timeZone }`, where `dateTime` is **local wall-clock,
@@ -272,7 +282,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Same attendee prohibition for the payload as §7.5. `Calendars.ReadWrite`.
 
 ### 7.7 Planned read tools (optional)
-`get_event` (#50), all-day / recurring creation (#51), free/busy lookup (#52), mail folder awareness with
+All-day / recurring creation (#51), free/busy lookup (#52), mail folder awareness with
 Junk/Deleted excluded by default (#53), attachment text (#54).
 
 ### 7.8 `cancel_event` — guarded soft delete
@@ -419,7 +429,7 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | T9 | **Hostile launch environment.** A repo's `.env` swaps the client id, tenant, cache dir or scopes. | `.env` is read only from the checkout root, never the CWD (§8.4). Scope override can only narrow (§6). | ✅ #41, #70 |
 | T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; *→ #83* |
 | T11 | **Interference with the loopback sign-in.** A stray or hostile local request hits the redirect port. | Random `state`, checked in constant time. Mismatched requests get a 400 and neither abort nor complete the sign-in (§8.2). | ✅ #41 |
-| T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message`, `list_events` and `list_calendars` descriptions repeat it. Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
+| T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message`, `list_events`, `get_event` and `list_calendars` descriptions repeat it. Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
 
 **Rules (normative)**
 1. All mail and calendar content returned by tools is **untrusted data**, never instructions.
