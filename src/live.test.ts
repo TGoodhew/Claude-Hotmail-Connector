@@ -43,8 +43,8 @@ const TEST_WINDOW = {
 };
 
 /** A listing that hit its limit may have left the test event out: say so. */
-function warnIfCapped(count: number, subject: string): void {
-  if (count >= TEST_WINDOW.limit) {
+function warnIfCapped(truncated: boolean, subject: string): void {
+  if (truncated) {
     console.warn(`[live] The calendar listing hit its limit; check for "${subject}" by hand.`);
   }
 }
@@ -104,8 +104,8 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
         // The wall-clock time is preserved, not shifted to UTC. The create
         // response's zone isn't requested, so this is checked through a listing
         // rendered in Sydney time.
-        const listed = await listEvents(g, { ...TEST_WINDOW, timeZone });
-        warnIfCapped(listed.length, subject);
+        const { events: listed, truncated } = await listEvents(g, { ...TEST_WINDOW, timeZone });
+        warnIfCapped(truncated, subject);
         const found = listed.find((e) => e.id === first.id);
         expect(found?.start?.dateTime?.startsWith("2031-01-15T09:30")).toBe(true);
         expect(found?.end?.dateTime?.startsWith("2031-01-15T10:15")).toBe(true);
@@ -134,8 +134,8 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
             ...TEST_WINDOW,
             timeZone,
           });
-          warnIfCapped(day.length, subject);
-          for (const e of day) if (e.subject === subject) ids.add(e.id);
+          warnIfCapped(day.truncated, subject);
+          for (const e of day.events) if (e.subject === subject) ids.add(e.id);
         } catch (e) {
           console.warn(`[live] Couldn't look for test events; check for "${subject}".`, e);
         }

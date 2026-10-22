@@ -13,10 +13,11 @@ type PostMock = (path: string, body: unknown, opts?: unknown) => Promise<unknown
 type PatchMock = (path: string, body: unknown, opts?: unknown) => Promise<unknown>;
 
 describe("create_event tool", () => {
-  it("registers four calendar tools and marks writes non-read-only + idempotent", () => {
+  it("registers five calendar tools and marks writes non-read-only + idempotent", () => {
     expect(calendarTools.map((t) => t.name).sort()).toEqual([
       "cancel_event",
       "create_event",
+      "list_calendars",
       "list_events",
       "update_event",
     ]);
