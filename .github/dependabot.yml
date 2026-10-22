@@ -12,6 +12,11 @@ updates:
     cooldown:
       default-days: 14
     open-pull-requests-limit: 5
+    ignore:
+      # typescript-eslint (our type-aware lint) supports TypeScript only up to 6.0:
+      # TypeScript 7 can't be installed alongside it yet (#106, #144).
+      - dependency-name: typescript
+        versions: [">=7.0.0"]
     groups:
       # Batch tooling (lint/format/test/build) into one PR; runtime deps stay separate.
       dev-tooling:
