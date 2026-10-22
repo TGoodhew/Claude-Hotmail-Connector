@@ -83,9 +83,11 @@ export function createMcpServer(
           // at its start (a follow-up after a sign-out stops instead of signing
           // in again), the client's cancellation, and one overall deadline.
           // Sign-outs in other processes are caught up on first (#95).
-          await ctx.auth?.syncSignOuts?.();
+          const signOutEpoch = ctx.auth?.syncSignOuts
+            ? await ctx.auth.syncSignOuts()
+            : ctx.auth?.signOutEpoch?.();
           const graph = scopeToOperation(ctx.graph, {
-            signOutEpoch: ctx.auth?.signOutEpoch?.(),
+            signOutEpoch,
             signal: extra?.signal,
             deadline: Date.now() + TOOL_CALL_DEADLINE_MS,
           });

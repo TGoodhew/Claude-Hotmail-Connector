@@ -18,7 +18,11 @@ import {
   toTokenSet,
   type TokenResponse,
 } from "./microsoft.js";
-import { createFileCoordinator } from "./coordination.js";
+import {
+  createFileCoordinator,
+  createMemoryCoordinator,
+  type AuthCoordinator,
+} from "./coordination.js";
 import type { TokenSet, TokenStore } from "./tokens.js";
 
 describe("launcherSucceeded (browser launcher exit status)", () => {
@@ -1401,13 +1405,115 @@ describe("sign-in and sign-out across processes (#95)", () => {
     // A standalone lookup, and an operation whose epoch is noted after syncing.
     expect(await server.auth.getAccessToken({ interactive: false })).toBe("NEW");
     await cli.auth.signOut();
-    await server.auth.syncSignOuts();
-    const epoch = server.auth.signOutEpoch();
+    const epoch = await server.auth.syncSignOuts();
     const result = await outcome(
       server.auth.getAccessToken({ interactive: false, signOutEpoch: epoch }),
     );
     // Just "not signed in": the operation began after the sign-out it saw.
     expect(!result.ok && result.error).toBeInstanceOf(AuthError);
     expect(!result.ok && result.error).not.toBeInstanceOf(SignedOutError);
+  });
+
+  it("credentials found by the fallback's second read, across a sign-out elsewhere, aren't used (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const valid = {
+      accessToken: "PRE-LOGOUT",
+      refreshToken: "RT2",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    };
+    let loads = 0;
+    let reading = false;
+    let finishRead = (): void => undefined;
+    const store: TokenStore = {
+      async load() {
+        loads += 1;
+        if (loads === 1) return { ...valid, accessToken: "OLD", expiresAt: 500 }; // expired
+        const read = valid; // read before the logout…
+        reading = true;
+        await new Promise<void>((r) => (finishRead = r)); // …returned after it
+        return read;
+      },
+      save: async () => undefined,
+      clear: async () => undefined,
+    };
+    const server = processWith(store, dir, () => jsonResponse({ error: "invalid_grant" }, 400));
+    const cli = processWith(memoryStore(null), dir, reply("UNUSED"));
+
+    const lookup = outcome(server.auth.getAccessToken({ interactiveWaitMs: 1_000 }));
+    await until(() => reading); // the refresh failed; the fallback reads the cache again
+    await cli.auth.signOut();
+    finishRead();
+
+    const result = await lookup;
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(server.authorizeUrl()).toBe("");
+  });
+});
+
+describe("sign-out during the start of an operation (Copilot review on #126)", () => {
+  it("a sign-in immediately followed by a sign-out doesn't go on to sign in", async () => {
+    const openBrowser = vi.fn(async () => undefined);
+    const store = memoryStore(null);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ access_token: "AT", refresh_token: "RT", expires_in: 3600 }),
+      ) as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    const signIn = auth.signIn().then(
+      () => new Error("expected the sign-in to stop"),
+      (e: unknown) => e as Error,
+    );
+    await auth.signOut();
+    expect(await signIn).toBeInstanceOf(SignedOutError);
+    expect(openBrowser).not.toHaveBeenCalled();
+    expect(store.current).toBeNull();
+  });
+
+  it("an operation whose catch-up spans a local sign-out keeps the earlier epoch, so it stops", async () => {
+    const inner = createMemoryCoordinator();
+    let releaseSnapshot = (): void => undefined;
+    let gated = true;
+    const coordinator: AuthCoordinator = {
+      async snapshot() {
+        const state = await inner.snapshot();
+        if (gated) {
+          gated = false;
+          await new Promise<void>((r) => (releaseSnapshot = r)); // a slow catch-up
+        }
+        return state;
+      },
+      withLock: (fn) => inner.withLock(fn),
+    };
+    const openBrowser = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore({
+        accessToken: "AT",
+        refreshToken: "RT",
+        expiresAt: 10_000_000,
+        scopes: config.scopes,
+      }),
+      coordinator,
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ access_token: "AT", refresh_token: "RT", expires_in: 3600 }),
+      ) as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+
+    const starting = auth.syncSignOuts(); // a tool call starts…
+    await auth.signOut(); // …the user signs out meanwhile…
+    releaseSnapshot();
+    const epoch = await starting;
+    expect(epoch).not.toBe(auth.signOutEpoch()); // …so the call belongs to before it
+    await expect(auth.getAccessToken({ signOutEpoch: epoch })).rejects.toBeInstanceOf(
+      SignedOutError,
+    );
+    expect(openBrowser).not.toHaveBeenCalled();
   });
 });

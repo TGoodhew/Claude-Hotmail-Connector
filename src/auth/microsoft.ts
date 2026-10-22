@@ -228,11 +228,12 @@ export interface MicrosoftAuth {
   /** Current sign-out epoch: note it when an operation starts (see `signOutEpoch` above). */
   signOutEpoch(): number;
   /**
-   * Catch up with sign-outs in other processes (#95), so an epoch noted next
-   * reflects them: call before noting one. A sign-out elsewhere that is first
-   * seen later ends the operations of the epochs before it.
+   * Catch up with sign-outs in other processes (#95) and return the epoch for
+   * an operation starting now: use it rather than `signOutEpoch()`. A sign-out
+   * elsewhere that is first seen later ends the operations of the epochs
+   * before it; a local sign-out during the catch-up ends this one.
    */
-  syncSignOuts(): Promise<void>;
+  syncSignOuts(): Promise<number>;
 }
 
 export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
@@ -775,6 +776,9 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       // the normal threshold. The 401-recovery path forces a refresh with a huge
       // minTtlMs, which no fresh token could otherwise satisfy.
       const latest = await store.load().catch(() => null);
+      // This read may also have raced a sign-out elsewhere: catch up again
+      // before using what it found (or this process's own latest sign-in).
+      await sharedState();
       ensureNotSignedOut();
       if (latest) {
         const isNew = latest.accessToken !== cached?.accessToken;
@@ -796,8 +800,11 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
 
     async signIn(): Promise<TokenSet> {
       // Catch up first, so this belongs to the current epoch and doesn't join a
-      // pending sign-in that a sign-out elsewhere has made useless.
+      // pending sign-in that a sign-out elsewhere has made useless. A local
+      // sign-out during the catch-up came after this call, so it ends it.
+      const local = localSignOuts;
       await sharedState();
+      if (localSignOuts !== local) throw new SignedOutError();
       return signInAndSave();
     },
 
@@ -837,8 +844,14 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       return signOuts;
     },
 
-    async syncSignOuts(): Promise<void> {
+    async syncSignOuts(): Promise<number> {
+      const epoch = signOuts;
+      const local = localSignOuts;
       await sharedState();
+      // Sign-outs elsewhere seen by the catch-up came before the operation; a
+      // local one during it came after, so the operation keeps the earlier epoch
+      // and stops.
+      return localSignOuts === local ? signOuts : epoch;
     },
 
     async getAccount(): Promise<string | undefined> {

@@ -231,7 +231,7 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
 
   /** The sign-out epoch for an operation starting now, sign-outs elsewhere included (#95). */
   async function currentEpoch(): Promise<number | undefined> {
-    if (deps.auth.syncSignOuts) await deps.auth.syncSignOuts();
+    if (deps.auth.syncSignOuts) return deps.auth.syncSignOuts();
     return deps.auth.signOutEpoch?.();
   }
 

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -15,8 +15,10 @@ import { AuthError } from "../util/errors.js";
 import {
   createFileCoordinator,
   createMemoryCoordinator,
+  osLockName,
   removeIfUnchanged,
   type AuthCoordinator,
+  type FileCoordinatorOptions,
 } from "./coordination.js";
 
 const dirs: string[] = [];
@@ -29,8 +31,8 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-/** Run two overlapping locked sections and record whether they ever overlapped. */
-async function overlapCheck(a: AuthCoordinator, b: AuthCoordinator): Promise<boolean> {
+/** Run overlapping locked sections and record whether any two ever overlapped. */
+async function overlapCheck(...cs: AuthCoordinator[]): Promise<boolean> {
   let active = 0;
   let overlapped = false;
   const section = (c: AuthCoordinator) =>
@@ -41,7 +43,7 @@ async function overlapCheck(a: AuthCoordinator, b: AuthCoordinator): Promise<boo
       active -= 1;
       return { value: undefined, next: { ...s, signIns: s.signIns + 1 } };
     });
-  await Promise.all([section(a), section(b), section(a), section(b)]);
+  await Promise.all([...cs, ...cs].map(section));
   return overlapped;
 }
 
@@ -59,7 +61,7 @@ describe("createFileCoordinator (#95)", () => {
     // Two coordinators on one directory stand in for two processes.
     expect(await overlapCheck(createFileCoordinator(dir), createFileCoordinator(dir))).toBe(false);
     expect(await createFileCoordinator(dir).snapshot()).toEqual({ signOuts: 0, signIns: 4 });
-    expect(existsSync(join(dir, "auth.lock"))).toBe(false); // released
+    expect(existsSync(join(dir, "auth.lock"))).toBe(false); // released (or never a file)
   });
 
   it("keeps the counters across processes, and starts from zero without a state file", async () => {
@@ -84,13 +86,97 @@ describe("createFileCoordinator (#95)", () => {
     });
   });
 
+  it("releases the lock when the locked section throws, and stores nothing", async () => {
+    const dir = tempDir();
+    const c = createFileCoordinator(dir);
+    await expect(
+      c.withLock(async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    expect(await c.withLock(async () => ({ value: "free again" }))).toBe("free again");
+    expect(await c.snapshot()).toEqual({ signOuts: 0, signIns: 0 });
+  });
+});
+
+describe("osLockName (Copilot review on #126)", () => {
+  it("names a per-directory pipe on Windows and an abstract socket on Linux, nothing elsewhere", () => {
+    const win = osLockName("C:\\Users\\A\\cache", "win32")!;
+    expect(win).toMatch(/^\\\\\.\\pipe\\claude-hotmail-connector-auth-[0-9a-f]{32}$/);
+    expect(osLockName("c:\\users\\a\\CACHE", "win32")).toBe(win); // paths ignore case there
+    expect(osLockName("C:\\Users\\B\\cache", "win32")).not.toBe(win);
+    const linux = osLockName("/home/a/cache", "linux")!;
+    expect(linux.charCodeAt(0)).toBe(0); // abstract: no file to leave behind
+    expect(linux.slice(1)).toMatch(/^claude-hotmail-connector-auth-[0-9a-f]{32}$/);
+    expect(osLockName("/Users/a/cache", "darwin")).toBeNull();
+  });
+});
+
+const name = osLockName(tmpdir());
+describe.skipIf(name === null)("the OS-held lock (Windows, Linux; Copilot review on #126)", () => {
+  /** Another process holding the lock for `dir` until it is killed. */
+  async function holderProcess(dir: string) {
+    const script =
+      'require("net").createServer().listen(process.argv[1], () => console.log("held"));' +
+      "setInterval(() => {}, 1000);";
+    const child = spawn(process.execPath, ["-e", script, osLockName(dir)!], {
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    await new Promise((r) => child.stdout.once("data", r));
+    return child;
+  }
+
+  it("uses no lock file", async () => {
+    const dir = tempDir();
+    await createFileCoordinator(dir).withLock(async () => {
+      expect(readdirSync(dir)).toEqual([]);
+      return { value: undefined };
+    });
+  });
+
+  it("waits for another process holding it, and has it once that process dies", async () => {
+    const dir = tempDir();
+    const child = await holderProcess(dir);
+    try {
+      const c = createFileCoordinator(dir, { lockTimeoutMs: 100 });
+      await expect(c.withLock(async () => ({ value: 1 }))).rejects.toBeInstanceOf(AuthError);
+    } finally {
+      child.kill("SIGKILL"); // a crash: nothing is cleaned up
+      await new Promise((r) => child.once("exit", r));
+    }
+    // The OS let go of it with the process.
+    const c = createFileCoordinator(dir, { lockTimeoutMs: 2_000 });
+    expect(await c.withLock(async () => ({ value: "ran" }))).toBe("ran");
+  });
+
+  it("excludes many waiters at once", async () => {
+    const dir = tempDir();
+    const cs = Array.from({ length: 4 }, () => createFileCoordinator(dir));
+    expect(await overlapCheck(...cs)).toBe(false);
+  });
+});
+
+// The lock file is used only where there's no OS-held lock (macOS). Windows
+// renames through file handles, so two waiters can both "move aside" one file
+// there, which is one reason Windows uses the OS-held lock instead: these
+// tests of the file protocol run elsewhere.
+describe.skipIf(process.platform === "win32")("the lock file (#95)", () => {
+  const file = (dir: string, o: FileCoordinatorOptions = {}) =>
+    createFileCoordinator(dir, { ...o, mechanism: "file" });
+
+  it("excludes two processes from the locked section at once", async () => {
+    const dir = tempDir();
+    expect(await overlapCheck(file(dir), file(dir))).toBe(false);
+    expect(existsSync(join(dir, "auth.lock"))).toBe(false); // released
+  });
+
   it("breaks a lock left by a process that died holding it", async () => {
     const dir = tempDir();
     const lock = join(dir, "auth.lock");
     writeFileSync(lock, "dead-process");
     const old = new Date(Date.now() - 60_000);
     utimesSync(lock, old, old);
-    const value = await createFileCoordinator(dir, { staleLockMs: 30_000 }).withLock(async () => ({
+    const value = await file(dir, { staleLockMs: 30_000 }).withLock(async () => ({
       value: "ran",
     }));
     expect(value).toBe("ran");
@@ -100,7 +186,7 @@ describe("createFileCoordinator (#95)", () => {
   it("gives up on a live lock after the timeout, with an AuthError", async () => {
     const dir = tempDir();
     writeFileSync(join(dir, "auth.lock"), "busy-process"); // fresh: not stale
-    const c = createFileCoordinator(dir, { lockTimeoutMs: 60 });
+    const c = file(dir, { lockTimeoutMs: 60 });
     await expect(c.withLock(async () => ({ value: 1 }))).rejects.toBeInstanceOf(AuthError);
     expect(readFileSync(join(dir, "auth.lock"), "utf8")).toBe("busy-process"); // left alone
   });
@@ -108,7 +194,7 @@ describe("createFileCoordinator (#95)", () => {
   it("doesn't remove a lock that another process has taken since", async () => {
     const dir = tempDir();
     const lock = join(dir, "auth.lock");
-    await createFileCoordinator(dir).withLock(async () => {
+    await file(dir).withLock(async () => {
       // Our lock was broken as stale and someone else holds the file now.
       writeFileSync(lock, "someone-else");
       return { value: undefined };
@@ -120,7 +206,7 @@ describe("createFileCoordinator (#95)", () => {
     const dir = tempDir();
     const exited = spawnSync(process.execPath, ["-e", ""]).pid!; // a process id no longer running
     writeFileSync(join(dir, "auth.lock"), `${exited}-deadbeef`);
-    const c = createFileCoordinator(dir, { lockTimeoutMs: 2_000 });
+    const c = file(dir, { lockTimeoutMs: 2_000 });
     expect(await c.withLock(async () => ({ value: "ran" }))).toBe("ran");
   });
 
@@ -129,28 +215,15 @@ describe("createFileCoordinator (#95)", () => {
     const exited = spawnSync(process.execPath, ["-e", ""]).pid!;
     writeFileSync(join(dir, "auth.lock"), `${exited}-deadbeef`);
     // Several "processes" all find the dead holder's lock at once.
-    const coordinators = Array.from({ length: 4 }, () => createFileCoordinator(dir));
-    let active = 0;
-    let overlapped = false;
-    await Promise.all(
-      coordinators.map((c) =>
-        c.withLock(async () => {
-          active += 1;
-          if (active > 1) overlapped = true;
-          await new Promise((r) => setTimeout(r, 15));
-          active -= 1;
-          return { value: undefined };
-        }),
-      ),
-    );
-    expect(overlapped).toBe(false);
+    const cs = Array.from({ length: 4 }, () => file(dir));
+    expect(await overlapCheck(...cs)).toBe(false);
     expect(existsSync(join(dir, "auth.lock.reap"))).toBe(false);
   });
 
   it("doesn't break a lock whose holder is still running, however long it waits", async () => {
     const dir = tempDir();
     writeFileSync(join(dir, "auth.lock"), `${process.pid}-other-instance`); // this process: alive
-    const c = createFileCoordinator(dir, { lockTimeoutMs: 80 });
+    const c = file(dir, { lockTimeoutMs: 80 });
     await expect(c.withLock(async () => ({ value: 1 }))).rejects.toBeInstanceOf(AuthError);
     expect(readFileSync(join(dir, "auth.lock"), "utf8")).toBe(`${process.pid}-other-instance`);
   });
@@ -161,7 +234,7 @@ describe("createFileCoordinator (#95)", () => {
     writeFileSync(lock, `${process.ppid}-paused-holder`); // another process, still running
     const old = new Date(Date.now() - 60 * 60_000);
     utimesSync(lock, old, old);
-    const c = createFileCoordinator(dir, { lockTimeoutMs: 80, staleLockMs: 1_000 });
+    const c = file(dir, { lockTimeoutMs: 80, staleLockMs: 1_000 });
     await expect(c.withLock(async () => ({ value: 1 }))).rejects.toBeInstanceOf(AuthError);
     expect(readFileSync(lock, "utf8")).toBe(`${process.ppid}-paused-holder`);
   });
@@ -171,33 +244,10 @@ describe("createFileCoordinator (#95)", () => {
     const exited = spawnSync(process.execPath, ["-e", ""]).pid!;
     writeFileSync(join(dir, "auth.lock"), `${exited}-holder`);
     writeFileSync(join(dir, "auth.lock.reap"), `${exited}-reaper`);
-    const coordinators = Array.from({ length: 4 }, () => createFileCoordinator(dir));
-    let active = 0;
-    let overlapped = false;
-    await Promise.all(
-      coordinators.map((c) =>
-        c.withLock(async () => {
-          active += 1;
-          if (active > 1) overlapped = true;
-          await new Promise((r) => setTimeout(r, 15));
-          active -= 1;
-          return { value: undefined };
-        }),
-      ),
-    );
-    expect(overlapped).toBe(false);
-    expect(readdirSync(dir)).toEqual([]); // lock, guard and set-aside files all gone
-  });
-  it("releases the lock when the locked section throws, and stores nothing", async () => {
-    const dir = tempDir();
-    const c = createFileCoordinator(dir);
-    await expect(
-      c.withLock(async () => {
-        throw new Error("boom");
-      }),
-    ).rejects.toThrow("boom");
-    expect(existsSync(join(dir, "auth.lock"))).toBe(false);
-    expect(await c.snapshot()).toEqual({ signOuts: 0, signIns: 0 });
+    const cs = Array.from({ length: 4 }, () => file(dir));
+    expect(await overlapCheck(...cs)).toBe(false);
+    // Lock, guard and set-aside files are all gone; only the counters remain.
+    expect(readdirSync(dir)).toEqual(["auth-state.json"]);
   });
 });
 

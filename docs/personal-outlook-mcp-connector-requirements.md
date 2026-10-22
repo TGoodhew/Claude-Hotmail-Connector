@@ -167,11 +167,14 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   - A process that sees another's sign-out treats it as its own. Its pending sign-in and refresh are
     dropped, and operations from before it stop. Each tool call catches up first, so a call that
     starts after a sign-out elsewhere isn't stopped by it.
-  - A lock is broken only once the process holding it has exited. A running holder keeps it
-    however long it takes, for example across sleep. Locks and reaper guards are removed only if
-    they still hold what was judged stale: the file is moved aside, checked, and put back if it
-    changed. Known limit: if a dead holder's process id has been reused, waiters time out until
-    that process exits.
+  - On Windows and Linux the lock is held by the OS: a named pipe, or an abstract Unix socket,
+    named after the cache directory. Only one process can listen on it, and the OS lets go when
+    the holder exits, even if it crashes. There is nothing stale to clean up, and a paused holder,
+    for example across sleep, keeps it.
+  - Elsewhere (macOS) it is an `auth.lock` file. A lock file is broken only once its holder's
+    process has exited, and it is removed only if it still holds what was judged stale.
+  - Known limits of the lock file: a reused process id makes waiters time out until that process
+    exits. A narrow race remains in recovering from a reaper that crashed (#131).
 - Annotations: `destructiveHint: true` (local data), `idempotentHint: true`, `openWorldHint: false`.
   The description says to call it only when the user asks. Misuse only means signing in again.
 

@@ -132,7 +132,7 @@ describe("tool calls are bound to one sign-out epoch", () => {
       signOut: async () => undefined,
       signOutEpoch: () => epoch,
       // A sign-out elsewhere, first seen now: it comes before this call.
-      syncSignOuts: vi.fn(async () => void (epoch = 4)),
+      syncSignOuts: vi.fn(async () => (epoch = 4)),
     };
     const server = createMcpServer({ graph, config, auth }, [oneRequest]);
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
