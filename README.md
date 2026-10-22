@@ -37,6 +37,7 @@ phase ([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58)).
 | `whoami`            | Confirm the connected account                       | `User.Read`           |
 | `list_messages`     | Search/list mail (find booking confirmations)       | `Mail.Read`           |
 | `get_message`       | Read one email as text                              | `Mail.Read`           |
+| `get_attachment`    | Read a text, HTML or calendar (.ics) attachment     | `Mail.Read`           |
 | `list_mail_folders` | List mail folders                                   | `Mail.Read`           |
 | `list_calendars`    | List your calendars (own and shared)                | `Calendars.Read`      |
 | `list_events`       | Read the calendar over a date range                 | `Calendars.Read`      |

@@ -229,9 +229,10 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - **Graph:** `GET /me/messages/{id}` (+ `/attachments` metadata when `hasAttachments`).
 - **Inputs:** `id` (required), `format?` (`text` | `html`, default `text`; HTML → plain text server-side).
 - **Output:** subject, from, receivedDateTime, webLink, body (in the **actual** content type),
-  attachment metadata (name, contentType, size, isInline), and the message's folder (`folderId`,
+  attachment metadata (id, name, contentType, size, isInline), and the message's folder (`folderId`,
   `folder`, as in §7.2). A message in Junk Email is flagged in the summary line, since the folder is the
-  connector's own finding, not message text *(#53)*. No attachment content (#54).
+  connector's own finding, not message text *(#53)*. Attachment content is read with
+  `get_attachment` (§7.3b).
 - Bodies MUST be size-capped, with a `truncated` flag *(→ #38)*. HTML-to-text MUST tolerate malformed
   entities *(→ #32)*.
 - Read-only. `Mail.Read`.
@@ -241,6 +242,28 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - **Output per folder:** `id`, `name`, `wellKnownName`, `parentFolderId`, `childFolderCount`,
   `unreadItemCount`, `totalItemCount`. Folder names are user text, so the result carries the
   untrusted-content notice (T12) *(#53)*. Read-only. `Mail.Read`.
+### 7.3b `get_attachment` — read an attachment as text *(#54)*
+- **Graph:** `GET /me/messages/{id}/attachments/{attachmentId}`, first with `$select` (no content) so
+  the type and size are checked before anything is downloaded, then in full for `contentBytes`.
+- **Inputs:** `messageId`, `attachmentId` (from `get_message`), `maxChars?` / `startChar?` (as §7.3).
+- **What it reads** (by content type; by file name only when the type is missing or
+  `application/octet-stream`, so a declared type always wins):
+  - text (`text/*`, JSON, XML; `.txt`, `.csv`, `.md` …), returned as text, cut like a message body;
+  - HTML, converted to text the same way as message bodies;
+  - calendar files (`text/calendar`, `.ics`), parsed into events: summary, start, end (or duration),
+    location, description, status, the RRULE as written (not expanded), and the calendar's `METHOD`
+    (e.g. `REQUEST`, `CANCEL`). Times stay as the file gives them, each with its zone: `UTC`, the
+    file's `TZID`, or null for a date or a floating time. At most 50 events, text fields cut at 4,000
+    characters. The parser is strict: lines it doesn't understand, impossible dates (e.g. 30 February)
+    and stray `END` lines are skipped, never guessed at.
+- **Refused, with a clear message:** PDFs (for now: #150), images and any other binary; attached items
+  and links (not files); text that turns out to hold NUL bytes; anything over **1 MB**, by Graph's
+  size before downloading and by the bytes that arrive. Arbitrary binary is never returned.
+- Text is decoded by the declared charset, else UTF-8, else Windows-1252.
+- Refusals are fixed wording: they never repeat the attachment's name or type, which the sender
+  controls, because an error isn't marked untrusted the way a result is (T12).
+- The content is third-party data: marked untrusted, kept out of the summary line (§9.2, T12).
+- Read-only. `Mail.Read`.
 
 ### 7.4 `list_events` — read calendar
 - **Graph:** `GET /me/calendarView?startDateTime=…&endDateTime=…`, or
@@ -353,7 +376,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Same attendee prohibition for the payload as §7.5. `Calendars.ReadWrite`.
 
 ### 7.7 Planned read tools (optional)
-Free/busy lookup (#52), attachment text (#54).
+Free/busy lookup (#52). Attachment text is §7.3b (#54).
 
 ### 7.8 `cancel_event` — guarded soft delete
 Approved by the owner with guards (#55).
@@ -506,7 +529,7 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | The user, and Claude acting on their request | Yes | Confirms writes (§7.5–§7.8). |
 | MCP client ↔ server (stdio subprocess) | Yes | No network surface (§9.1). |
 | Microsoft Graph / Entra | Yes (TLS) | Tokens are sent only to these origins. |
-| **Email content** (subject, body, sender display name, attachment names) | **No** | Anyone can email the user. |
+| **Email content** (subject, body, sender display name, attachment names and content) | **No** | Anyone can email the user. |
 | **Calendar content created by others** (invites: titles, bodies, locations) | **No** | Invites land on the calendar without the user acting. |
 | Files in the launch directory (e.g. a project `.env`) | No | Claude Code launches servers in project folders. |
 | Other processes running as the same OS user | Out of scope | Can read anything the user can (see residual risks). |
@@ -526,7 +549,7 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | T9 | **Hostile launch environment.** A repo's `.env` swaps the client id, tenant, cache dir or scopes. | `.env` is read only from the checkout root, never the CWD (§8.4). Scope override can only narrow (§6). | ✅ #41, #70 |
 | T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; *→ #83* |
 | T11 | **Interference with the loopback sign-in.** A stray or hostile local request hits the redirect port. | Random `state`, checked in constant time. Mismatched requests get a 400 and neither abort nor complete the sign-in (§8.2). | ✅ #41 |
-| T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message`, `list_mail_folders`, `list_events`, `get_event` and `list_calendars` descriptions repeat it, and mail in Junk Email is left out of listings by default and flagged when read (#53). Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
+| T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message`, `get_attachment`, `list_mail_folders`, `list_events`, `get_event` and `list_calendars` descriptions repeat it, and mail in Junk Email is left out of listings by default and flagged when read (#53). Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
 
 **Rules (normative)**
 1. All mail and calendar content returned by tools is **untrusted data**, never instructions.

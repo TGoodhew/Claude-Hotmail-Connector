@@ -30,6 +30,7 @@ describe("toolsForScopes", () => {
   it("drops the calendar write tools when narrowed to Calendars.Read", () => {
     expect(names(["openid", "offline_access", "User.Read", "Mail.Read", "Calendars.Read"])).toEqual(
       [
+        "get_attachment",
         "get_event",
         "get_message",
         "list_calendars",
@@ -68,6 +69,7 @@ describe("toolsForScopes", () => {
 const EXPECTED_TOOLS = [
   "cancel_event",
   "create_event",
+  "get_attachment",
   "get_event",
   "get_message",
   "list_calendars",
@@ -238,7 +240,7 @@ describe("tool calls are bound to one sign-out epoch", () => {
 });
 
 describe("createMcpServer (in-memory transport)", () => {
-  it("advertises all eleven tools with input schemas", async () => {
+  it("advertises all twelve tools with input schemas", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createMcpServer(testCtx());
     await server.connect(serverTransport);
@@ -336,7 +338,7 @@ function stringEnv(): Record<string, string> {
 
 describe("built server subprocess", () => {
   it.runIf(existsSync(distPath))(
-    "lists all eleven tools over a real stdio handshake",
+    "lists all twelve tools over a real stdio handshake",
     async () => {
       const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
       const transport = new StdioClientTransport({
