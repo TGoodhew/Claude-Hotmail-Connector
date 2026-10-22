@@ -455,11 +455,13 @@ export function buildRecurrence(r: RecurrenceInput, start: GraphDateTime): Recor
  * ("2026-07-20") means that midnight; a time must be midnight already.
  */
 function allDayTime(t: EventDateTime, side: "start" | "end"): GraphDateTime {
-  const local = /^\d{4}-\d{2}-\d{2}$/.test(t.dateTime.trim())
-    ? `${t.dateTime.trim()}T00:00:00`
-    : t.dateTime;
+  const raw = t.dateTime.trim();
+  const local = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00:00` : raw;
   const g = toGraphDateTime(local, t.timeZone);
-  if (!g.dateTime.endsWith("T00:00:00")) {
+  // The conversion drops a fraction of a second, so check for one here: only
+  // an all-zero fraction is still midnight (Copilot review on #134).
+  const fraction = /\.(\d+)$/.exec(raw)?.[1] ?? "";
+  if (!g.dateTime.endsWith("T00:00:00") || /[1-9]/.test(fraction)) {
     throw new ValidationError(
       `An all-day event's ${side} must be a date ("YYYY-MM-DD") or midnight; got ` +
         `"${t.dateTime}". Nothing was created.`,
@@ -542,17 +544,22 @@ export function assertWritableEventPayload(payload: Record<string, unknown>): vo
  * creating a duplicate — which is what `idempotentHint: true` promises the
  * client. An explicit `input.transactionId` always takes precedence.
  */
-function deterministicTransactionId(input: CreateEventInput): string {
+function deterministicTransactionId(input: CreateEventInput, written: WrittenTimes): string {
+  // A plain event keys on its times as given, as it always has. An all-day
+  // event keys on the midnights written, and a series on the recurrence as
+  // written (fields its type ignores are dropped), so equivalent inputs share
+  // a key rather than creating a duplicate on retry (Copilot review on #134).
+  const times = input.isAllDay ? written : input;
   const material = [
     input.subject,
-    input.start.dateTime,
-    input.start.timeZone,
-    input.end.dateTime,
-    input.end.timeZone,
+    times.start.dateTime,
+    times.start.timeZone,
+    times.end.dateTime,
+    times.end.timeZone,
     input.location ?? "",
     // Only when set, so a plain event's id is what it always was.
     ...(input.isAllDay ? ["isAllDay"] : []),
-    ...(input.recurrence ? [JSON.stringify(input.recurrence)] : []),
+    ...(written.recurrence ? [JSON.stringify(written.recurrence)] : []),
   ].join(String.fromCharCode(0));
   return createHash("sha256").update(material).digest("hex").slice(0, 36);
 }
@@ -571,9 +578,8 @@ function deterministicTransactionId(input: CreateEventInput): string {
 export async function createEvent(
   graph: GraphClient,
   input: CreateEventInput,
-  deriveId: (input: CreateEventInput) => string = deterministicTransactionId,
+  deriveId: (input: CreateEventInput, written: WrittenTimes) => string = deterministicTransactionId,
 ): Promise<CreatedEvent> {
-  const transactionId = input.transactionId ?? deriveId(input);
   let start: GraphDateTime;
   let end: GraphDateTime;
   if (input.isAllDay) {
@@ -594,6 +600,9 @@ export async function createEvent(
     instant(end),
     "The event's end must be after its start. Nothing was created.",
   );
+  const recurrence = input.recurrence ? buildRecurrence(input.recurrence, start) : undefined;
+  const transactionId =
+    input.transactionId ?? deriveId(input, { start, end, ...(recurrence ? { recurrence } : {}) });
   const payload: Record<string, unknown> = {
     subject: input.subject,
     start,
@@ -607,7 +616,7 @@ export async function createEvent(
       : {}),
     ...(input.isAllDay ? { isAllDay: true } : {}),
     ...(input.showAs ? { showAs: input.showAs } : {}),
-    ...(input.recurrence ? { recurrence: buildRecurrence(input.recurrence, start) } : {}),
+    ...(recurrence ? { recurrence } : {}),
   };
   assertWritableEventPayload(payload);
   const created = await graph.post<GraphEvent & { recurrence?: Record<string, unknown> | null }>(
@@ -620,6 +629,13 @@ export async function createEvent(
     showAs: created.showAs ?? null,
     recurrence: created.recurrence ?? null,
   };
+}
+
+/** What a create writes, after validation: the idempotency key is derived from it. */
+export interface WrittenTimes {
+  start: GraphDateTime;
+  end: GraphDateTime;
+  recurrence?: Record<string, unknown>;
 }
 
 /** What create_event echoes: the written event, with the #51 fields. */

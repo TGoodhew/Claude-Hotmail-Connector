@@ -149,6 +149,16 @@ describe("all-day, free/busy and recurring creation (#51)", () => {
       end: { dateTime: "2026-07-21T00:00:00", timeZone: "Europe/London" },
     });
     expect(payload.start).toEqual({ dateTime: "2026-07-20T00:00:00", timeZone: "Europe/London" });
+    // So is an all-zero fraction of a second.
+    const zero = await posted({
+      isAllDay: true,
+      start: { dateTime: "2026-07-20T00:00:00.000", timeZone: "Europe/London" },
+      end: { dateTime: "2026-07-21", timeZone: "Europe/London" },
+    });
+    expect(zero.payload.start).toEqual({
+      dateTime: "2026-07-20T00:00:00",
+      timeZone: "Europe/London",
+    });
   });
 
   it("refuses an all-day event that isn't whole days in one zone, before writing", async () => {
@@ -181,6 +191,21 @@ describe("all-day, free/busy and recurring creation (#51)", () => {
           end: { dateTime: "2026-07-20", timeZone: tz },
         },
         /end must be after its start/,
+      ],
+      [
+        // Half a second past midnight isn't midnight (Copilot review on #134).
+        {
+          start: { dateTime: "2026-07-20T00:00:00.5", timeZone: tz },
+          end: { dateTime: "2026-07-21", timeZone: tz },
+        },
+        /start must be a date/,
+      ],
+      [
+        {
+          start: { dateTime: "2026-07-20", timeZone: tz },
+          end: { dateTime: "2026-07-21T00:00:00.001", timeZone: tz },
+        },
+        /end must be a date/,
       ],
     ];
     for (const [input, error] of cases) {
@@ -251,6 +276,34 @@ describe("all-day, free/busy and recurring creation (#51)", () => {
       end: { dateTime: "2026-07-21T00:00:00", timeZone: "Australia/Brisbane" },
     };
     expect(await key(allDay)).not.toBe(await key({ ...allDay, isAllDay: undefined }));
+  });
+
+  it("keys equivalent inputs alike, so a retry phrased differently doesn't duplicate (Copilot review on #134)", async () => {
+    const key = async (input: Partial<CreateEventInput>) =>
+      (await posted(input)).payload.transactionId as string;
+    const daily: RecurrenceInput = {
+      pattern: { type: "daily", interval: 1 },
+      range: { type: "noEnd", startDate: "2026-07-20" },
+    };
+    // Fields the pattern and range types ignore are dropped before keying.
+    const padded: RecurrenceInput = {
+      pattern: { type: "daily", interval: 1, dayOfMonth: 3, daysOfWeek: ["monday"] },
+      range: { type: "noEnd", startDate: "2026-07-20", endDate: "2026-12-31" },
+    };
+    expect(await key({ recurrence: padded })).toBe(await key({ recurrence: daily }));
+    // An all-day date and its midnight are the same event.
+    const tz = "Australia/Brisbane";
+    const asDates = {
+      isAllDay: true,
+      start: { dateTime: "2026-07-20", timeZone: tz },
+      end: { dateTime: "2026-07-21", timeZone: tz },
+    };
+    const asMidnights = {
+      isAllDay: true,
+      start: { dateTime: "2026-07-20T00:00:00", timeZone: tz },
+      end: { dateTime: "2026-07-21T00:00", timeZone: tz },
+    };
+    expect(await key(asDates)).toBe(await key(asMidnights));
   });
 });
 

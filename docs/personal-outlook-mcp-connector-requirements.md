@@ -253,7 +253,8 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
     description tells the model to confirm the pattern and end with extra care.
 - **Idempotency.** If the caller omits `transactionId`, the server derives a **deterministic** one
   (SHA-256 over subject, start/end dateTime + timeZone, and location, plus the all-day flag and the
-  recurrence when set), so an identical retry doesn't
+  recurrence when set, both as written: an all-day event keys on its midnights and a series on its
+  validated recurrence, so equivalent inputs share a key), so an identical retry doesn't
   create a duplicate. A random id per call would not dedupe retries, because each retry is a new tool
   call. Documented limits:
   - two genuinely identical events (same title, times, location) can't both be created without an
