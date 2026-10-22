@@ -430,7 +430,17 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   }
 
   async function sharedState(): Promise<SharedAuthState> {
-    return observe(await coordinator.snapshot());
+    // An unlocked read can catch this process's own sign-out between
+    // publishing its count and noting it as seen, and would take it for one
+    // from elsewhere. So wait out a local sign-out's cleanup first, and read
+    // again if one started meanwhile (Copilot review on #126). Reads under the
+    // lock can't see that in-between state: the cleanup holds it throughout.
+    for (;;) {
+      while (pendingSignOut) await pendingSignOut.catch(() => undefined);
+      const signOutsBefore = localSignOuts;
+      const state = await coordinator.snapshot();
+      if (!pendingSignOut && localSignOuts === signOutsBefore) return observe(state);
+    }
   }
 
   let inflightRefresh: { epoch: number; id: object; promise: Promise<TokenSet> } | null = null;

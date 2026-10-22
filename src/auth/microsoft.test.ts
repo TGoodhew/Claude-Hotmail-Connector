@@ -1692,4 +1692,70 @@ describe("sign-out during the start of an operation (Copilot review on #126)", (
     expect(store.current).toEqual(saved);
     expect(await inner.snapshot()).toEqual({ signOuts: 0, signIns: 0 });
   });
+
+  it("a catch-up during this process's own sign-out doesn't take it for a remote one (Copilot review on #126)", async () => {
+    const inner = createMemoryCoordinator();
+    let paused = false;
+    let published = false;
+    let releasePublish = (): void => undefined;
+    let releaseCleanup = (): void => undefined;
+    // The sign-out pauses before storing its count, then again after storing
+    // it (visible to snapshots) but before noting it as its own.
+    const coordinator: AuthCoordinator = {
+      snapshot: () => inner.snapshot(),
+      withLock: (fn) =>
+        inner.withLock((state, persist) =>
+          fn(state, async (next) => {
+            if (paused) return persist(next); // only the sign-out's write pauses
+            paused = true;
+            await new Promise<void>((r) => (releasePublish = r));
+            await persist(next);
+            published = true;
+            await new Promise<void>((r) => (releaseCleanup = r));
+          }),
+        ),
+    };
+    let url = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore(null),
+      coordinator,
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ access_token: "AT", refresh_token: "RT", expires_in: 3600 }),
+      ) as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        url = u;
+      },
+      now: () => 1_000,
+    });
+    await auth.syncSignOuts(); // the shared counters have been seen once
+
+    const signOut = auth.signOut();
+    await vi.waitFor(() => expect(paused).toBe(true));
+    // A sign-in started after the sign-out, while the count isn't stored yet…
+    const signIn = auth.signIn().then(
+      (t) => t,
+      (e: unknown) => e as Error,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    // …then the count is stored, and a catch-up reads it before the sign-out
+    // has noted it as its own.
+    releasePublish();
+    await vi.waitFor(() => expect(published).toBe(true));
+    const sync = auth.syncSignOuts();
+    await new Promise((r) => setTimeout(r, 20));
+    releaseCleanup();
+    await signOut;
+    await sync;
+    await vi.waitFor(() => expect(url).not.toBe(""));
+    const u = new URL(url);
+    const redirect = new URL(u.searchParams.get("redirect_uri")!);
+    redirect.hostname = "127.0.0.1";
+    await fetch(
+      `${redirect.origin}/?${new URLSearchParams({ state: u.searchParams.get("state")!, code: "C" })}`,
+    );
+    // The sign-in completes: no second sign-out was imagined.
+    const result = await signIn;
+    expect(result).not.toBeInstanceOf(Error);
+  });
 });
