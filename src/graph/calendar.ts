@@ -915,25 +915,28 @@ export interface CancelEventInput {
  * a 5xx, a timeout) doesn't retry it blindly but starts over with a new read
  * and the guards again (owner decision, 2026-10-22; spec §7.8). The header is
  * kept so the check works if Graph starts enforcing it.
- * Returns the removed event so it can be echoed to the user. `pause` (between
- * attempts) is injectable for tests.
+ * The wait between attempts is the Graph client's (`waitBeforeMs` on the
+ * re-read), so it ends on cancellation and never outlasts the call's deadline.
+ * Returns the removed event so it can be echoed to the user.
  */
 export async function cancelEvent(
   graph: GraphClient,
   input: CancelEventInput,
-  pause: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<EventWriteResult> {
   assertValidTimeZone(input.timeZone);
   const path = calendarPath(input.calendarId, `events/${encodeURIComponent(input.id)}`);
   // The event as last checked, once a DELETE of it failed in a way that may
   // have come after Graph did the work (a 5xx or a timeout).
   let mayBeDeleted: EventWriteResult | undefined;
+  // How long to wait before the next read, after a failed DELETE.
+  let waitBeforeMs = 0;
   for (let attempt = 1; ; attempt++) {
     let event: GraphEvent;
     try {
       event = await graph.get<GraphEvent>(path, {
         query: { $select: "id,subject,start,end,location,webLink,attendees,type" },
         headers: { prefer: preferTimeZoneHeader(input.timeZone) },
+        ...(waitBeforeMs > 0 ? { waitBeforeMs } : {}),
       });
     } catch (e) {
       // Gone now, after a DELETE whose answer was lost: that DELETE did it.
@@ -965,9 +968,10 @@ export async function cancelEvent(
       if (!isTransientGraphFailure(e) || attempt >= CANCEL_ATTEMPTS) {
         throw mayBeDeleted ? unconfirmedCancel(e) : e;
       }
-      // Graph's own wait, when it gave one (e.g. throttling), else a short one.
+      // Graph's own wait, when it gave one (e.g. throttling), else a short one;
+      // the client waits it out before the re-read (Copilot review on #137).
       const asked = e instanceof GraphError ? (e.retryAfterMs ?? 0) : 0;
-      await pause(Math.max(asked, CANCEL_RETRY_PAUSE_MS * attempt));
+      waitBeforeMs = Math.max(asked, CANCEL_RETRY_PAUSE_MS * attempt);
     }
   }
 }

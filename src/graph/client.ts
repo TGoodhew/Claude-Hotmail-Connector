@@ -47,6 +47,12 @@ export interface GraphRequestOptions {
    * guards before each DELETE); see {@link isTransientGraphFailure}.
    */
   sendOnce?: boolean;
+  /**
+   * Wait this long before sending: a caller's own pause between its retries
+   * (`cancel_event`). It ends early on cancellation, and if it wouldn't fit
+   * the deadline the request fails at once as out of time.
+   */
+  waitBeforeMs?: number;
 }
 
 /**
@@ -379,6 +385,11 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       if (opts.signal?.aborted) throw cancelled();
       if (remainingMs() <= 0) throw outOfTime();
     };
+
+    if (opts.waitBeforeMs) {
+      ensureStillWanted();
+      if (!(await waitToRetry(opts.waitBeforeMs))) throw outOfTime();
+    }
 
     for (;;) {
       ensureStillWanted();

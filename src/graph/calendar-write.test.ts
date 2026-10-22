@@ -928,7 +928,11 @@ describe("cancelEvent re-checks before every DELETE attempt (#137)", () => {
   const status = (s: number) => new GraphError(`Graph ${s}`, { status: s });
 
   function graph(reads: (object | Error)[], deletes: (Error | undefined)[]) {
-    const get = vi.fn<GetMock>(async () => {
+    // The wait the client is asked for before a re-read (`waitBeforeMs`).
+    const pause = vi.fn((_ms: number) => undefined);
+    const get = vi.fn<GetMock>(async (_path, opts) => {
+      const wait = (opts as { waitBeforeMs?: number } | undefined)?.waitBeforeMs;
+      if (wait !== undefined) pause(wait);
       const next = reads.shift() ?? trip;
       if (next instanceof Error) throw next;
       return next;
@@ -937,13 +941,12 @@ describe("cancelEvent re-checks before every DELETE attempt (#137)", () => {
       const next = deletes.shift();
       if (next) throw next;
     });
-    const pause = vi.fn(async () => undefined);
     return { get, del, pause, client: { get, delete: del } as unknown as GraphClient };
   }
 
   it("sends each DELETE once, so the client can't retry it unchecked", async () => {
     const g = graph([trip], [undefined]);
-    await cancelEvent(g.client, input, g.pause);
+    await cancelEvent(g.client, input);
     expect(g.del.mock.calls[0]![1]).toMatchObject({ sendOnce: true });
   });
 
@@ -955,49 +958,49 @@ describe("cancelEvent re-checks before every DELETE attempt (#137)", () => {
     );
     // Refused, and not "nothing was deleted": the 503'd DELETE may still apply
     // (Copilot review on #137).
-    const e = await cancelEvent(g.client, input, g.pause).catch((x: unknown) => x);
+    const e = await cancelEvent(g.client, input).catch((x: unknown) => x);
     expect((e as Error).message).toMatch(/may have gone through/);
     expect((e as Error).message).not.toMatch(/Nothing was deleted/);
     expect(g.get).toHaveBeenCalledTimes(2);
     expect(g.del).toHaveBeenCalledTimes(1); // not deleted again
     // Without an earlier uncertain DELETE, the guard's own message stands.
     const fresh = graph([{ ...trip, attendees: [{ emailAddress: { address: "a@b.c" } }] }], []);
-    await expect(cancelEvent(fresh.client, input, fresh.pause)).rejects.toThrow(/has attendees/);
+    await expect(cancelEvent(fresh.client, input)).rejects.toThrow(/has attendees/);
   });
 
   it("retries after throttling, with a pause, then succeeds", async () => {
     const g = graph([trip, trip], [status(429), undefined]);
-    expect(await cancelEvent(g.client, input, g.pause)).toMatchObject({ id: "evt-1" });
+    expect(await cancelEvent(g.client, input)).toMatchObject({ id: "evt-1" });
     expect(g.del).toHaveBeenCalledTimes(2);
     expect(g.pause).toHaveBeenCalledWith(1_000);
   });
 
   it("treats the event as cancelled when it's gone after a DELETE whose answer was lost", async () => {
     const g = graph([trip, status(404)], [status(503)]);
-    expect(await cancelEvent(g.client, input, g.pause)).toMatchObject({ subject: "Travel" });
+    expect(await cancelEvent(g.client, input)).toMatchObject({ subject: "Travel" });
     expect(g.del).toHaveBeenCalledTimes(1);
   });
 
   it("never says nothing happened once a DELETE may have gone through", async () => {
     const g = graph([trip, trip, trip], [status(503), status(503), status(503)]);
-    await expect(cancelEvent(g.client, input, g.pause)).rejects.toThrow(/may have gone through/);
+    await expect(cancelEvent(g.client, input)).rejects.toThrow(/may have gone through/);
     expect(g.del).toHaveBeenCalledTimes(3);
     expect(g.pause.mock.calls).toEqual([[1_000], [2_000]]);
     // A re-read that fails outright, after such a DELETE, is reported the same way.
     const h = graph([trip, status(500)], [new GraphError("network", {})]);
-    await expect(cancelEvent(h.client, input, h.pause)).rejects.toThrow(/may have gone through/);
+    await expect(cancelEvent(h.client, input)).rejects.toThrow(/may have gone through/);
   });
 
   it("reports plain throttling as such: a 429 is refused before any work", async () => {
     const g = graph([trip, trip, trip], [status(429), status(429), status(429)]);
-    const e = await cancelEvent(g.client, input, g.pause).catch((x: unknown) => x);
+    const e = await cancelEvent(g.client, input).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(GraphError);
     expect((e as GraphError).status).toBe(429);
   });
 
   it("doesn't retry a failure that won't change (e.g. 403)", async () => {
     const g = graph([trip], [status(403)]);
-    await expect(cancelEvent(g.client, input, g.pause)).rejects.toThrow(/Graph 403/);
+    await expect(cancelEvent(g.client, input)).rejects.toThrow(/Graph 403/);
     expect(g.del).toHaveBeenCalledTimes(1);
     expect(g.pause).not.toHaveBeenCalled();
   });
@@ -1005,35 +1008,35 @@ describe("cancelEvent re-checks before every DELETE attempt (#137)", () => {
   it("records the last attempt's uncertainty before giving up, and keeps earlier uncertainty (Copilot review on #137)", async () => {
     // 429, 429, then a 503 on the final attempt: that one may have applied.
     const g = graph([trip, trip, trip], [status(429), status(429), status(503)]);
-    await expect(cancelEvent(g.client, input, g.pause)).rejects.toThrow(/may have gone through/);
+    await expect(cancelEvent(g.client, input)).rejects.toThrow(/may have gone through/);
     // A 503, then a failure that won't change: the earlier uncertainty is kept.
     const h = graph([trip, trip], [status(503), status(403)]);
-    await expect(cancelEvent(h.client, input, h.pause)).rejects.toThrow(/may have gone through/);
+    await expect(cancelEvent(h.client, input)).rejects.toThrow(/may have gone through/);
     // A 503, then a version tag missing on the re-read: likewise.
     const k = graph([trip, { ...trip, "@odata.etag": undefined }], [status(503)]);
-    await expect(cancelEvent(k.client, input, k.pause)).rejects.toThrow(/may have gone through/);
+    await expect(cancelEvent(k.client, input)).rejects.toThrow(/may have gone through/);
   });
 
   it("treats a 404 on a later DELETE, after an uncertain one, as cancelled", async () => {
     const g = graph([trip, trip], [status(503), status(404)]);
-    expect(await cancelEvent(g.client, input, g.pause)).toMatchObject({ subject: "Travel" });
+    expect(await cancelEvent(g.client, input)).toMatchObject({ subject: "Travel" });
   });
 
   it("waits as long as Graph asks before trying again (Retry-After)", async () => {
     const throttled = new GraphError("Graph 429", { status: 429, retryAfterMs: 30_000 });
     const g = graph([trip, trip], [throttled, undefined]);
-    await cancelEvent(g.client, input, g.pause);
+    await cancelEvent(g.client, input);
     expect(g.pause).toHaveBeenCalledWith(30_000);
     // A shorter ask still gets the minimum pause.
     const brief = new GraphError("Graph 429", { status: 429, retryAfterMs: 100 });
     const h = graph([trip, trip], [brief, undefined]);
-    await cancelEvent(h.client, input, h.pause);
+    await cancelEvent(h.client, input);
     expect(h.pause).toHaveBeenCalledWith(1_000);
   });
 
   it("gets the 'may have gone through' warning to the MCP caller intact", async () => {
     const g = graph([trip, trip, trip], [status(503), status(503), status(503)]);
-    const e = await cancelEvent(g.client, input, g.pause).catch((x: unknown) => x);
+    const e = await cancelEvent(g.client, input).catch((x: unknown) => x);
     // What mcp.ts sends back for a failed tool call.
     expect(clientSafeMessage(e)).toMatch(/may have gone through/);
   });

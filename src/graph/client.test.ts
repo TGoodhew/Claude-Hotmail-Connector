@@ -411,6 +411,46 @@ describe("createGraphClient", () => {
     expect(hanging).toHaveBeenCalledTimes(1);
   });
 
+  it("waitBeforeMs: waits first, within the deadline, and stops on cancellation (Copilot review on #137)", async () => {
+    const fetchImpl = fetchMock(async () => json({ ok: true }));
+    // Waits, then sends.
+    const sleep = vi.fn(async () => {});
+    const client = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+      sleep,
+    });
+    await client.get("/me", { waitBeforeMs: 2_000 });
+    expect(sleep).toHaveBeenCalledWith(2_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // A wait that wouldn't fit the deadline fails at once, without waiting or sending.
+    sleep.mockClear();
+    fetchImpl.mockClear();
+    await expect(
+      client.get("/me", { waitBeforeMs: 30_000, deadline: Date.now() + 1_000 }),
+    ).rejects.toBeInstanceOf(TimeoutError);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    // Cancelling during the wait ends it.
+    const never = vi.fn(() => new Promise<void>(() => undefined));
+    const stuck = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+      sleep: never,
+    });
+    const controller = new AbortController();
+    const pending = stuck
+      .get("/me", { waitBeforeMs: 30_000, signal: controller.signal })
+      .catch((e: unknown) => e);
+    await vi.waitFor(() => expect(never).toHaveBeenCalled());
+    controller.abort();
+    const e = await pending;
+    expect((e as GraphError).reason).toBe("cancelled");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("keeps Graph's Retry-After on the error, for a caller that retries itself (#137)", async () => {
     const fetchImpl = fetchMock(async () =>
       json(
