@@ -3,6 +3,7 @@ import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
 import {
   buildUrl,
   createGraphClient,
+  isTransientGraphFailure,
   retryAfterMs,
   scopeToOperation,
   type GraphClient,
@@ -369,6 +370,58 @@ describe("createGraphClient", () => {
     expect(data.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a sendOnce request once: no back-off retry, no 401 recovery (#137)", async () => {
+    const sleep = vi.fn(async () => {});
+    for (const status of [429, 503, 401]) {
+      const fetchImpl = fetchMock(async () => json({ error: { code: "x" } }, { status }));
+      const auth = makeAuth();
+      const client = createGraphClient({
+        auth,
+        baseUrl: BASE,
+        fetchImpl: fetchImpl as never,
+        sleep,
+      });
+      const e = await client.delete("/me/events/e1", { sendOnce: true }).catch((x: unknown) => x);
+      expect((e as GraphError).status, `status ${status}`).toBe(status);
+      expect(fetchImpl, `status ${status}`).toHaveBeenCalledTimes(1);
+      expect(auth.getAccessToken, `status ${status}`).toHaveBeenCalledTimes(1);
+    }
+    expect(sleep).not.toHaveBeenCalled();
+    // A timeout isn't retried either.
+    const hanging = fetchMock(
+      (_url, init) =>
+        new Promise((_r, reject) =>
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("t", "TimeoutError")),
+          ),
+        ),
+    );
+    const client = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: hanging as never,
+      sleep,
+      defaultTimeoutMs: 5,
+    });
+    await expect(client.delete("/me/events/e1", { sendOnce: true })).rejects.toBeInstanceOf(
+      TimeoutError,
+    );
+    expect(hanging).toHaveBeenCalledTimes(1);
+  });
+
+  it("isTransientGraphFailure: what may succeed if tried again", () => {
+    for (const s of [401, 429, 500, 502, 503, 504]) {
+      expect(isTransientGraphFailure(new GraphError("x", { status: s })), String(s)).toBe(true);
+    }
+    expect(isTransientGraphFailure(new GraphError("network", {}))).toBe(true);
+    expect(isTransientGraphFailure(new TimeoutError("t"))).toBe(true);
+    for (const s of [400, 403, 404, 409, 412]) {
+      expect(isTransientGraphFailure(new GraphError("x", { status: s })), String(s)).toBe(false);
+    }
+    expect(isTransientGraphFailure(new GraphError("c", { reason: "cancelled" }))).toBe(false);
+    expect(isTransientGraphFailure(new Error("other"))).toBe(false);
   });
 
   it("retries 503 and 504 like 429", async () => {

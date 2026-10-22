@@ -20,7 +20,7 @@ import {
   utcToZonedWallClock,
   zonedWallClockToUtcIso,
 } from "../util/time.js";
-import type { GraphClient, ODataPage } from "./client.js";
+import { type GraphClient, isTransientGraphFailure, type ODataPage } from "./client.js";
 import { type MessageBody, sliceBody } from "./mail.js";
 import { CursorBase, decodeCursor, encodeCursor } from "./paging.js";
 
@@ -862,26 +862,74 @@ export interface CancelEventInput {
  *    occurrence, and deleting an occurrence removes it from its series rather
  *    than moving it to Deleted Items, so neither fits the soft-delete promise.
  * The DELETE carries `If-Match` for the checked version, but Graph ignores it
- * on event deletes (found by the live test, #48): an event that changes between
- * the check and the DELETE (e.g. gains attendees) is still deleted. The header
- * is kept so the check works if Graph starts enforcing it (spec §7.8).
- * Returns the removed event so it can be echoed to the user.
+ * on event deletes (found by the live test, #48), so the guards must be fresh
+ * at every DELETE: each one is sent once, and a transient failure (throttling,
+ * a 5xx, a timeout) doesn't retry it blindly but starts over with a new read
+ * and the guards again (owner decision, 2026-10-22; spec §7.8). The header is
+ * kept so the check works if Graph starts enforcing it.
+ * Returns the removed event so it can be echoed to the user. `pause` (between
+ * attempts) is injectable for tests.
  */
 export async function cancelEvent(
   graph: GraphClient,
   input: CancelEventInput,
+  pause: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<EventWriteResult> {
   assertValidTimeZone(input.timeZone);
   const path = calendarPath(input.calendarId, `events/${encodeURIComponent(input.id)}`);
-  const event = await graph.get<GraphEvent>(path, {
-    query: { $select: "id,subject,start,end,location,webLink,attendees,type" },
-    headers: { prefer: preferTimeZoneHeader(input.timeZone) },
-  });
+  // The event as last checked, once a DELETE of it failed in a way that may
+  // have come after Graph did the work (a 5xx or a timeout).
+  let mayBeDeleted: EventWriteResult | undefined;
+  for (let attempt = 1; ; attempt++) {
+    let event: GraphEvent;
+    try {
+      event = await graph.get<GraphEvent>(path, {
+        query: { $select: "id,subject,start,end,location,webLink,attendees,type" },
+        headers: { prefer: preferTimeZoneHeader(input.timeZone) },
+      });
+    } catch (e) {
+      // Gone now, after a DELETE whose answer was lost: that DELETE did it.
+      if (mayBeDeleted && e instanceof GraphError && e.status === 404) return mayBeDeleted;
+      if (mayBeDeleted) throw unconfirmedCancel(e);
+      throw e;
+    }
+    assertCancellable(event, input.confirmSubject);
+    const precondition = ifMatch(event, "delete");
+    try {
+      await onCheckedVersion(() => graph.delete(path, { headers: precondition, sendOnce: true }));
+      return shapeWrite(event);
+    } catch (e) {
+      if (!isTransientGraphFailure(e)) throw e;
+      if (attempt >= CANCEL_ATTEMPTS) throw mayBeDeleted ? unconfirmedCancel(e) : e;
+      // Throttling and 401s are refused before any work; anything else may not be.
+      if (!(e instanceof GraphError && (e.status === 429 || e.status === 401))) {
+        mayBeDeleted = shapeWrite(event);
+      }
+      await pause(CANCEL_RETRY_PAUSE_MS * attempt);
+    }
+  }
+}
 
+/** DELETE attempts `cancel_event` makes, each after a fresh read and check. */
+const CANCEL_ATTEMPTS = 3;
+/** Wait before the second attempt (doubled before the third). */
+const CANCEL_RETRY_PAUSE_MS = 1_000;
+
+/** A failure after a DELETE that may have gone through: never say nothing happened. */
+function unconfirmedCancel(cause: unknown): GraphError {
+  return new GraphError(
+    "Microsoft Graph didn't confirm the cancellation, and an earlier attempt may have gone " +
+      "through. Check with list_events whether the event is still there before trying again.",
+    { cause },
+  );
+}
+
+/** cancel_event's guards against the event as just read (see {@link cancelEvent}). */
+function assertCancellable(event: GraphEvent, confirmSubject: string): void {
   const title = (event.subject ?? "").trim();
-  if (title.toLowerCase() !== input.confirmSubject.trim().toLowerCase()) {
+  if (title.toLowerCase() !== confirmSubject.trim().toLowerCase()) {
     throw new ValidationError(
-      `confirmSubject "${input.confirmSubject}" does not match the event's title "${title}". ` +
+      `confirmSubject "${confirmSubject}" does not match the event's title "${title}". ` +
         "Nothing was deleted. Check the id with list_events and confirm with the user.",
     );
   }
@@ -903,10 +951,6 @@ export async function cancelEvent(
         "instead of moving it to Deleted Items. Cancel it in Outlook instead. Nothing was deleted.",
     );
   }
-
-  const precondition = ifMatch(event, "delete");
-  await onCheckedVersion(() => graph.delete(path, { headers: precondition }));
-  return shapeWrite(event);
 }
 
 // ── Calendars ────────────────────────────────────────────────────────────────

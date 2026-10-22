@@ -788,6 +788,90 @@ describe("cancelEvent (guarded soft delete, #55)", () => {
   });
 });
 
+// Graph ignores If-Match on event deletes (#48), so every DELETE must follow a
+// fresh read and check: the client doesn't retry it, cancelEvent starts over
+// (owner decision, 2026-10-22).
+describe("cancelEvent re-checks before every DELETE attempt (#137)", () => {
+  type DeleteMock = (path: string, opts?: { sendOnce?: boolean }) => Promise<void>;
+  const trip = {
+    id: "evt-1",
+    "@odata.etag": 'W/"t1"',
+    subject: "Travel",
+    type: "singleInstance",
+    attendees: [],
+  };
+  const input = { id: "evt-1", confirmSubject: "Travel", timeZone: "UTC" };
+  const status = (s: number) => new GraphError(`Graph ${s}`, { status: s });
+
+  function graph(reads: (object | Error)[], deletes: (Error | undefined)[]) {
+    const get = vi.fn<GetMock>(async () => {
+      const next = reads.shift() ?? trip;
+      if (next instanceof Error) throw next;
+      return next;
+    });
+    const del = vi.fn<DeleteMock>(async () => {
+      const next = deletes.shift();
+      if (next) throw next;
+    });
+    const pause = vi.fn(async () => undefined);
+    return { get, del, pause, client: { get, delete: del } as unknown as GraphClient };
+  }
+
+  it("sends each DELETE once, so the client can't retry it unchecked", async () => {
+    const g = graph([trip], [undefined]);
+    await cancelEvent(g.client, input, g.pause);
+    expect(g.del.mock.calls[0]![1]).toMatchObject({ sendOnce: true });
+  });
+
+  it("after a transient failure, reads again and re-runs every guard before the next DELETE", async () => {
+    // The first DELETE hits a 503; meanwhile the event gained an attendee.
+    const g = graph(
+      [trip, { ...trip, attendees: [{ emailAddress: { address: "a@b.c" } }] }],
+      [status(503)],
+    );
+    await expect(cancelEvent(g.client, input, g.pause)).rejects.toThrow(/has attendees/);
+    expect(g.get).toHaveBeenCalledTimes(2);
+    expect(g.del).toHaveBeenCalledTimes(1); // not deleted again
+  });
+
+  it("retries after throttling, with a pause, then succeeds", async () => {
+    const g = graph([trip, trip], [status(429), undefined]);
+    expect(await cancelEvent(g.client, input, g.pause)).toMatchObject({ id: "evt-1" });
+    expect(g.del).toHaveBeenCalledTimes(2);
+    expect(g.pause).toHaveBeenCalledWith(1_000);
+  });
+
+  it("treats the event as cancelled when it's gone after a DELETE whose answer was lost", async () => {
+    const g = graph([trip, status(404)], [status(503)]);
+    expect(await cancelEvent(g.client, input, g.pause)).toMatchObject({ subject: "Travel" });
+    expect(g.del).toHaveBeenCalledTimes(1);
+  });
+
+  it("never says nothing happened once a DELETE may have gone through", async () => {
+    const g = graph([trip, trip, trip], [status(503), status(503), status(503)]);
+    await expect(cancelEvent(g.client, input, g.pause)).rejects.toThrow(/may have gone through/);
+    expect(g.del).toHaveBeenCalledTimes(3);
+    expect(g.pause.mock.calls).toEqual([[1_000], [2_000]]);
+    // A re-read that fails outright, after such a DELETE, is reported the same way.
+    const h = graph([trip, status(500)], [new GraphError("network", {})]);
+    await expect(cancelEvent(h.client, input, h.pause)).rejects.toThrow(/may have gone through/);
+  });
+
+  it("reports plain throttling as such: a 429 is refused before any work", async () => {
+    const g = graph([trip, trip, trip], [status(429), status(429), status(429)]);
+    const e = await cancelEvent(g.client, input, g.pause).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(GraphError);
+    expect((e as GraphError).status).toBe(429);
+  });
+
+  it("doesn't retry a failure that won't change (e.g. 403)", async () => {
+    const g = graph([trip], [status(403)]);
+    await expect(cancelEvent(g.client, input, g.pause)).rejects.toThrow(/Graph 403/);
+    expect(g.del).toHaveBeenCalledTimes(1);
+    expect(g.pause).not.toHaveBeenCalled();
+  });
+});
+
 describe("checked-version writes need a version tag", () => {
   it("refuses to PATCH or DELETE when Graph returns no @odata.etag", async () => {
     const untagged = { id: "evt-1", subject: "Trip", type: "singleInstance", attendees: [] };
