@@ -1873,6 +1873,50 @@ describe("re-opening a pending sign-in page (#139)", () => {
     );
   });
 
+  it("doesn't reopen the page once its redirect has been accepted", async () => {
+    let clock = 1_000;
+    const opened: string[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore(null),
+      // The token exchange waits, so the sign-in is still in flight after the redirect.
+      fetchImpl: vi.fn(async () => {
+        await held;
+        return jsonResponse({ access_token: "AT", refresh_token: "RT", expires_in: 3600 });
+      }) as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        opened.push(u);
+      },
+      now: () => clock,
+    });
+    const ask = () =>
+      auth.getAccessToken({ interactiveWaitMs: 10 }).then(
+        (t) => t,
+        (e: unknown) => e as Error,
+      );
+    try {
+      await ask();
+      const u = new URL(opened[0]!);
+      const redirect = new URL(u.searchParams.get("redirect_uri")!);
+      redirect.hostname = "127.0.0.1";
+      await fetch(
+        `${redirect.origin}/?${new URLSearchParams({ state: u.searchParams.get("state")!, code: "C" })}`,
+      );
+      clock += 20_000;
+      expect(String(await ask())).toMatch(/Still waiting/);
+      expect(opened).toHaveLength(1);
+      release();
+      await vi.waitFor(async () =>
+        expect(await auth.getAccessToken({ interactive: false })).toBe("AT"),
+      );
+    } finally {
+      release();
+      await auth.signOut();
+    }
+  });
+
   it("forgets the page once a sign-out cancels the sign-in", async () => {
     let clock = 1_000;
     const opened: string[] = [];

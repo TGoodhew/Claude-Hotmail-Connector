@@ -490,11 +490,12 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   /**
    * The browser sign-in: listen on loopback, open Microsoft's page, exchange the
    * code. `onPage` is told the page's URL once it's open, so a later caller can
-   * open it again (#139).
+   * open it again (#139), and null once Microsoft's redirect has been accepted:
+   * from then on the page can't complete a sign-in, so it isn't reopened.
    */
   async function interactiveSignIn(
     signal?: AbortSignal,
-    onPage?: (authorizeUrl: string) => void,
+    onPage?: (authorizeUrl: string | null) => void,
   ): Promise<TokenSet> {
     const pkce = generatePkce();
     const state = base64url(randomBytes(16));
@@ -536,6 +537,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
           return;
         }
         completed = true;
+        onPage?.(null);
         // Respond to the browser first, then finish the exchange.
         if (oauthError) {
           res.end(page("Sign-in failed", "You can close this tab and try again."));
@@ -670,7 +672,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
             if (signOuts !== epoch) throw new SignedOutError();
           }
           const tokens = await interactiveSignIn(abort.signal, (url) => {
-            if (inflightAbort === abort) inflightPage = { url, openedAt: now() };
+            if (inflightAbort === abort) inflightPage = url ? { url, openedAt: now() } : null;
           });
           try {
             await saveUnlessSignedOut(tokens, epoch, shared, "sign-in", () => succeeded(tokens));
