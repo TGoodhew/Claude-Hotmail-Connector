@@ -32,18 +32,19 @@ phase ([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58)).
 
 ## Tools
 
-| Tool             | Purpose                                             | Graph permission      |
-| ---------------- | --------------------------------------------------- | --------------------- |
-| `whoami`         | Confirm the connected account                       | `User.Read`           |
-| `list_messages`  | Search/list mail (find booking confirmations)       | `Mail.Read`           |
-| `get_message`    | Read one email as text                              | `Mail.Read`           |
-| `list_calendars` | List your calendars (own and shared)                | `Calendars.Read`      |
-| `list_events`    | Read the calendar over a date range                 | `Calendars.Read`      |
-| `get_event`      | Read one event in full (notes, attendees, pattern)  | `Calendars.Read`      |
-| `create_event`   | Add a calendar event (timezone-correct, idempotent) | `Calendars.ReadWrite` |
-| `update_event`   | Edit a calendar event (destructive: overwrites)     | `Calendars.ReadWrite` |
-| `cancel_event`   | Delete an event, guarded (see below)                | `Calendars.ReadWrite` |
-| `sign_out`       | Remove the saved sign-in from this computer         | (none)                |
+| Tool                | Purpose                                             | Graph permission      |
+| ------------------- | --------------------------------------------------- | --------------------- |
+| `whoami`            | Confirm the connected account                       | `User.Read`           |
+| `list_messages`     | Search/list mail (find booking confirmations)       | `Mail.Read`           |
+| `get_message`       | Read one email as text                              | `Mail.Read`           |
+| `list_mail_folders` | List mail folders                                   | `Mail.Read`           |
+| `list_calendars`    | List your calendars (own and shared)                | `Calendars.Read`      |
+| `list_events`       | Read the calendar over a date range                 | `Calendars.Read`      |
+| `get_event`         | Read one event in full (notes, attendees, pattern)  | `Calendars.Read`      |
+| `create_event`      | Add a calendar event (timezone-correct, idempotent) | `Calendars.ReadWrite` |
+| `update_event`      | Edit a calendar event (destructive: overwrites)     | `Calendars.ReadWrite` |
+| `cancel_event`      | Delete an event, guarded (see below)                | `Calendars.ReadWrite` |
+| `sign_out`          | Remove the saved sign-in from this computer         | (none)                |
 
 Mail is **read-only** (no `Mail.Send`), and calendar writes never add attendees or send invitations.
 There is **no hard-delete**. `cancel_event` moves an event to Outlook's Deleted Items, and only after
