@@ -43,6 +43,12 @@ export interface TokenSet {
   account?: string;
   /** Usually "Bearer". */
   tokenType?: string;
+  /**
+   * The shared sign-in count (#95) this sign-in was saved under, kept across
+   * refreshes: tells a later browser sign-in whether the cached account is the
+   * one that won, or an older one left by a winner whose save failed.
+   */
+  signInGeneration?: number;
 }
 
 const TokenSetSchema = z.object({
@@ -52,6 +58,7 @@ const TokenSetSchema = z.object({
   scopes: z.array(z.string()),
   account: z.string().optional(),
   tokenType: z.string().optional(),
+  signInGeneration: z.number().int().nonnegative().optional(),
 });
 
 /** Persistent store for a single account's {@link TokenSet}. */

@@ -27,6 +27,11 @@ import {
   SignInRequiredError,
 } from "../util/errors.js";
 import { createLogger, type Logger } from "../util/log.js";
+import {
+  createMemoryCoordinator,
+  type AuthCoordinator,
+  type SharedAuthState,
+} from "./coordination.js";
 import type { TokenSet, TokenStore } from "./tokens.js";
 
 /** Refresh a bit before the access token actually expires. */
@@ -188,9 +193,17 @@ export interface MicrosoftAuthDeps {
   logger?: Logger;
   /** Limit on one token-endpoint request, body included (default 15s, #37). */
   tokenTimeoutMs?: number;
+  /**
+   * Orders saves and sign-outs with other processes sharing the token cache
+   * (#95; see coordination.ts). Defaults to in-process only.
+   */
+  coordinator?: AuthCoordinator;
 }
 
 const DEFAULT_TOKEN_TIMEOUT_MS = 15_000;
+
+/** Another process's browser sign-in finished first; this one's tokens are dropped. */
+class SignedInElsewhereError extends Error {}
 
 export interface GetAccessTokenOptions {
   /** Allow launching the browser for interactive sign-in (default true). */
@@ -226,6 +239,13 @@ export interface MicrosoftAuth {
   getAccount(): Promise<string | undefined>;
   /** Current sign-out epoch: note it when an operation starts (see `signOutEpoch` above). */
   signOutEpoch(): number;
+  /**
+   * Catch up with sign-outs in other processes (#95) and return the epoch for
+   * an operation starting now: use it rather than `signOutEpoch()`. A sign-out
+   * elsewhere that is first seen later ends the operations of the epochs
+   * before it; a local sign-out during the catch-up ends this one.
+   */
+  syncSignOuts(): Promise<number>;
 }
 
 export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
@@ -233,6 +253,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? Date.now;
   const log = deps.logger ?? createLogger({ name: "ms-auth" });
+  const coordinator = deps.coordinator ?? createMemoryCoordinator();
   const tokenEndpoint = `${config.authority}/oauth2/v2.0/token`;
 
   async function postToken(body: URLSearchParams): Promise<TokenResponse> {
@@ -293,11 +314,15 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         scopes: config.scopes,
       }),
     );
-    return toTokenSet(resp, now(), {
+    const refreshed = toTokenSet(resp, now(), {
       refreshToken: current.refreshToken,
       scopes: current.scopes,
       account: current.account,
     });
+    // Still the same sign-in: it keeps its generation.
+    return current.signInGeneration === undefined
+      ? refreshed
+      : { ...refreshed, signInGeneration: current.signInGeneration };
   }
 
   // Single-flight guard: collapse concurrent refreshes into one network call.
@@ -317,29 +342,133 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   // already belong to the new epoch, so they must wait for it rather than
   // read (and refresh) the credentials being deleted.
   let pendingSignOut: Promise<void> | null = null;
+  // The shared sign-out count last seen here (#95). A rise in it is another
+  // process's sign-out, which ends everything in flight here just as a local
+  // one does (see `observe`).
+  let sharedSignOutsSeen: number | undefined;
+  // signOut() calls in this process, as opposed to sign-outs seen from elsewhere.
+  let localSignOuts = 0;
   let commits: Promise<unknown> = Promise.resolve();
   function serialized<T>(op: () => Promise<T>): Promise<T> {
     const run = commits.then(op, op);
     commits = run.catch(() => undefined);
     return run;
   }
-  function saveUnlessSignedOut(tokens: TokenSet, epoch: number, onSaved?: () => void) {
+  /**
+   * Save tokens from an operation that began at sign-out epoch `epoch` (this
+   * process) with the shared counters `shared` (all processes, #95). Under the
+   * cross-process lock: a sign-out anywhere since then wins (SignedOutError),
+   * and so does a browser sign-in that finished since (SignedInElsewhereError),
+   * so neither a late sign-in nor a slow refresh of the old account can
+   * replace the account just signed in.
+   */
+  function saveUnlessSignedOut(
+    tokens: TokenSet,
+    epoch: number,
+    shared: SharedAuthState,
+    kind: "refresh" | "sign-in",
+    onSaved?: () => void,
+  ) {
     return serialized(async () => {
       if (signOuts !== epoch) throw new SignedOutError();
-      await store.save(tokens);
+      await coordinator.withLock(async (current, persist) => {
+        observe(current);
+        if (current.signOuts !== shared.signOuts) throw new SignedOutError();
+        if (current.signIns !== shared.signIns) throw new SignedInElsewhereError();
+        // A sign-in's count goes up before its tokens are saved: if it can't be
+        // stored, nothing is, so a new account is never cached under the old
+        // count for a pending refresh of the old one to overwrite. (Lookups
+        // read the counters and the cache together under this lock, so none
+        // can pair the new count with the tokens being replaced.)
+        if (kind === "sign-in") {
+          const signIns = current.signIns + 1;
+          await persist({ ...current, signIns });
+          // Marked with its generation, so a sign-in that loses to this one can
+          // tell whether this save happened (see savedElsewhere).
+          await store.save({ ...tokens, signInGeneration: signIns });
+        } else {
+          await store.save(tokens);
+        }
+        return { value: undefined };
+      });
       onSaved?.();
     });
   }
 
+  /**
+   * After SignedInElsewhereError: the sign-in that another process saved, read
+   * under the lock (so a sign-out can't slip in between), if it is still for
+   * this operation (no sign-out since `shared` and `epoch`) and usable.
+   */
+  async function savedElsewhere(epoch: number, shared: SharedAuthState): Promise<TokenSet | null> {
+    const saved = await coordinator.withLock(async (current) => {
+      observe(current);
+      if (current.signOuts !== shared.signOuts) throw new SignedOutError();
+      const found = await store.load().catch(() => null);
+      // Only the sign-in that won: a raised count whose save then failed
+      // leaves an older account cached, which is no one's answer now
+      // (Copilot review on #126).
+      return { value: found?.signInGeneration === current.signIns ? found : null };
+    });
+    if (signOuts !== epoch) throw new SignedOutError();
+    return saved && saved.expiresAt - now() > DEFAULT_MIN_TTL_MS ? saved : null;
+  }
+
+  /**
+   * End everything in flight here: called at a sign-out, synchronously, and
+   * when one in another process is first seen. Requests compare the epoch they
+   * noted with `signOuts`, so they all stop (SignedOutError) rather than save,
+   * join a now-useless browser sign-in, or start a new one for an operation from
+   * before the sign-out.
+   */
+  function invalidate(): void {
+    signOuts += 1;
+    lastSignedIn = undefined;
+    heldToken = undefined;
+    // Cancel and detach a pending browser sign-in, so its listener closes and
+    // a fresh sign-in can start straight away instead of joining it.
+    inflightAbort?.abort();
+    inflightSignIn = null;
+    inflightAbort = null;
+    inflightRefresh = null;
+  }
+
+  /** Note the shared counters; a sign-out elsewhere since they were last seen invalidates. */
+  function observe(state: SharedAuthState): SharedAuthState {
+    if (sharedSignOutsSeen !== undefined && state.signOuts > sharedSignOutsSeen) invalidate();
+    if (sharedSignOutsSeen === undefined || state.signOuts > sharedSignOutsSeen) {
+      sharedSignOutsSeen = state.signOuts;
+    }
+    return state;
+  }
+
+  async function sharedState(): Promise<SharedAuthState> {
+    // An unlocked read can catch this process's own sign-out between
+    // publishing its count and noting it as seen, and would take it for one
+    // from elsewhere. So wait out a local sign-out's cleanup first, and read
+    // again if one started meanwhile (Copilot review on #126). Reads under the
+    // lock can't see that in-between state: the cleanup holds it throughout.
+    for (;;) {
+      while (pendingSignOut) await pendingSignOut.catch(() => undefined);
+      const signOutsBefore = localSignOuts;
+      const state = await coordinator.snapshot();
+      if (!pendingSignOut && localSignOuts === signOutsBefore) return observe(state);
+    }
+  }
+
   let inflightRefresh: { epoch: number; id: object; promise: Promise<TokenSet> } | null = null;
-  function refreshAndSave(current: TokenSet, epoch: number): Promise<TokenSet> {
+  function refreshAndSave(
+    current: TokenSet,
+    epoch: number,
+    shared: SharedAuthState,
+  ): Promise<TokenSet> {
     // Only join a refresh from the same sign-out epoch.
     if (inflightRefresh?.epoch !== epoch) {
       const id = {}; // identity of this refresh, for its own finalizer
       const promise = (async () => {
         try {
           const refreshed = await refresh(current);
-          await saveUnlessSignedOut(refreshed, epoch);
+          await saveUnlessSignedOut(refreshed, epoch, shared, "refresh");
           return refreshed;
         } finally {
           if (inflightRefresh?.id === id) inflightRefresh = null;
@@ -492,21 +621,57 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   // own cache read raced with that save.
   let signInsCompleted = 0;
   let lastSignedIn: TokenSet | undefined;
-  function signInAndSave(): Promise<TokenSet> {
+  /**
+   * Start (or join) the browser sign-in. `since` is the shared counters noted
+   * when the requesting operation began, so a sign-out in another process after
+   * that point stops this attempt from saving (#95); without it (an explicit
+   * `signIn()`), they are noted now.
+   */
+  function signInAndSave(since?: SharedAuthState): Promise<TokenSet> {
     if (!inflightSignIn) {
       const epoch = signOuts;
       // Also this attempt's identity: sign-out replaces it, so `inflightAbort ===
       // abort` means "this attempt is still the current one".
       const abort = new AbortController();
       const attempt = (async () => {
+        const succeeded = (tokens: TokenSet) => {
+          lastSignInFailureAt = undefined;
+          lastSignedIn = tokens;
+          signInsCompleted += 1;
+        };
         try {
+          let shared = since;
+          if (!shared) {
+            // Right after a local sign-out, let its cleanup (and its shared
+            // count) land first, so this attempt belongs to the new epoch.
+            while (pendingSignOut) await pendingSignOut.catch(() => undefined);
+            if (signOuts !== epoch) throw new SignedOutError();
+            // Noted before the browser opens: a sign-out or sign-in in another
+            // process from here on decides whether this one may save (#95).
+            shared = await sharedState();
+            if (signOuts !== epoch) throw new SignedOutError();
+          }
           const tokens = await interactiveSignIn(abort.signal);
-          await saveUnlessSignedOut(tokens, epoch, () => {
-            lastSignInFailureAt = undefined;
-            lastSignedIn = tokens;
-            signInsCompleted += 1;
-          });
-          return tokens;
+          try {
+            await saveUnlessSignedOut(tokens, epoch, shared, "sign-in", () => succeeded(tokens));
+            return tokens;
+          } catch (e) {
+            if (!(e instanceof SignedInElsewhereError)) throw e;
+            // Another process's sign-in finished first and is saved: use that
+            // one rather than replacing it with this (possibly other) account.
+            const saved = await savedElsewhere(epoch, shared);
+            if (!saved) {
+              // The other sign-in's save failed, or its tokens are no longer
+              // usable: neither it nor this one is signed in, so say try again.
+              throw new SignInRequiredError(
+                "Another Microsoft sign-in was in progress at the same time, so this one wasn't " +
+                  "saved. Ask me to try again.",
+              );
+            }
+            log.info("Using the sign-in that finished first in another process");
+            succeeded(saved);
+            return saved;
+          }
         } catch (e) {
           // Only the current attempt's genuine failures start the cooldown: not
           // a sign-out, and not an attempt that sign-out already detached.
@@ -538,9 +703,20 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     return tokens.accessToken;
   }
 
-  async function signInOnDemand(waitMs: number | undefined, epoch: number): Promise<string> {
-    // A request from before a sign-out must not start a new sign-in after it.
-    if (signOuts !== epoch) throw new SignedOutError();
+  async function signInOnDemand(
+    waitMs: number | undefined,
+    epoch: number,
+    shared: SharedAuthState,
+  ): Promise<string> {
+    // A request from before a sign-out, here or in another process (#95), must
+    // not start or join a new sign-in after it, nor take a token from one.
+    const ensureStillCurrent = async () => {
+      if (signOuts !== epoch) throw new SignedOutError();
+      const latest = await sharedState();
+      // Both after the await: a local sign-out may have happened during it.
+      if (signOuts !== epoch || latest.signOuts !== shared.signOuts) throw new SignedOutError();
+    };
+    await ensureStillCurrent();
     const joining = inflightSignIn !== null;
     if (
       !joining &&
@@ -551,11 +727,12 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         `Microsoft sign-in didn't complete. Ask me to try again in a minute ${LOGIN_HINT}.`,
       );
     }
-    const pending = signInAndSave();
-    if (waitMs === undefined) return held(await pending);
-
-    const tokens = await settleWithin(pending, waitMs);
-    if (tokens) return held(tokens);
+    const pending = signInAndSave(shared);
+    const tokens = waitMs === undefined ? await pending : await settleWithin(pending, waitMs);
+    if (tokens) {
+      await ensureStillCurrent();
+      return held(tokens);
+    }
     throw new SignInRequiredError(
       joining
         ? "Still waiting for you to finish the Microsoft sign-in in your browser. " +
@@ -582,7 +759,8 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       // Noted before any await (or taken from the calling operation): if the user
       // signs out while this request is in flight, including while it waits
       // below, it stops (see "Sign-out ordering").
-      const epoch = options.signOutEpoch ?? signOuts;
+      let epoch = options.signOutEpoch ?? signOuts;
+      const localAtStart = localSignOuts;
       const ensureNotSignedOut = () => {
         if (signOuts !== epoch) throw new SignedOutError();
       };
@@ -592,16 +770,28 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       while (pendingSignOut) await pendingSignOut.catch(() => undefined);
       ensureNotSignedOut();
       const signInsAtStart = signInsCompleted;
-
-      let cached: TokenSet | null = null;
-      try {
-        cached = await store.load();
-      } catch (e) {
-        ensureNotSignedOut();
-        // Corrupt cache: reset it and continue to (re)authenticate.
-        log.warn("Token cache unreadable; clearing", { error: (e as Error).message });
-        await store.clear();
-      }
+      // The counters and the cache are read together, under the cross-process
+      // lock (#95). A sign-in or sign-out elsewhere is then wholly before or
+      // after this read: it can't pair the new counters with the credentials
+      // being replaced or deleted (and wait for a sign-out's cleanup if one is
+      // running). A sign-out after this point stops a refresh of what was read
+      // from saving it back.
+      const { shared, cached } = await coordinator.withLock(async (current) => {
+        observe(current);
+        let found: TokenSet | null = null;
+        try {
+          found = await store.load();
+        } catch (e) {
+          // Corrupt cache: reset it (under the lock) and go on to authenticate.
+          log.warn("Token cache unreadable; clearing", { error: (e as Error).message });
+          await store.clear();
+        }
+        return { value: { shared: current, cached: found } };
+      });
+      // A lookup that isn't part of a larger operation starts from what it first
+      // sees: a sign-out elsewhere that this read is the first to notice came
+      // before it. (An operation's own epoch was noted after syncSignOuts().)
+      if (options.signOutEpoch === undefined && localSignOuts === localAtStart) epoch = signOuts;
       ensureNotSignedOut();
 
       if (cached && cached.expiresAt - now() > minTtlMs) {
@@ -611,20 +801,32 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       // A browser sign-in is already pending (e.g. a previous call's window):
       // join it, rather than racing it with a refresh whose failure could open
       // a second window after the user has just signed in.
-      if (interactive && inflightSignIn) return signInOnDemand(options.interactiveWaitMs, epoch);
+      if (interactive && inflightSignIn) {
+        return signInOnDemand(options.interactiveWaitMs, epoch, shared);
+      }
 
       if (cached?.refreshToken) {
         try {
-          const refreshed = await refreshAndSave(cached, epoch);
+          const refreshed = await refreshAndSave(cached, epoch, shared);
           ensureNotSignedOut();
           return held(refreshed);
         } catch (e) {
           // A sign-out mid-request ends it: no interactive fallback.
           if (e instanceof SignedOutError) throw e;
+          // A browser sign-in finished elsewhere while we refreshed the old
+          // account: use that sign-in rather than putting the old one back.
+          if (e instanceof SignedInElsewhereError) {
+            const saved = await savedElsewhere(epoch, shared);
+            if (saved) return held(saved);
+          }
           log.warn("Silent token refresh failed", { error: (e as Error).message });
           if (!interactive) throw e instanceof AuthError ? e : new AuthError("Refresh failed.", e);
         }
       }
+      ensureNotSignedOut();
+      // A sign-out in another process since this request began ends it too,
+      // before it can use a later sign-in or fall back to a browser one (#95).
+      await sharedState();
       ensureNotSignedOut();
 
       if (!interactive) {
@@ -636,6 +838,9 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       // the normal threshold. The 401-recovery path forces a refresh with a huge
       // minTtlMs, which no fresh token could otherwise satisfy.
       const latest = await store.load().catch(() => null);
+      // This read may also have raced a sign-out elsewhere: catch up again
+      // before using what it found (or this process's own latest sign-in).
+      await sharedState();
       ensureNotSignedOut();
       if (latest) {
         const isNew = latest.accessToken !== cached?.accessToken;
@@ -652,27 +857,48 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         return held(lastSignedIn);
       }
 
-      return signInOnDemand(options.interactiveWaitMs, epoch);
+      return signInOnDemand(options.interactiveWaitMs, epoch, shared);
     },
 
     async signIn(): Promise<TokenSet> {
+      // Catch up first, so this belongs to the current epoch and doesn't join a
+      // pending sign-in that a sign-out elsewhere has made useless. A local
+      // sign-out during the catch-up came after this call, so it ends it.
+      const local = localSignOuts;
+      await sharedState();
+      if (localSignOuts !== local) throw new SignedOutError();
       return signInAndSave();
     },
 
     async signOut(): Promise<void> {
       // Synchronously, before any await: everything in flight is now stale.
-      signOuts += 1;
-      lastSignedIn = undefined;
-      heldToken = undefined;
-      // Cancel and detach a pending browser sign-in, so its listener closes and
-      // a fresh sign-in can start straight away instead of joining it.
-      inflightAbort?.abort();
-      inflightSignIn = null;
-      inflightAbort = null;
-      inflightRefresh = null;
+      localSignOuts += 1;
+      invalidate();
       // Cache and key: nothing of the sign-in stays on disk. Queued behind any
       // save already in progress, so that save can't land after the cleanup.
-      const cleanup = serialized(() => store.clear({ includeKey: true }));
+      // Under the cross-process lock the shared sign-out count goes up too, even
+      // if the cleanup fails, so operations that began before it in any process
+      // won't save afterwards (#95).
+      const cleanup = serialized(async () => {
+        const failure = await coordinator.withLock(async (current, persist) => {
+          observe(current);
+          // The shared count goes up before anything is deleted. If it can't be
+          // stored, nothing is, and the sign-out fails: otherwise an operation
+          // elsewhere could still pass the old count and save the sign-in again.
+          const next = { ...current, signOuts: current.signOuts + 1 };
+          await persist(next);
+          // This sign-out's own bump, already acted on above, isn't one from elsewhere.
+          sharedSignOutsSeen = next.signOuts;
+          let error: unknown;
+          try {
+            await store.clear({ includeKey: true });
+          } catch (e) {
+            error = e ?? new Error("Sign-out cleanup failed.");
+          }
+          return { value: error };
+        });
+        if (failure !== undefined) throw failure;
+      });
       pendingSignOut = cleanup;
       try {
         await cleanup;
@@ -683,6 +909,16 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
 
     signOutEpoch(): number {
       return signOuts;
+    },
+
+    async syncSignOuts(): Promise<number> {
+      const epoch = signOuts;
+      const local = localSignOuts;
+      await sharedState();
+      // Sign-outs elsewhere seen by the catch-up came before the operation; a
+      // local one during it came after, so the operation keeps the earlier epoch
+      // and stops.
+      return localSignOuts === local ? signOuts : epoch;
     },
 
     async getAccount(): Promise<string | undefined> {

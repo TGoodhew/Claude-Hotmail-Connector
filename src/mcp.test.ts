@@ -121,6 +121,83 @@ describe("tool calls are bound to one sign-out epoch", () => {
     await client.close();
   });
 
+  it("catches up with sign-outs in other processes before noting the epoch (#95)", async () => {
+    let epoch = 3;
+    const seen: unknown[] = [];
+    const graph = {
+      get: vi.fn(async (_path: string, opts?: { signOutEpoch?: number }) => {
+        seen.push(opts?.signOutEpoch);
+        return {};
+      }),
+    } as unknown as GraphClient;
+    const oneRequest: RegisteredTool = {
+      name: "one_request",
+      description: "test tool",
+      inputShape: {},
+      scopesAnyOf: ["openid"],
+      handler: async (_input, ctx) => {
+        await ctx.graph.get("/a");
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    };
+    const auth = {
+      signOut: async () => undefined,
+      signOutEpoch: () => epoch,
+      // A sign-out elsewhere, first seen now: it comes before this call.
+      syncSignOuts: vi.fn(async () => (epoch = 4)),
+    };
+    const server = createMcpServer({ graph, config, auth }, [oneRequest]);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    await client.callTool({ name: "one_request", arguments: {} });
+    expect(auth.syncSignOuts).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([4]);
+    await client.close();
+  });
+
+  it("stops waiting for a stalled catch-up when the client cancels the call (Copilot review on #126)", async () => {
+    const handler = vi.fn(async () => ({ content: [{ type: "text" as const, text: "ok" }] }));
+    const tool: RegisteredTool = {
+      name: "stalled",
+      description: "test tool",
+      inputShape: {},
+      scopesAnyOf: ["openid"],
+      handler,
+    };
+    const auth = {
+      signOut: async () => undefined,
+      signOutEpoch: () => 0,
+      syncSignOuts: vi.fn(() => new Promise<number>(() => undefined)), // never settles
+    };
+    const failures: string[] = [];
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      if (String(chunk).includes("Tool handler failed")) failures.push(String(chunk));
+      return true;
+    });
+    try {
+      const server = createMcpServer({ graph: {} as GraphClient, config, auth }, [tool]);
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client({ name: "test", version: "0.0.0" });
+      await client.connect(clientTransport);
+      const controller = new AbortController();
+      const call = client
+        .callTool({ name: "stalled", arguments: {} }, undefined, { signal: controller.signal })
+        .catch(() => undefined);
+      await vi.waitFor(() => expect(auth.syncSignOuts).toHaveBeenCalled());
+      controller.abort();
+      await call;
+      // The server side gave up on the catch-up and ended the call.
+      await vi.waitFor(() => expect(failures.join("")).toMatch(/cancelled/));
+      expect(handler).not.toHaveBeenCalled();
+      await client.close();
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it("gives every request the client's cancellation signal and one deadline (#37)", async () => {
     const seen: { signal?: AbortSignal; deadline?: number }[] = [];
     const graph = {

@@ -101,7 +101,8 @@ export interface GraphClient {
 }
 
 export interface GraphClientDeps {
-  auth: Pick<MicrosoftAuth, "getAccessToken"> & Partial<Pick<MicrosoftAuth, "signOutEpoch">>;
+  auth: Pick<MicrosoftAuth, "getAccessToken"> &
+    Partial<Pick<MicrosoftAuth, "signOutEpoch" | "syncSignOuts">>;
   baseUrl: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -218,7 +219,7 @@ function outOfTime(): TimeoutError {
  * Wait for `work`, but give up (rejecting) when `signal` aborts or `remainingMs`
  * runs out. `work` itself isn't cancelled: it may be shared with other callers.
  */
-async function withinLimits<T>(
+export async function withinLimits<T>(
   work: Promise<T>,
   signal: AbortSignal | undefined,
   remainingMs: number,
@@ -250,6 +251,12 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
   const maxRetries = deps.maxRetries ?? DEFAULT_MAX_RETRIES;
   const defaultTimeoutMs = deps.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const now = deps.now ?? Date.now;
+
+  /** The sign-out epoch for an operation starting now, sign-outs elsewhere included (#95). */
+  async function currentEpoch(): Promise<number | undefined> {
+    if (deps.auth.syncSignOuts) return deps.auth.syncSignOuts();
+    return deps.auth.signOutEpoch?.();
+  }
 
   /** Wait `ms`, but stop at once (as a cancellation) if `signal` aborts. */
   async function backOff(ms: number, signal?: AbortSignal): Promise<void> {
@@ -368,7 +375,15 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
     let refreshed = false;
     // One epoch for the whole request, retries included: a retry or 401
     // recovery that outlives a sign-out must stop, not sign in again.
-    const signOutEpoch = opts.signOutEpoch ?? deps.auth.signOutEpoch?.();
+    // The catch-up with other processes is bounded too: a stalled state-file
+    // read mustn't outlive the caller's cancellation or deadline.
+    const signOutEpoch =
+      opts.signOutEpoch ??
+      (await withinLimits(
+        currentEpoch(),
+        opts.signal,
+        opts.deadline === undefined ? Number.POSITIVE_INFINITY : opts.deadline - now(),
+      ));
     const repeatable = safeToRepeat(method, opts.body);
     // A send-once request is never retried here; its caller decides.
     const retries = opts.sendOnce ? 0 : maxRetries;
@@ -491,7 +506,13 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       let pages = 0;
       const maxPages = cap + MAX_EXTRA_PAGES;
       // Every page belongs to the same operation: page 2 after a sign-out stops.
-      const signOutEpoch = opts.signOutEpoch ?? deps.auth.signOutEpoch?.();
+      const signOutEpoch =
+        opts.signOutEpoch ??
+        (await withinLimits(
+          currentEpoch(),
+          opts.signal,
+          opts.deadline === undefined ? Number.POSITIVE_INFINITY : opts.deadline - now(),
+        ));
       const epochOpt = signOutEpoch !== undefined ? { signOutEpoch } : {};
       do {
         // On the first request send the full opts; for nextLink pages keep the
