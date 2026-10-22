@@ -263,6 +263,24 @@ describe("listEvents", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("pins a bare window that spans Sydney's spring-forward to the right instants (#64)", async () => {
+    // From @masyarakatai's #76: 00:00 (+10) to 05:00 (+11) on 2026-10-04 is
+    // four real hours, not five.
+    const request = vi.fn<RequestMock>(async () => page());
+    await listEvents(graphWith(request), {
+      startDateTime: "2026-10-04T00:00:00",
+      endDateTime: "2026-10-04T05:00:00",
+      timeZone: "Australia/Sydney",
+      limit: 25,
+    });
+    const opts = request.mock.calls[0]![2];
+    expect(opts?.query).toMatchObject({
+      startDateTime: "2026-10-03T14:00:00.000Z",
+      endDateTime: "2026-10-03T18:00:00.000Z",
+    });
+    expect(opts?.headers?.prefer).toBe('outlook.timezone="Australia/Sydney"');
+  });
+
   it("lists another calendar by its id (#49)", async () => {
     const request = vi.fn<RequestMock>(async () => page());
     await listEvents(graphWith(request), { ...validRange, calendarId: "AAA/b+c=" });
