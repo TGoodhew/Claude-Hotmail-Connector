@@ -76,6 +76,8 @@ export class GraphError extends AppError {
   readonly status?: number;
   readonly graphCode?: string;
   readonly reason?: "network" | "cancelled";
+  /** How long Graph asked the caller to wait before trying again (`Retry-After`). */
+  readonly retryAfterMs?: number;
 
   constructor(
     message: string,
@@ -83,6 +85,7 @@ export class GraphError extends AppError {
       status?: number;
       graphCode?: string;
       reason?: "network" | "cancelled";
+      retryAfterMs?: number;
       cause?: unknown;
     } = {},
   ) {
@@ -90,6 +93,7 @@ export class GraphError extends AppError {
     this.status = options.status;
     this.graphCode = options.graphCode;
     this.reason = options.reason;
+    this.retryAfterMs = options.retryAfterMs;
   }
 }
 

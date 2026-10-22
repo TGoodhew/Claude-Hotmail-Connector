@@ -328,7 +328,13 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
         // non-JSON body; keep the generic message.
       }
     }
-    return new GraphError(message, { status: res.status, graphCode: code });
+    // Kept for a caller that retries itself (a send-once request).
+    const wait = retryAfterMs(res.headers.get("retry-after"));
+    return new GraphError(message, {
+      status: res.status,
+      graphCode: code,
+      ...(wait !== undefined ? { retryAfterMs: wait } : {}),
+    });
   }
 
   function parseBody<T>(res: RawResponse): T {

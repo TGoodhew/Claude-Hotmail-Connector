@@ -411,6 +411,26 @@ describe("createGraphClient", () => {
     expect(hanging).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps Graph's Retry-After on the error, for a caller that retries itself (#137)", async () => {
+    const fetchImpl = fetchMock(async () =>
+      json(
+        { error: { code: "TooManyRequests" } },
+        { status: 429, headers: { "retry-after": "7" } },
+      ),
+    );
+    const client = createGraphClient({
+      auth: makeAuth(),
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+    });
+    const e = await client.delete("/me/events/e1", { sendOnce: true }).catch((x: unknown) => x);
+    expect((e as GraphError).retryAfterMs).toBe(7_000);
+    const plain = fetchMock(async () => json({ error: { code: "x" } }, { status: 403 }));
+    const c2 = createGraphClient({ auth: makeAuth(), baseUrl: BASE, fetchImpl: plain as never });
+    const e2 = await c2.delete("/me/events/e1", { sendOnce: true }).catch((x: unknown) => x);
+    expect((e2 as GraphError).retryAfterMs).toBeUndefined();
+  });
+
   it("isTransientGraphFailure: what may succeed if tried again", () => {
     for (const s of [401, 429, 500, 502, 503, 504]) {
       expect(isTransientGraphFailure(new GraphError("x", { status: s })), String(s)).toBe(true);

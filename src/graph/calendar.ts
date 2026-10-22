@@ -941,19 +941,33 @@ export async function cancelEvent(
       if (mayBeDeleted) throw unconfirmedCancel(e);
       throw e;
     }
-    assertCancellable(event, input.confirmSubject);
-    const precondition = ifMatch(event, "delete");
+    let precondition: Record<string, string>;
+    try {
+      assertCancellable(event, input.confirmSubject);
+      precondition = ifMatch(event, "delete");
+    } catch (e) {
+      // A DELETE that timed out may still complete at Graph, whatever the
+      // event looks like now: never say nothing was deleted then.
+      if (mayBeDeleted) throw unconfirmedCancel(e);
+      throw e;
+    }
     try {
       await onCheckedVersion(() => graph.delete(path, { headers: precondition, sendOnce: true }));
       return shapeWrite(event);
     } catch (e) {
-      if (!isTransientGraphFailure(e)) throw e;
-      if (attempt >= CANCEL_ATTEMPTS) throw mayBeDeleted ? unconfirmedCancel(e) : e;
-      // Throttling and 401s are refused before any work; anything else may not be.
-      if (!(e instanceof GraphError && (e.status === 429 || e.status === 401))) {
-        mayBeDeleted = shapeWrite(event);
+      // Throttling and 401s are refused before any work; any other transient
+      // failure may have come after it (a 5xx, a timeout): recorded first, so
+      // no exit below can drop it.
+      const refusedUnprocessed = e instanceof GraphError && (e.status === 429 || e.status === 401);
+      if (isTransientGraphFailure(e) && !refusedUnprocessed) mayBeDeleted = shapeWrite(event);
+      // Read, checked and still there, then gone: an earlier DELETE did it.
+      if (mayBeDeleted && e instanceof GraphError && e.status === 404) return mayBeDeleted;
+      if (!isTransientGraphFailure(e) || attempt >= CANCEL_ATTEMPTS) {
+        throw mayBeDeleted ? unconfirmedCancel(e) : e;
       }
-      await pause(CANCEL_RETRY_PAUSE_MS * attempt);
+      // Graph's own wait, when it gave one (e.g. throttling), else a short one.
+      const asked = e instanceof GraphError ? (e.retryAfterMs ?? 0) : 0;
+      await pause(Math.max(asked, CANCEL_RETRY_PAUSE_MS * attempt));
     }
   }
 }
@@ -963,12 +977,16 @@ const CANCEL_ATTEMPTS = 3;
 /** Wait before the second attempt (doubled before the third). */
 const CANCEL_RETRY_PAUSE_MS = 1_000;
 
-/** A failure after a DELETE that may have gone through: never say nothing happened. */
-function unconfirmedCancel(cause: unknown): GraphError {
-  return new GraphError(
+/**
+ * A failure after a DELETE that may have gone through: never say nothing
+ * happened. A ValidationError, so its message reaches the caller as written
+ * (a GraphError would be replaced by a generic "try again").
+ */
+function unconfirmedCancel(cause: unknown): ValidationError {
+  return new ValidationError(
     "Microsoft Graph didn't confirm the cancellation, and an earlier attempt may have gone " +
       "through. Check with list_events whether the event is still there before trying again.",
-    { cause },
+    cause,
   );
 }
 

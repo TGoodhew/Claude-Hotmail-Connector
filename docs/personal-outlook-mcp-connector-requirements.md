@@ -328,13 +328,17 @@ Approved by the owner with guards (#55).
   - Each DELETE is sent **once**: the Graph client's back-off retries and its 401 recovery are off for
     it (`sendOnce`).
   - After a transient failure (throttling, a 5xx, a timeout, a 401), `cancel_event` starts over: it
-    re-reads the event, re-runs every guard, then sends one DELETE. It makes at most 3 attempts, pausing
-    1 s, then 2 s.
+    re-reads the event, re-runs every guard, then sends one DELETE. It makes at most 3 attempts. Between
+    attempts it waits as long as Graph asks (`Retry-After`), and at least 1 s, then 2 s.
   - The only gap is the moment between each read and its DELETE, e.g. attendees added in those
     milliseconds. Throttling or retries can't stretch it *(Copilot review on #137; owner decision)*.
   - A DELETE that failed after Graph may have done the work (a 5xx or a timeout) is never reported as
-    "nothing deleted". If the re-read finds the event gone, it's reported as cancelled; otherwise the
-    error says the cancellation is unconfirmed.
+    "nothing deleted".
+    - If the event is then found gone (on the re-read, or as a 404 to the next DELETE), it's reported
+      as cancelled.
+    - Any other ending says the cancellation is unconfirmed and to check with `list_events`: a guard
+      refusing on the re-read, a missing version tag, the attempt limit, or a non-transient error.
+      That message is shown to the caller as written.
   - The header is still sent, so the check starts working if Graph begins enforcing it. The live test
     records the behaviour, so a change in Graph shows up.
 - **Output:** the removed event (id, subject, start/end, location, webLink), to echo back to the user.
