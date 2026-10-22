@@ -637,8 +637,10 @@ export interface CancelEventInput {
  *  - anything recurring is refused: deleting a series master removes every
  *    occurrence, and deleting an occurrence removes it from its series rather
  *    than moving it to Deleted Items, so neither fits the soft-delete promise.
- * The DELETE carries `If-Match` for the checked version, so an event that
- * changed in between (e.g. gained attendees) is not deleted.
+ * The DELETE carries `If-Match` for the checked version, but Graph ignores it
+ * on event deletes (found by the live test, #48): an event that changes between
+ * the check and the DELETE (e.g. gains attendees) is still deleted. The header
+ * is kept so the check works if Graph starts enforcing it (spec §7.8).
  * Returns the removed event so it can be echoed to the user.
  */
 export async function cancelEvent(
