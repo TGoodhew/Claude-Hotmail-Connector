@@ -8,6 +8,11 @@ import { z } from "zod";
 import {
   cancelEvent,
   createEvent,
+  DAYS_OF_WEEK,
+  MAX_OCCURRENCES,
+  RECURRENCE_TYPES,
+  SHOW_AS,
+  WEEK_INDEXES,
   getEvent,
   listCalendars,
   listEvents,
@@ -191,6 +196,60 @@ const createEventShape = {
     .optional()
     .describe("Idempotency key; if omitted one is generated so retries don't duplicate."),
   calendarId: calendarIdShape,
+  isAllDay: z
+    .boolean()
+    .optional()
+    .describe(
+      'All-day event: start and end are dates ("YYYY-MM-DD"), and end is the day AFTER the last ' +
+        'day (a one-day event on 20 July is start "2026-07-20", end "2026-07-21").',
+    ),
+  showAs: z
+    .enum(SHOW_AS)
+    .optional()
+    .describe('How the time shows as busy (default busy); e.g. "free" for a travel-time block.'),
+  recurrence: z
+    .object({
+      pattern: z.object({
+        type: z.enum(RECURRENCE_TYPES),
+        interval: z.number().int().min(1).max(99).describe("Every N days/weeks/months/years."),
+        daysOfWeek: z
+          .array(z.enum(DAYS_OF_WEEK))
+          .min(1)
+          .optional()
+          .describe("weekly, relativeMonthly, relativeYearly: which days."),
+        dayOfMonth: z
+          .number()
+          .int()
+          .min(1)
+          .max(31)
+          .optional()
+          .describe("absoluteMonthly, absoluteYearly: which day of the month."),
+        month: z.number().int().min(1).max(12).optional().describe("Yearly patterns: which month."),
+        index: z
+          .enum(WEEK_INDEXES)
+          .optional()
+          .describe('Relative patterns: which week, e.g. "first" Monday.'),
+        firstDayOfWeek: z.enum(DAYS_OF_WEEK).optional(),
+      }),
+      range: z.object({
+        type: z.enum(["endDate", "noEnd", "numbered"]),
+        startDate: z.string().describe("YYYY-MM-DD: must be the event's start date."),
+        endDate: z.string().optional().describe('YYYY-MM-DD, for type "endDate" (inclusive).'),
+        numberOfOccurrences: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_OCCURRENCES)
+          .optional()
+          .describe('For type "numbered".'),
+      }),
+    })
+    .optional()
+    .describe(
+      "Makes this a recurring series (Graph's patternedRecurrence). Each pattern type needs its " +
+        "fields: weekly needs daysOfWeek; absoluteMonthly dayOfMonth; relativeMonthly daysOfWeek " +
+        "and index; absoluteYearly dayOfMonth and month; relativeYearly daysOfWeek, index and month.",
+    ),
 };
 
 export const createEventTool: ToolDefinition<typeof createEventShape> = defineTool({
@@ -201,8 +260,11 @@ export const createEventTool: ToolDefinition<typeof createEventShape> = defineTo
     "plus separate travel-time blocks). " +
     "Times are LOCAL wall-clock paired with an IANA time zone (never a UTC 'Z'), so the " +
     "event lands at the intended local time. A transactionId makes repeated calls idempotent " +
-    "(no duplicates). IMPORTANT: confirm the details (title, date, start/end, timezone, location) " +
-    "with the user BEFORE calling, then echo back the created event.",
+    "(no duplicates). Supports all-day events (isAllDay), free/busy (showAs) and recurring " +
+    "series (recurrence). A recurring series can't be removed with cancel_event, only in " +
+    "Outlook, so confirm its pattern and end with extra care. IMPORTANT: confirm the details " +
+    "(title, date, start/end, timezone, location, any recurrence) with the user BEFORE calling, " +
+    "then echo back the created event.",
   inputShape: createEventShape,
   annotations: {
     readOnlyHint: false,
@@ -222,6 +284,9 @@ export const createEventTool: ToolDefinition<typeof createEventShape> = defineTo
       reminderMinutesBeforeStart: input.reminderMinutesBeforeStart,
       transactionId: input.transactionId,
       calendarId: input.calendarId,
+      isAllDay: input.isAllDay,
+      showAs: input.showAs,
+      recurrence: input.recurrence,
     });
     return toolResult(`Created event "${result.subject ?? input.subject}".`, { event: result });
   },

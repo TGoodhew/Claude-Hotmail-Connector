@@ -14,6 +14,7 @@ import { htmlToText } from "../util/html.js";
 import {
   assertValidTimeZone,
   type GraphDateTime,
+  normalizeLocalDateTime,
   preferTimeZoneHeader,
   toGraphDateTime,
   utcToZonedWallClock,
@@ -308,6 +309,163 @@ export interface CreateEventInput {
   transactionId?: string;
   /** A calendar from list_calendars; the default calendar if omitted. */
   calendarId?: string;
+  /**
+   * An all-day event (#51): start and end are dates (or midnights) in one
+   * zone, and the end is exclusive, i.e. the day after the last day.
+   */
+  isAllDay?: boolean;
+  /** How the time shows to others (#51): e.g. "free" for a travel-time block. */
+  showAs?: ShowAs;
+  /** Makes the event a recurring series (#51); see {@link buildRecurrence}. */
+  recurrence?: RecurrenceInput;
+}
+
+export const SHOW_AS = ["free", "tentative", "busy", "oof", "workingElsewhere"] as const;
+export type ShowAs = (typeof SHOW_AS)[number];
+
+export const RECURRENCE_TYPES = [
+  "daily",
+  "weekly",
+  "absoluteMonthly",
+  "relativeMonthly",
+  "absoluteYearly",
+  "relativeYearly",
+] as const;
+export const DAYS_OF_WEEK = [
+  "sunday",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+] as const;
+export const WEEK_INDEXES = ["first", "second", "third", "fourth", "last"] as const;
+/** Most occurrences a "numbered" series may have. */
+export const MAX_OCCURRENCES = 999;
+
+/** A recurrence as the tool takes it: Graph's `patternedRecurrence`, minus its zone. */
+export interface RecurrenceInput {
+  pattern: {
+    type: (typeof RECURRENCE_TYPES)[number];
+    /** Every `interval` days / weeks / months / years. */
+    interval: number;
+    daysOfWeek?: (typeof DAYS_OF_WEEK)[number][];
+    dayOfMonth?: number;
+    month?: number;
+    index?: (typeof WEEK_INDEXES)[number];
+    firstDayOfWeek?: (typeof DAYS_OF_WEEK)[number];
+  };
+  range: {
+    type: "endDate" | "noEnd" | "numbered";
+    /** The first occurrence's date, YYYY-MM-DD: must be the event's start date. */
+    startDate: string;
+    endDate?: string;
+    numberOfOccurrences?: number;
+  };
+}
+
+/** A real calendar date `YYYY-MM-DD`, or a ValidationError naming `label`. */
+function calendarDate(s: string, label: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    throw new ValidationError(`${label} must be a date "YYYY-MM-DD"; got "${s}".`);
+  }
+  normalizeLocalDateTime(`${s}T00:00:00`); // rejects 2026-02-30 and the like
+  return s;
+}
+
+/**
+ * Graph's `patternedRecurrence` for `r`, checked against the event's start.
+ * Each pattern type gets exactly the fields it uses, and is refused without
+ * them, so the series is the one described rather than whatever Graph makes of
+ * a partial pattern. The range starts on the event's start date, in its zone.
+ */
+export function buildRecurrence(r: RecurrenceInput, start: GraphDateTime): Record<string, unknown> {
+  const { pattern: p, range } = r;
+  if (!Number.isInteger(p.interval) || p.interval < 1 || p.interval > 99) {
+    throw new ValidationError("recurrence.pattern.interval must be a whole number from 1 to 99.");
+  }
+  const need = <T>(value: T | undefined, field: string): T => {
+    if (value === undefined || (Array.isArray(value) && value.length === 0)) {
+      throw new ValidationError(`A ${p.type} recurrence needs ${field}.`);
+    }
+    return value;
+  };
+  const pattern: Record<string, unknown> = { type: p.type, interval: p.interval };
+  switch (p.type) {
+    case "daily":
+      break;
+    case "weekly":
+      pattern.daysOfWeek = need(p.daysOfWeek, "pattern.daysOfWeek");
+      if (p.firstDayOfWeek) pattern.firstDayOfWeek = p.firstDayOfWeek;
+      break;
+    case "absoluteMonthly":
+      pattern.dayOfMonth = need(p.dayOfMonth, "pattern.dayOfMonth");
+      break;
+    case "relativeMonthly":
+      pattern.daysOfWeek = need(p.daysOfWeek, "pattern.daysOfWeek");
+      pattern.index = need(p.index, "pattern.index");
+      break;
+    case "absoluteYearly":
+      pattern.dayOfMonth = need(p.dayOfMonth, "pattern.dayOfMonth");
+      pattern.month = need(p.month, "pattern.month");
+      break;
+    case "relativeYearly":
+      pattern.daysOfWeek = need(p.daysOfWeek, "pattern.daysOfWeek");
+      pattern.index = need(p.index, "pattern.index");
+      pattern.month = need(p.month, "pattern.month");
+      break;
+  }
+
+  const startDate = calendarDate(range.startDate, "recurrence.range.startDate");
+  if (startDate !== start.dateTime.slice(0, 10)) {
+    throw new ValidationError(
+      `recurrence.range.startDate (${startDate}) must be the event's start date ` +
+        `(${start.dateTime.slice(0, 10)}). Nothing was created.`,
+    );
+  }
+  const out: Record<string, unknown> = {
+    type: range.type,
+    startDate,
+    recurrenceTimeZone: start.timeZone,
+  };
+  if (range.type === "endDate") {
+    if (range.endDate === undefined) {
+      throw new ValidationError("An endDate recurrence range needs range.endDate.");
+    }
+    const endDate = calendarDate(range.endDate, "recurrence.range.endDate");
+    if (endDate < startDate) {
+      throw new ValidationError("recurrence.range.endDate must not be before its startDate.");
+    }
+    out.endDate = endDate;
+  } else if (range.type === "numbered") {
+    const n = range.numberOfOccurrences;
+    if (n === undefined || !Number.isInteger(n) || n < 1 || n > MAX_OCCURRENCES) {
+      throw new ValidationError(
+        `A numbered recurrence needs range.numberOfOccurrences from 1 to ${MAX_OCCURRENCES}.`,
+      );
+    }
+    out.numberOfOccurrences = n;
+  }
+  return { pattern, range: out };
+}
+
+/**
+ * The start or end of an all-day event: midnight in its zone. A date
+ * ("2026-07-20") means that midnight; a time must be midnight already.
+ */
+function allDayTime(t: EventDateTime, side: "start" | "end"): GraphDateTime {
+  const local = /^\d{4}-\d{2}-\d{2}$/.test(t.dateTime.trim())
+    ? `${t.dateTime.trim()}T00:00:00`
+    : t.dateTime;
+  const g = toGraphDateTime(local, t.timeZone);
+  if (!g.dateTime.endsWith("T00:00:00")) {
+    throw new ValidationError(
+      `An all-day event's ${side} must be a date ("YYYY-MM-DD") or midnight; got ` +
+        `"${t.dateTime}". Nothing was created.`,
+    );
+  }
+  return g;
 }
 
 export interface UpdateEventInput {
@@ -361,6 +519,9 @@ export const WRITABLE_EVENT_FIELDS: ReadonlySet<string> = new Set([
   "isReminderOn",
   "reminderMinutesBeforeStart",
   "transactionId",
+  "isAllDay",
+  "showAs",
+  "recurrence",
 ]);
 
 /**
@@ -389,6 +550,9 @@ function deterministicTransactionId(input: CreateEventInput): string {
     input.end.dateTime,
     input.end.timeZone,
     input.location ?? "",
+    // Only when set, so a plain event's id is what it always was.
+    ...(input.isAllDay ? ["isAllDay"] : []),
+    ...(input.recurrence ? [JSON.stringify(input.recurrence)] : []),
   ].join(String.fromCharCode(0));
   return createHash("sha256").update(material).digest("hex").slice(0, 36);
 }
@@ -399,17 +563,32 @@ function deterministicTransactionId(input: CreateEventInput): string {
  * Times are sent as local wall-clock + IANA time zone via {@link toGraphDateTime}
  * (which rejects offset/`Z` values), so the event lands at the intended local
  * time. When no `transactionId` is supplied a deterministic one is derived from
- * the event details, so a retried identical create does not duplicate.
+ * the event details, so a retried identical create does not duplicate. An
+ * all-day event is midnight to midnight in one zone, and a recurrence is built
+ * by {@link buildRecurrence} (#51).
  * `deriveId` is injectable for tests.
  */
 export async function createEvent(
   graph: GraphClient,
   input: CreateEventInput,
   deriveId: (input: CreateEventInput) => string = deterministicTransactionId,
-): Promise<EventWriteResult> {
+): Promise<CreatedEvent> {
   const transactionId = input.transactionId ?? deriveId(input);
-  const start = toGraphDateTime(input.start.dateTime, input.start.timeZone);
-  const end = toGraphDateTime(input.end.dateTime, input.end.timeZone);
+  let start: GraphDateTime;
+  let end: GraphDateTime;
+  if (input.isAllDay) {
+    // Graph requires midnight to midnight, in one zone (#51).
+    start = allDayTime(input.start, "start");
+    end = allDayTime(input.end, "end");
+    if (start.timeZone !== end.timeZone) {
+      throw new ValidationError(
+        "An all-day event's start and end must be in the same time zone. Nothing was created.",
+      );
+    }
+  } else {
+    start = toGraphDateTime(input.start.dateTime, input.start.timeZone);
+    end = toGraphDateTime(input.end.dateTime, input.end.timeZone);
+  }
   assertEndAfterStart(
     instant(start),
     instant(end),
@@ -426,10 +605,28 @@ export async function createEvent(
     ...(input.reminderMinutesBeforeStart !== undefined
       ? { reminderMinutesBeforeStart: input.reminderMinutesBeforeStart }
       : {}),
+    ...(input.isAllDay ? { isAllDay: true } : {}),
+    ...(input.showAs ? { showAs: input.showAs } : {}),
+    ...(input.recurrence ? { recurrence: buildRecurrence(input.recurrence, start) } : {}),
   };
   assertWritableEventPayload(payload);
-  const created = await graph.post<GraphEvent>(calendarPath(input.calendarId, "events"), payload);
-  return shapeWrite(created, transactionId);
+  const created = await graph.post<GraphEvent & { recurrence?: Record<string, unknown> | null }>(
+    calendarPath(input.calendarId, "events"),
+    payload,
+  );
+  return {
+    ...shapeWrite(created, transactionId),
+    isAllDay: Boolean(created.isAllDay),
+    showAs: created.showAs ?? null,
+    recurrence: created.recurrence ?? null,
+  };
+}
+
+/** What create_event echoes: the written event, with the #51 fields. */
+export interface CreatedEvent extends EventWriteResult {
+  isAllDay: boolean;
+  showAs: string | null;
+  recurrence: Record<string, unknown> | null;
 }
 
 /** Fields `update_event` can change, in the order changes are reported. */
