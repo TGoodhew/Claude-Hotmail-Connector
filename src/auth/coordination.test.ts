@@ -116,10 +116,14 @@ const name = osLockName(tmpdir());
 describe.skipIf(name === null)("the OS-held lock (Windows, Linux; Copilot review on #126)", () => {
   /** Another process holding the lock for `dir` until it is killed. */
   async function holderProcess(dir: string) {
+    // Base64 through argv: a Linux abstract socket's name starts with a NUL byte,
+    // which spawn() refuses in arguments (Copilot review on #126).
     const script =
-      'require("net").createServer().listen(process.argv[1], () => console.log("held"));' +
+      'const name = Buffer.from(process.argv[1], "base64").toString();' +
+      'require("net").createServer().listen(name, () => console.log("held"));' +
       "setInterval(() => {}, 1000);";
-    const child = spawn(process.execPath, ["-e", script, osLockName(dir)!], {
+    const encoded = Buffer.from(osLockName(dir)!).toString("base64");
+    const child = spawn(process.execPath, ["-e", script, encoded], {
       stdio: ["ignore", "pipe", "inherit"],
     });
     await new Promise((r) => child.stdout.once("data", r));
