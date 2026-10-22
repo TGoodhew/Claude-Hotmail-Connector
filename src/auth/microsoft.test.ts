@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
 import { createGraphClient } from "../graph/client.js";
 import { AuthError, SignedOutError, SignInRequiredError } from "../util/errors.js";
@@ -15,6 +18,11 @@ import {
   toTokenSet,
   type TokenResponse,
 } from "./microsoft.js";
+import {
+  createFileCoordinator,
+  createMemoryCoordinator,
+  type AuthCoordinator,
+} from "./coordination.js";
 import type { TokenSet, TokenStore } from "./tokens.js";
 
 describe("launcherSucceeded (browser launcher exit status)", () => {
@@ -748,8 +756,10 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
       () => new Error("expected the request to stop"),
       (e: unknown) => e as Error,
     );
-    await auth.signOut();
+    // The sign-out's cleanup waits for the read, which holds the lock.
+    const signedOut = auth.signOut();
     releaseLoad();
+    await signedOut;
     expect(await outcome).toBeInstanceOf(SignedOutError);
     expect(fetchImpl).not.toHaveBeenCalled(); // no refresh with the stale credentials
     expect(current).toBeNull();
@@ -1029,3 +1039,723 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+// Two auth instances sharing one token cache and one file coordinator stand in
+// for two processes, e.g. Claude Desktop's server and the `logout` command (#95).
+describe("sign-in and sign-out across processes (#95)", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  function sharedDir(): string {
+    const d = mkdtempSync(join(tmpdir(), "hotmail-95-"));
+    dirs.push(d);
+    return d;
+  }
+  const reply = (at: string) => () =>
+    jsonResponse({ access_token: at, refresh_token: `RT-${at}`, expires_in: 3600 });
+
+  /** One "process": its own auth, sharing the cache and the coordinator directory. */
+  function processWith(
+    store: TokenStore,
+    dir: string,
+    fetchImpl: () => Response | Promise<Response>,
+  ): { auth: ReturnType<typeof createMicrosoftAuth>; authorizeUrl: () => string } {
+    let url = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      coordinator: createFileCoordinator(dir),
+      fetchImpl: vi.fn(async () => fetchImpl()) as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        url = u;
+      },
+      now: () => 1_000,
+    });
+    return { auth, authorizeUrl: () => url };
+  }
+
+  function redirectBack(authorizeUrl: string, params: Record<string, string>): Promise<Response> {
+    const u = new URL(authorizeUrl);
+    const redirect = new URL(u.searchParams.get("redirect_uri")!);
+    redirect.hostname = "127.0.0.1";
+    const q = new URLSearchParams({ state: u.searchParams.get("state")!, ...params });
+    return fetch(`${redirect.origin}/?${q}`);
+  }
+  async function until(cond: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(cond()).toBe(true);
+  }
+  /** Settle a promise into an outcome now, so a late rejection is never unhandled. */
+  const outcome = <T>(p: Promise<T>) =>
+    p.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+
+  it("a sign-out in another process wins over a pending browser sign-in", async () => {
+    const dir = sharedDir();
+    const store = memoryStore(null);
+    const server = processWith(store, dir, reply("SERVER-AT"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+
+    const pending = outcome(server.auth.signIn());
+    await until(() => server.authorizeUrl() !== "");
+    await cli.auth.signOut(); // `logout` while the browser flow is still open
+
+    await redirectBack(server.authorizeUrl(), { code: "CODE" }); // the user finishes it anyway
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(store.current).toBeNull(); // the logout wasn't undone
+
+    // A new sign-in after the logout saves normally.
+    const firstUrl = server.authorizeUrl();
+    const again = outcome(server.auth.signIn());
+    await until(() => server.authorizeUrl() !== firstUrl);
+    await redirectBack(server.authorizeUrl(), { code: "CODE2" });
+    expect((await again).ok).toBe(true);
+    expect(store.current?.accessToken).toBe("SERVER-AT");
+  });
+
+  it("a sign-out in another process wins over a refresh already in flight", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 500, // expired at now = 1000
+      scopes: config.scopes,
+    });
+    let sent = false;
+    let answer = (_r: Response): void => undefined;
+    const slowTokenEndpoint = () =>
+      new Promise<Response>((r) => {
+        sent = true;
+        answer = r;
+      });
+    const server = processWith(store, dir, slowTokenEndpoint);
+    const cli = processWith(store, dir, reply("UNUSED"));
+
+    const lookup = outcome(server.auth.getAccessToken({ interactive: false }));
+    await until(() => sent); // the refresh request is out
+    await cli.auth.signOut();
+    answer(reply("REFRESHED")());
+
+    const result = await lookup;
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(store.current).toBeNull(); // the refresh didn't put the sign-in back
+  });
+
+  it("of two pending browser sign-ins, the first to finish wins", async () => {
+    const dir = sharedDir();
+    const store = memoryStore(null);
+    const desktop = processWith(store, dir, reply("DESKTOP-AT"));
+    const code = processWith(store, dir, reply("CODE-AT"));
+
+    const desktopSignIn = outcome(desktop.auth.signIn());
+    const codeSignIn = outcome(code.auth.signIn());
+    await until(() => desktop.authorizeUrl() !== "" && code.authorizeUrl() !== "");
+
+    await redirectBack(code.authorizeUrl(), { code: "C1" });
+    const first = await codeSignIn;
+    expect(first.ok && first.value.accessToken).toBe("CODE-AT");
+
+    await redirectBack(desktop.authorizeUrl(), { code: "D1" }); // finished later
+    const second = await desktopSignIn;
+    // Its own tokens were dropped; it uses the sign-in that is saved.
+    expect(second.ok && second.value.accessToken).toBe("CODE-AT");
+    expect(store.current?.accessToken).toBe("CODE-AT");
+  });
+
+  it("a later sign-in doesn't adopt an older account when the winner's save failed (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    // Account X is already signed in.
+    const base = memoryStore({
+      accessToken: "ACCOUNT-X",
+      refreshToken: "RT-X",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    });
+    let saves = 0;
+    const store: TokenStore = {
+      load: () => base.load(),
+      async save(t) {
+        if (++saves === 1) throw new Error("disk full"); // the winner's save fails
+        await base.save(t);
+      },
+      clear: (o) => base.clear(o),
+    };
+    const first = processWith(store, dir, reply("ACCOUNT-A"));
+    const second = processWith(store, dir, reply("ACCOUNT-B"));
+
+    const firstSignIn = outcome(first.auth.signIn());
+    const secondSignIn = outcome(second.auth.signIn());
+    await until(() => first.authorizeUrl() !== "" && second.authorizeUrl() !== "");
+
+    await redirectBack(first.authorizeUrl(), { code: "A" }); // raises the count, then fails to save
+    const a = await firstSignIn;
+    expect(!a.ok && (a.error as Error).message).toMatch(/disk full/);
+
+    await redirectBack(second.authorizeUrl(), { code: "B" });
+    const b = await secondSignIn;
+    // Not account X (an older sign-in no one chose now): told to try again.
+    expect(b.ok).toBe(false);
+    expect(!b.ok && b.error).toBeInstanceOf(SignInRequiredError);
+    expect(!b.ok && (b.error as Error).message).toMatch(/try again/);
+    expect(base.current?.accessToken).toBe("ACCOUNT-X"); // untouched
+  });
+
+  it("a refreshed sign-in keeps its generation, so it still counts as the winner", async () => {
+    const dir = sharedDir();
+    const store = memoryStore(null);
+    const desktop = processWith(store, dir, reply("DESKTOP-AT"));
+    const signIn = outcome(desktop.auth.signIn());
+    await until(() => desktop.authorizeUrl() !== "");
+    await redirectBack(desktop.authorizeUrl(), { code: "D" });
+    expect((await signIn).ok).toBe(true);
+    const generation = store.current?.signInGeneration;
+    expect(generation).toBe(1);
+    // Expire it, refresh it: the generation survives.
+    store.current = { ...store.current!, expiresAt: 500 };
+    await desktop.auth.getAccessToken({ interactive: false });
+    expect(store.current?.signInGeneration).toBe(generation);
+  });
+
+  /** A token endpoint that answers only when told to. */
+  function slowEndpoint() {
+    const s = { sent: false, answer: (_r: Response): void => undefined };
+    const respond = () =>
+      new Promise<Response>((r) => {
+        s.sent = true;
+        s.answer = r;
+      });
+    return { s, respond };
+  }
+
+  it("a slow refresh of the old account can't replace a sign-in that finished elsewhere (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 500,
+      scopes: config.scopes,
+    });
+    const { s, respond } = slowEndpoint();
+    const server = processWith(store, dir, respond);
+    const cli = processWith(store, dir, reply("NEW-ACCOUNT-AT"));
+
+    const lookup = outcome(server.auth.getAccessToken({ interactive: false }));
+    await until(() => s.sent); // refreshing the old account
+    const login = outcome(cli.auth.signIn()); // meanwhile, `login` with another account
+    await until(() => cli.authorizeUrl() !== "");
+    await redirectBack(cli.authorizeUrl(), { code: "C" });
+    expect((await login).ok).toBe(true);
+
+    s.answer(reply("REFRESHED-OLD")());
+    const result = await lookup;
+    // The refresh's tokens were dropped, and the request uses the new sign-in.
+    expect(result.ok && result.value).toBe("NEW-ACCOUNT-AT");
+    expect(store.current?.accessToken).toBe("NEW-ACCOUNT-AT");
+  });
+
+  it("a request from before a sign-out elsewhere doesn't fall back to a browser sign-in (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 500,
+      scopes: config.scopes,
+    });
+    const { s, respond } = slowEndpoint();
+    const server = processWith(store, dir, respond);
+    const cli = processWith(store, dir, reply("UNUSED"));
+
+    const lookup = outcome(server.auth.getAccessToken({ interactiveWaitMs: 1_000 }));
+    await until(() => s.sent);
+    await cli.auth.signOut();
+    // The refresh then fails, which would normally lead to a browser sign-in.
+    s.answer(jsonResponse({ error: "invalid_grant" }, 400));
+
+    const result = await lookup;
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(server.authorizeUrl()).toBe(""); // no browser was opened
+    expect(store.current).toBeNull();
+  });
+
+  it("a sign-in started while a local sign-out is still cleaning up saves normally (Copilot review on #126)", async () => {
+    let finishClear = (): void => undefined;
+    let clearing = false;
+    const base = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    });
+    const store: TokenStore & { current: TokenSet | null } = {
+      get current() {
+        return base.current;
+      },
+      set current(v) {
+        base.current = v;
+      },
+      load: () => base.load(),
+      save: (t) => base.save(t),
+      async clear() {
+        clearing = true;
+        await new Promise<void>((r) => (finishClear = r)); // a slow cleanup
+        base.current = null;
+      },
+    };
+    let url = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () => reply("FRESH-AT")()) as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        url = u;
+      },
+      now: () => 1_000,
+    });
+
+    const signOut = auth.signOut(); // still cleaning up...
+    const signIn = outcome(auth.signIn()); // ...when `login` runs again
+    await until(() => clearing);
+    finishClear();
+    await signOut;
+    await until(() => url !== "");
+    await redirectBack(url, { code: "C" });
+    const result = await signIn;
+    expect(result.ok && result.value.accessToken).toBe("FRESH-AT");
+    expect(store.current?.accessToken).toBe("FRESH-AT");
+  });
+
+  it("a Graph request whose 401 retry spans a sign-out elsewhere stops instead of signing in (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    });
+    const server = processWith(store, dir, reply("UNUSED"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+    let releaseResponse!: () => void;
+    const responseGate = new Promise<void>((r) => (releaseResponse = r));
+    let graphCalls = 0;
+    const graph = createGraphClient({
+      auth: server.auth,
+      baseUrl: "https://graph.microsoft.com/v1.0",
+      fetchImpl: (async () => {
+        graphCalls += 1;
+        await responseGate; // the response is slow…
+        return jsonResponse({ error: { code: "InvalidAuthenticationToken" } }, 401);
+      }) as unknown as typeof fetch,
+      interactiveSignIn: { waitMs: 1_000 },
+    });
+    const call = outcome(graph.get("/me"));
+    await until(() => graphCalls === 1);
+    await cli.auth.signOut(); // …`logout` runs meanwhile…
+    releaseResponse(); // …then the 401 triggers the retry.
+
+    const result = await call;
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(server.authorizeUrl()).toBe(""); // no browser was opened
+    expect(store.current).toBeNull();
+  });
+
+  it("a sign-out elsewhere waits for a cache read in progress, then removes what it read (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const base = memoryStore({
+      accessToken: "PRE-LOGOUT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    });
+    let reading = false;
+    let finishRead = (): void => undefined;
+    const slowRead: TokenStore = {
+      async load() {
+        const read = base.current;
+        if (!reading) {
+          reading = true;
+          await new Promise<void>((r) => (finishRead = r)); // the first read is slow
+        }
+        return read;
+      },
+      save: (t) => base.save(t),
+      clear: (o) => base.clear(o),
+    };
+    const server = processWith(slowRead, dir, reply("UNUSED"));
+    const cli = processWith(base, dir, reply("UNUSED"));
+
+    const lookup = outcome(server.auth.getAccessToken({ interactive: false }));
+    await until(() => reading);
+    // The read holds the lock, so the logout can't finish (or even raise the
+    // count) in the middle of it: the read is wholly before the logout.
+    let loggedOut = false;
+    const logout = cli.auth.signOut().then(() => (loggedOut = true));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(loggedOut).toBe(false);
+    finishRead();
+
+    const result = await lookup;
+    expect(result.ok && result.value).toBe("PRE-LOGOUT");
+    await logout;
+    expect(base.current).toBeNull(); // then the logout removed it
+    const after = await outcome(server.auth.getAccessToken({ interactive: false }));
+    expect(!after.ok && after.error).toBeInstanceOf(AuthError);
+  });
+
+  it("a lookup elsewhere during a sign-out's cleanup waits for it, and doesn't save the sign-in back (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const base = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 500, // expired: a lookup would refresh it
+      scopes: config.scopes,
+    });
+    let clearing = false;
+    let finishClear = (): void => undefined;
+    const slowClear: TokenStore = {
+      load: () => base.load(),
+      save: (t) => base.save(t),
+      async clear(o) {
+        clearing = true;
+        await new Promise<void>((r) => (finishClear = r)); // a slow cleanup
+        await base.clear(o);
+      },
+    };
+    const refresh = vi.fn(() => reply("REFRESHED")());
+    const server = processWith(base, dir, refresh);
+    const cli = processWith(slowClear, dir, reply("UNUSED"));
+
+    const logout = cli.auth.signOut();
+    await until(() => clearing); // the count is raised; the cache is not yet deleted
+    const lookup = outcome(server.auth.getAccessToken({ interactive: false }));
+    await new Promise((r) => setTimeout(r, 50));
+    finishClear();
+    await logout;
+
+    const result = await lookup;
+    expect(!result.ok && result.error).toBeInstanceOf(AuthError); // not signed in
+    expect(refresh).not.toHaveBeenCalled(); // it never read the old refresh token
+    expect(base.current).toBeNull();
+  });
+
+  it("a sign-in whose count can't be stored saves nothing (Copilot review on #126)", async () => {
+    const inner = createMemoryCoordinator();
+    const diskFull = new Error("disk full");
+    const coordinator: AuthCoordinator = {
+      snapshot: () => inner.snapshot(),
+      withLock: (fn) =>
+        inner.withLock(async (state) => {
+          const result = await fn(state, async () => {
+            throw diskFull;
+          });
+          if (result.next) throw diskFull;
+          return result;
+        }),
+    };
+    const store = memoryStore(null);
+    let url = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      coordinator,
+      fetchImpl: vi.fn(async () => reply("NEW-ACCOUNT")()) as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        url = u;
+      },
+      now: () => 1_000,
+    });
+    const signIn = outcome(auth.signIn());
+    await until(() => url !== "");
+    await redirectBack(url, { code: "C" });
+    const result = await signIn;
+    expect(!result.ok && result.error).toBe(diskFull);
+    // Not cached under the old count, where a pending refresh could overwrite it.
+    expect(store.current).toBeNull();
+  });
+
+  it("signing in again after a sign-out elsewhere doesn't join the stale browser sign-in (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore(null);
+    const server = processWith(store, dir, reply("SERVER-AT"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+
+    const stale = outcome(server.auth.signIn());
+    await until(() => server.authorizeUrl() !== "");
+    const staleUrl = server.authorizeUrl();
+    await cli.auth.signOut(); // while that browser flow is still open
+
+    const again = outcome(server.auth.signIn());
+    await until(() => server.authorizeUrl() !== staleUrl); // a new flow, not the old one
+    const staleResult = await stale;
+    expect(!staleResult.ok && staleResult.error).toBeInstanceOf(SignedOutError);
+    await redirectBack(server.authorizeUrl(), { code: "C" });
+    const result = await again;
+    expect(result.ok && result.value.accessToken).toBe("SERVER-AT");
+    expect(store.current?.accessToken).toBe("SERVER-AT");
+  });
+
+  it("an on-demand sign-in after a sign-out elsewhere doesn't join the stale one either (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore(null);
+    const server = processWith(store, dir, reply("SERVER-AT"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+
+    // A tool call opens the browser, then stops waiting for it.
+    const first = await outcome(server.auth.getAccessToken({ interactiveWaitMs: 20 }));
+    expect(!first.ok && first.error).toBeInstanceOf(SignInRequiredError);
+    const staleUrl = server.authorizeUrl();
+    expect(staleUrl).not.toBe("");
+    await cli.auth.signOut();
+
+    // The next call, after the logout, gets a sign-in that can still save.
+    const next = outcome(server.auth.getAccessToken({ interactiveWaitMs: 2_000 }));
+    await until(() => server.authorizeUrl() !== staleUrl);
+    await redirectBack(server.authorizeUrl(), { code: "C" });
+    const result = await next;
+    expect(result.ok && result.value).toBe("SERVER-AT");
+  });
+
+  it("the first request to notice a sign-out elsewhere isn't itself stopped by it", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    });
+    const server = processWith(store, dir, reply("UNUSED"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+    await server.auth.getAccessToken({ interactive: false }); // server has seen the state
+    await cli.auth.signOut();
+    store.current = {
+      accessToken: "NEW",
+      refreshToken: "RT2",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    }; // and `login` again, say
+
+    // A standalone lookup, and an operation whose epoch is noted after syncing.
+    expect(await server.auth.getAccessToken({ interactive: false })).toBe("NEW");
+    await cli.auth.signOut();
+    const epoch = await server.auth.syncSignOuts();
+    const result = await outcome(
+      server.auth.getAccessToken({ interactive: false, signOutEpoch: epoch }),
+    );
+    // Just "not signed in": the operation began after the sign-out it saw.
+    expect(!result.ok && result.error).toBeInstanceOf(AuthError);
+    expect(!result.ok && result.error).not.toBeInstanceOf(SignedOutError);
+  });
+
+  it("credentials found by the fallback's second read, across a sign-out elsewhere, aren't used (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const valid = {
+      accessToken: "PRE-LOGOUT",
+      refreshToken: "RT2",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    };
+    let loads = 0;
+    let reading = false;
+    let finishRead = (): void => undefined;
+    const store: TokenStore = {
+      async load() {
+        loads += 1;
+        if (loads === 1) return { ...valid, accessToken: "OLD", expiresAt: 500 }; // expired
+        const read = valid; // read before the logout…
+        reading = true;
+        await new Promise<void>((r) => (finishRead = r)); // …returned after it
+        return read;
+      },
+      save: async () => undefined,
+      clear: async () => undefined,
+    };
+    const server = processWith(store, dir, () => jsonResponse({ error: "invalid_grant" }, 400));
+    const cli = processWith(memoryStore(null), dir, reply("UNUSED"));
+
+    const lookup = outcome(server.auth.getAccessToken({ interactiveWaitMs: 1_000 }));
+    await until(() => reading); // the refresh failed; the fallback reads the cache again
+    await cli.auth.signOut();
+    finishRead();
+
+    const result = await lookup;
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(server.authorizeUrl()).toBe("");
+  });
+});
+
+describe("sign-out during the start of an operation (Copilot review on #126)", () => {
+  it("a sign-in immediately followed by a sign-out doesn't go on to sign in", async () => {
+    const openBrowser = vi.fn(async () => undefined);
+    const store = memoryStore(null);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ access_token: "AT", refresh_token: "RT", expires_in: 3600 }),
+      ) as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    const signIn = auth.signIn().then(
+      () => new Error("expected the sign-in to stop"),
+      (e: unknown) => e as Error,
+    );
+    await auth.signOut();
+    expect(await signIn).toBeInstanceOf(SignedOutError);
+    expect(openBrowser).not.toHaveBeenCalled();
+    expect(store.current).toBeNull();
+  });
+
+  it("an operation whose catch-up spans a local sign-out keeps the earlier epoch, so it stops", async () => {
+    const inner = createMemoryCoordinator();
+    let releaseSnapshot = (): void => undefined;
+    let gated = true;
+    const coordinator: AuthCoordinator = {
+      async snapshot() {
+        const state = await inner.snapshot();
+        if (gated) {
+          gated = false;
+          await new Promise<void>((r) => (releaseSnapshot = r)); // a slow catch-up
+        }
+        return state;
+      },
+      withLock: (fn) => inner.withLock(fn),
+    };
+    const openBrowser = vi.fn(async () => undefined);
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore({
+        accessToken: "AT",
+        refreshToken: "RT",
+        expiresAt: 10_000_000,
+        scopes: config.scopes,
+      }),
+      coordinator,
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ access_token: "AT", refresh_token: "RT", expires_in: 3600 }),
+      ) as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+
+    const starting = auth.syncSignOuts(); // a tool call starts…
+    await auth.signOut(); // …the user signs out meanwhile…
+    releaseSnapshot();
+    const epoch = await starting;
+    expect(epoch).not.toBe(auth.signOutEpoch()); // …so the call belongs to before it
+    await expect(auth.getAccessToken({ signOutEpoch: epoch })).rejects.toBeInstanceOf(
+      SignedOutError,
+    );
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("deletes nothing if the shared sign-out count can't be stored (Copilot review on #126)", async () => {
+    const inner = createMemoryCoordinator();
+    const diskFull = new Error("disk full");
+    // Storing counters fails, whether at once or when the locked section ends.
+    const coordinator: AuthCoordinator = {
+      snapshot: () => inner.snapshot(),
+      withLock: (fn) =>
+        inner.withLock(async (state) => {
+          const result = await fn(state, async () => {
+            throw diskFull;
+          });
+          if (result.next) throw diskFull;
+          return result;
+        }),
+    };
+    const saved = {
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    };
+    const store = memoryStore(saved);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      coordinator,
+      fetchImpl: vi.fn(async () => jsonResponse({})) as unknown as typeof fetch,
+      openBrowser: async () => undefined,
+      now: () => 1_000,
+    });
+
+    await expect(auth.signOut()).rejects.toBe(diskFull);
+    // The sign-in is still there, so no other process can resurrect a deleted
+    // one past an unchanged count; the user is told the sign-out failed.
+    expect(store.current).toEqual(saved);
+    expect(await inner.snapshot()).toEqual({ signOuts: 0, signIns: 0 });
+  });
+
+  it("a catch-up during this process's own sign-out doesn't take it for a remote one (Copilot review on #126)", async () => {
+    const inner = createMemoryCoordinator();
+    let paused = false;
+    let published = false;
+    let releasePublish = (): void => undefined;
+    let releaseCleanup = (): void => undefined;
+    // The sign-out pauses before storing its count, then again after storing
+    // it (visible to snapshots) but before noting it as its own.
+    const coordinator: AuthCoordinator = {
+      snapshot: () => inner.snapshot(),
+      withLock: (fn) =>
+        inner.withLock((state, persist) =>
+          fn(state, async (next) => {
+            if (paused) return persist(next); // only the sign-out's write pauses
+            paused = true;
+            await new Promise<void>((r) => (releasePublish = r));
+            await persist(next);
+            published = true;
+            await new Promise<void>((r) => (releaseCleanup = r));
+          }),
+        ),
+    };
+    let url = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore(null),
+      coordinator,
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ access_token: "AT", refresh_token: "RT", expires_in: 3600 }),
+      ) as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        url = u;
+      },
+      now: () => 1_000,
+    });
+    await auth.syncSignOuts(); // the shared counters have been seen once
+
+    const signOut = auth.signOut();
+    await vi.waitFor(() => expect(paused).toBe(true));
+    // A sign-in started after the sign-out, while the count isn't stored yet…
+    const signIn = auth.signIn().then(
+      (t) => t,
+      (e: unknown) => e as Error,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    // …then the count is stored, and a catch-up reads it before the sign-out
+    // has noted it as its own.
+    releasePublish();
+    await vi.waitFor(() => expect(published).toBe(true));
+    const sync = auth.syncSignOuts();
+    await new Promise((r) => setTimeout(r, 20));
+    releaseCleanup();
+    await signOut;
+    await sync;
+    await vi.waitFor(() => expect(url).not.toBe(""));
+    const u = new URL(url);
+    const redirect = new URL(u.searchParams.get("redirect_uri")!);
+    redirect.hostname = "127.0.0.1";
+    await fetch(
+      `${redirect.origin}/?${new URLSearchParams({ state: u.searchParams.get("state")!, code: "C" })}`,
+    );
+    // The sign-in completes: no second sign-out was imagined.
+    const result = await signIn;
+    expect(result).not.toBeInstanceOf(Error);
+  });
+});

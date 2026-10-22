@@ -10,7 +10,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { scopeToOperation } from "./graph/client.js";
+import { scopeToOperation, withinLimits } from "./graph/client.js";
 import { calendarTools } from "./tools/calendar.js";
 import { mailTools } from "./tools/mail.js";
 import type { RegisteredTool, ToolContext } from "./tools/types.js";
@@ -82,10 +82,16 @@ export function createMcpServer(
           // Every Graph request of this call shares one scope: the sign-out epoch
           // at its start (a follow-up after a sign-out stops instead of signing
           // in again), the client's cancellation, and one overall deadline.
+          // Sign-outs in other processes are caught up on first (#95), within
+          // the call's cancellation and deadline.
+          const deadline = Date.now() + TOOL_CALL_DEADLINE_MS;
+          const signOutEpoch = ctx.auth?.syncSignOuts
+            ? await withinLimits(ctx.auth.syncSignOuts(), extra?.signal, deadline - Date.now())
+            : ctx.auth?.signOutEpoch?.();
           const graph = scopeToOperation(ctx.graph, {
-            signOutEpoch: ctx.auth?.signOutEpoch?.(),
+            signOutEpoch,
             signal: extra?.signal,
-            deadline: Date.now() + TOOL_CALL_DEADLINE_MS,
+            deadline,
           });
           const result = await tool.handler(args ?? {}, { ...ctx, graph });
           return result as CallToolResult;

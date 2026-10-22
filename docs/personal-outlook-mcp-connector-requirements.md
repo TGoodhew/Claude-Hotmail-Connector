@@ -101,10 +101,14 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 
 - **TypeScript on Node.js.** The MCP ecosystem is TypeScript-first; the reference SDK is
   `@modelcontextprotocol/sdk`.
-- **Runtime: Node.js 24 LTS** for development, CI and release *(#45)*. `engines.node` stays `>=20`:
+- **Runtime: Node.js 24 LTS** for development, CI and release *(#45)*. `engines.node` is `>=20.8`:
   the Claude Desktop extension runs on Claude Desktop's own bundled Node (version undocumented), and
   its manifest declares `engines.node` as the minimum, so raising it could stop the extension
   installing. CI also builds and tests on Node 20 to keep that minimum true.
+  - It was `>=20` until #95. The cross-process sign-in lock on Linux is an abstract Unix socket, which
+    Node can listen on only from 20.8. Every process sharing a cache must use the same lock, so older
+    runtimes are refused rather than given a different one (§7.1a). This excludes only Node
+    20.0–20.7 (2023 releases).
 - **Libraries:** `zod` (input validation), `dotenv` (dev config), `open` (system browser). Build with
   `tsup`, test with `vitest`. Crypto (PKCE, AES-256-GCM, SHA-256) uses Node's built-in `crypto`; no
   hand-rolled primitives.
@@ -160,7 +164,24 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Deletes the token cache **and** its encryption key on this computer. This is the extension's
   sign-out, since it has no command line. No Graph call or scope is needed (always registered).
 - A sign-in or refresh still in flight when the user signs out is **discarded**, not saved, so it
-  can't silently undo the sign-out (in-process; cross-process coordination is #95).
+  can't silently undo the sign-out. This holds across processes too (Claude Desktop, Claude Code,
+  `login`/`logout`): counters in `auth-state.json` next to the cache, updated under an exclusive
+  `auth.lock`, make a sign-out anywhere win over anything that began before it. Of two browser
+  sign-ins in different processes, the first to finish is saved and the other uses it *(#95)*.
+  - A sign-out stores the raised count *before* deleting anything. If the count can't be stored,
+    nothing is deleted and the sign-out fails, so no process can save the sign-in again past an
+    unchanged count.
+  - A process that sees another's sign-out treats it as its own. Its pending sign-in and refresh are
+    dropped, and operations from before it stop. Each tool call catches up first, so a call that
+    starts after a sign-out elsewhere isn't stopped by it.
+  - On Windows and Linux the lock is held by the OS: a named pipe, or an abstract Unix socket,
+    named after the cache directory. Only one process can listen on it, and the OS lets go when
+    the holder exits, even if it crashes. There is nothing stale to clean up, and a paused holder,
+    for example across sleep, keeps it.
+  - Elsewhere (macOS) it is an `auth.lock` file. A lock file is broken only once its holder's
+    process has exited, and it is removed only if it still holds what was judged stale.
+  - Known limits of the lock file: a reused process id makes waiters time out until that process
+    exits. A narrow race remains in recovering from a reaper that crashed (#131).
 - Annotations: `destructiveHint: true` (local data), `idempotentHint: true`, `openWorldHint: false`.
   The description says to call it only when the user asks. Misuse only means signing in again.
 

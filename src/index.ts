@@ -19,6 +19,7 @@
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createFileCoordinator } from "./auth/coordination.js";
 import { createMicrosoftAuth } from "./auth/microsoft.js";
 import { defaultKeyProtector } from "./auth/protect.js";
 import { createFileTokenStore } from "./auth/tokens.js";
@@ -49,8 +50,15 @@ async function run(): Promise<void> {
   const log = createLogger({ name: "startup" });
   const config = getConfig();
   const store = createFileTokenStore(config.tokenCacheFile, { protector: defaultKeyProtector() });
-  // At a terminal (`login`), a sign-in URL the user can copy beats failing.
-  const auth = createMicrosoftAuth({ config, store, printUrlIfBrowserFails: command === "login" });
+  const auth = createMicrosoftAuth({
+    config,
+    store,
+    // Shared with every process using this cache (Claude Desktop, Claude Code,
+    // `login`/`logout`): a sign-out anywhere wins, and one sign-in at a time saves (#95).
+    coordinator: createFileCoordinator(config.cacheDir),
+    // At a terminal (`login`), a sign-in URL the user can copy beats failing.
+    printUrlIfBrowserFails: command === "login",
+  });
   const graph = createGraphClient({ auth, baseUrl: config.graphBaseUrl });
 
   if (command === "login") {

@@ -50,7 +50,7 @@ jobs:
         run: npm run build:mcpb
 
   # The .mcpb runs on Claude Desktop's own bundled Node, whose version isn't
-  # documented, so the bundle declares package.json engines.node (Node 20+) as
+  # documented, so the bundle declares package.json engines.node (Node 20.8+) as
   # its minimum. Keep that claim true: build and test on the oldest supported
   # major as well.
   minimum-node:
