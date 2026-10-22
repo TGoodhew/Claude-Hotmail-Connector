@@ -164,6 +164,9 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   `login`/`logout`): counters in `auth-state.json` next to the cache, updated under an exclusive
   `auth.lock`, make a sign-out anywhere win over anything that began before it. Of two browser
   sign-ins in different processes, the first to finish is saved and the other uses it *(#95)*.
+  - A sign-out stores the raised count *before* deleting anything. If the count can't be stored,
+    nothing is deleted and the sign-out fails, so no process can save the sign-in again past an
+    unchanged count.
   - A process that sees another's sign-out treats it as its own. Its pending sign-in and refresh are
     dropped, and operations from before it stop. Each tool call catches up first, so a call that
     starts after a sign-out elsewhere isn't stopped by it.

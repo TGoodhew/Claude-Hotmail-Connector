@@ -818,17 +818,22 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       // if the cleanup fails, so operations that began before it in any process
       // won't save afterwards (#95).
       const cleanup = serialized(async () => {
-        const failure = await coordinator.withLock(async (current) => {
+        const failure = await coordinator.withLock(async (current, persist) => {
           observe(current);
+          // The shared count goes up before anything is deleted. If it can't be
+          // stored, nothing is, and the sign-out fails: otherwise an operation
+          // elsewhere could still pass the old count and save the sign-in again.
+          const next = { ...current, signOuts: current.signOuts + 1 };
+          await persist(next);
           // This sign-out's own bump, already acted on above, isn't one from elsewhere.
-          sharedSignOutsSeen = current.signOuts + 1;
+          sharedSignOutsSeen = next.signOuts;
           let error: unknown;
           try {
             await store.clear({ includeKey: true });
           } catch (e) {
             error = e ?? new Error("Sign-out cleanup failed.");
           }
-          return { value: error, next: { ...current, signOuts: current.signOuts + 1 } };
+          return { value: error };
         });
         if (failure !== undefined) throw failure;
       });

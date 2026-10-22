@@ -38,10 +38,15 @@ export interface AuthCoordinator {
   snapshot(): Promise<SharedAuthState>;
   /**
    * Run `fn` holding the lock, with the counters as they are now. If it returns
-   * `next`, those counters are stored before the lock is released.
+   * `next`, those counters are stored before the lock is released. `persist`
+   * stores counters at once, still under the lock: for a step that mustn't
+   * happen unless they are stored (a sign-out's cleanup).
    */
   withLock<T>(
-    fn: (state: SharedAuthState) => Promise<{ value: T; next?: SharedAuthState }>,
+    fn: (
+      state: SharedAuthState,
+      persist: (next: SharedAuthState) => Promise<void>,
+    ) => Promise<{ value: T; next?: SharedAuthState }>,
   ): Promise<T>;
 }
 
@@ -55,7 +60,9 @@ export function createMemoryCoordinator(): AuthCoordinator {
     snapshot: async () => ({ ...state }),
     withLock(fn) {
       const run = queue.then(async () => {
-        const { value, next } = await fn({ ...state });
+        const { value, next } = await fn({ ...state }, async (n) => {
+          state = { ...n };
+        });
         if (next) state = { ...next };
         return value;
       });
@@ -387,7 +394,7 @@ export function createFileCoordinator(
         const name = await lockName();
         const letGo = name ? await acquireOs(name) : await acquireFile();
         try {
-          const { value, next } = await fn(await read());
+          const { value, next } = await fn(await read(), write);
           if (next) await write(next);
           return value;
         } finally {

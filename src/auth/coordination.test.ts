@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -123,7 +124,9 @@ describe.skipIf(name === null)("the OS-held lock (Windows, Linux; Copilot review
       'const name = Buffer.from(process.argv[1], "base64").toString();' +
       'require("net").createServer().listen(name, () => console.log("held"));' +
       "setInterval(() => {}, 1000);";
-    const encoded = Buffer.from(osLockName(dir)!).toString("base64");
+    // The real path, as the coordinator uses (a runner's temp dir may be an
+    // 8.3 short name or a symlink; Copilot review on #126).
+    const encoded = Buffer.from(osLockName(realpathSync(dir))!).toString("base64");
     const child = spawn(process.execPath, ["-e", script, encoded], {
       stdio: ["ignore", "pipe", "inherit"],
     });

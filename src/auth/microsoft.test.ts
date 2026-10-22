@@ -1516,4 +1516,42 @@ describe("sign-out during the start of an operation (Copilot review on #126)", (
     );
     expect(openBrowser).not.toHaveBeenCalled();
   });
+
+  it("deletes nothing if the shared sign-out count can't be stored (Copilot review on #126)", async () => {
+    const inner = createMemoryCoordinator();
+    const diskFull = new Error("disk full");
+    // Storing counters fails, whether at once or when the locked section ends.
+    const coordinator: AuthCoordinator = {
+      snapshot: () => inner.snapshot(),
+      withLock: (fn) =>
+        inner.withLock(async (state) => {
+          const result = await fn(state, async () => {
+            throw diskFull;
+          });
+          if (result.next) throw diskFull;
+          return result;
+        }),
+    };
+    const saved = {
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    };
+    const store = memoryStore(saved);
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      coordinator,
+      fetchImpl: vi.fn(async () => jsonResponse({})) as unknown as typeof fetch,
+      openBrowser: async () => undefined,
+      now: () => 1_000,
+    });
+
+    await expect(auth.signOut()).rejects.toBe(diskFull);
+    // The sign-in is still there, so no other process can resurrect a deleted
+    // one past an unchanged count; the user is told the sign-out failed.
+    expect(store.current).toEqual(saved);
+    expect(await inner.snapshot()).toEqual({ signOuts: 0, signIns: 0 });
+  });
 });
