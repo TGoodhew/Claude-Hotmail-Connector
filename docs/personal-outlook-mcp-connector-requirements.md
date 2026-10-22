@@ -247,8 +247,9 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
     explicit `transactionId`;
   - body/reminder differences are not part of the key.
 
-  Graph's response to a repeated id MUST be verified and documented. The live test (§12) asserts
-  that a repeat returns the same event; record its result here once it has been run *(→ #48)*.
+  **Verified live** *(#48, 2026-10-22, personal Outlook.com account)*: repeating a create with the same
+  `transactionId` returns the **same event**; no duplicate is created. The live test (§12) asserts this
+  on every run.
 - **No attendees.** Attendees and invitations MUST NOT be sendable, because invitations send email.
   Three layers enforce this:
   - tool input schemas have no attendee fields, and unknown arguments are stripped;
