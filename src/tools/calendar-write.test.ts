@@ -28,6 +28,49 @@ describe("create_event tool", () => {
 
   it("description tells the model to confirm before calling", () => {
     expect(createEventTool.description.toLowerCase()).toContain("confirm");
+    // And that a mistaken series can't be undone with cancel_event (#51).
+    expect(createEventTool.description).toContain("can't be removed with cancel_event");
+  });
+
+  it("passes an all-day, free, recurring event through (#51)", async () => {
+    const post = vi.fn<PostMock>(async () => ({ id: "e1", subject: "Leave" }));
+    const recurrence = {
+      pattern: { type: "absoluteYearly" as const, interval: 1, dayOfMonth: 20, month: 7 },
+      range: { type: "numbered" as const, startDate: "2026-07-20", numberOfOccurrences: 3 },
+    };
+    const res = await createEventTool.handler(
+      {
+        subject: "Leave",
+        start: { dateTime: "2026-07-20" },
+        end: { dateTime: "2026-07-21" },
+        isAllDay: true,
+        showAs: "oof",
+        recurrence,
+      },
+      ctxWith({ post: post as unknown as GraphClient["post"] }, "Europe/London"),
+    );
+    expect(post.mock.calls[0]![1]).toMatchObject({
+      isAllDay: true,
+      showAs: "oof",
+      start: { dateTime: "2026-07-20T00:00:00", timeZone: "Europe/London" },
+      recurrence: { pattern: recurrence.pattern, range: { recurrenceTimeZone: "Europe/London" } },
+    });
+    expect(res.structuredContent).toMatchObject({ event: { id: "e1", isAllDay: false } });
+  });
+
+  it("schema rejects an unknown showAs or recurrence type", () => {
+    const schema = z.object(createEventTool.inputShape);
+    const base = { subject: "x", start: { dateTime: "a" }, end: { dateTime: "b" } };
+    expect(() => schema.parse({ ...base, showAs: "invisible" })).toThrow();
+    expect(() =>
+      schema.parse({
+        ...base,
+        recurrence: {
+          pattern: { type: "hourly", interval: 1 },
+          range: { type: "noEnd", startDate: "x" },
+        },
+      }),
+    ).toThrow();
   });
 
   it("defaults each time's zone to the config default", async () => {
