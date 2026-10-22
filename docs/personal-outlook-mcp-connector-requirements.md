@@ -644,6 +644,12 @@ Decided by the owner on 2026-10-21. Details and rationale are in #59.
 Later owner decisions (2026-10-21): `cancel_event` added with guards (#55); account audience defaults
 to personal accounts only (#62). Since resolved: the default time zone is the system zone (#34), and errors are specific (#35).
 
+Owner decision (2026-10-22): `cancel_event`'s read-then-delete window is **accepted**. Graph ignores
+`If-Match` on event deletes (found by the live test, #48), so an event that changes between the
+guards' fresh read and the DELETE is still deleted. The window is milliseconds and needs a
+concurrent change such as added attendees, and the event goes to Deleted Items, where it can be
+recovered. No extra re-check is added, because one would shrink the window but couldn't close it (§7.8).
+
 ---
 
 ## 17. References
