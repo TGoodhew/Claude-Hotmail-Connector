@@ -77,7 +77,7 @@ Inspect a bundle with `npx mcpb info build/hotmail-connector.mcpb`, or unpack it
 ## Notes and known gaps
 
 - **Node runtime:** Claude Desktop's bundled Node version isn't documented, so the bundle targets the
-  same minimum as `package.json` `engines.node` (Node 20+), which the manifest declares in
+  same minimum as `package.json` `engines.node` (Node 20.8+), which the manifest declares in
   `compatibility.runtimes.node`.
 - **Sign-out:** an extension has no command line, so ask Claude to sign out (`sign_out`). That
   deletes the token cache and its key in `%LOCALAPPDATA%\claude-hotmail-connector` (or

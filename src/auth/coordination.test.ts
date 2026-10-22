@@ -17,6 +17,7 @@ import { AuthError } from "../util/errors.js";
 import {
   createFileCoordinator,
   createMemoryCoordinator,
+  assertOsLockSupported,
   osLockName,
   removeIfUnchanged,
   type AuthCoordinator,
@@ -113,13 +114,25 @@ describe("osLockName (Copilot review on #126)", () => {
     expect(osLockName("/Users/a/cache", "darwin")).toBeNull();
   });
 
-  it("uses abstract sockets only on Node 20.8 or later, the lock file before", () => {
-    expect(osLockName("/home/a/cache", "linux", "20.7.0")).toBeNull();
-    expect(osLockName("/home/a/cache", "linux", "19.9.0")).toBeNull();
-    for (const v of ["20.8.0", "20.19.5", "22.0.0", "24.10.0"]) {
-      expect(osLockName("/home/a/cache", "linux", v), v).not.toBeNull();
+  it("refuses Node before 20.8 on Linux rather than taking a different lock (Copilot review on #126)", () => {
+    // A lock-file fallback there would let an old and a new process sharing a
+    // cache take different locks and overlap.
+    for (const v of ["20.7.0", "19.9.0"]) {
+      expect(() => assertOsLockSupported("linux", v), v).toThrow(/Node.js 20.8 or later/);
+      expect(() => assertOsLockSupported("linux", v)).toThrow(AuthError);
     }
-    expect(osLockName("C:\\cache", "win32", "20.0.0")).not.toBeNull(); // pipes: any version
+    for (const v of ["20.8.0", "20.19.5", "22.0.0", "24.10.0"]) {
+      expect(() => assertOsLockSupported("linux", v), v).not.toThrow();
+    }
+    expect(() => assertOsLockSupported("win32", "20.0.0")).not.toThrow(); // pipes: any version
+    expect(() => assertOsLockSupported("darwin", "20.0.0")).not.toThrow(); // the lock file
+  });
+
+  it("is what package.json requires, so every process picks the same lock", () => {
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+      engines: { node: string };
+    };
+    expect(pkg.engines.node).toBe(">=20.8");
   });
 });
 
