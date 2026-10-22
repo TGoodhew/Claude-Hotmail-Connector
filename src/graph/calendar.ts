@@ -559,8 +559,8 @@ function deterministicTransactionId(input: CreateEventInput, written: WrittenTim
   // share a key rather than creating a duplicate on retry (Copilot review on
   // #134). That matters most for a series, which cancel_event can't remove.
   const times = input.isAllDay || written.recurrence ? written : input;
-  const defaultShowAs = input.isAllDay ? "free" : "busy";
-  const showAs = input.showAs ?? defaultShowAs;
+  // The availability written: an all-day event's is free unless given.
+  const showAs = input.showAs ?? (input.isAllDay ? "free" : "busy");
   const material = [
     input.subject,
     times.start.dateTime,
@@ -570,10 +570,12 @@ function deterministicTransactionId(input: CreateEventInput, written: WrittenTim
     input.location ?? "",
     // Only when set, so a plain event's id is what it always was.
     ...(input.isAllDay ? ["isAllDay"] : []),
-    // Availability other than the default for its kind (busy; free for an
-    // all-day event): a "free" block and a "busy" one are different events, not
-    // a retry of each other, while an omitted default keys like an explicit one.
-    ...(showAs !== defaultShowAs ? [`showAs:${showAs}`] : []),
+    // The availability written, in the encoding keys have always used: a token
+    // unless it's busy. A "free" block and a "busy" one are different events,
+    // not a retry of each other; an all-day event's implicit free keys like an
+    // explicit one; and a key made before all-day events defaulted to free is
+    // unchanged, so a retry across versions still matches (Copilot review on #140).
+    ...(showAs !== "busy" ? [`showAs:${showAs}`] : []),
     ...(written.recurrence ? [JSON.stringify(written.recurrence)] : []),
   ].join(String.fromCharCode(0));
   return createHash("sha256").update(material).digest("hex").slice(0, 36);
@@ -653,7 +655,11 @@ export async function createEvent(
     ...shapeWrite(created, transactionId),
     isAllDay: Boolean(created.isAllDay),
     showAs: created.showAs ?? null,
-    recurrence: withIanaZone(created.recurrence ?? null, start.timeZone),
+    // A matched event may be a series written in another zone (an explicit
+    // transactionId reused) or since edited: then Graph's zone stands.
+    recurrence: matchedExisting
+      ? (created.recurrence ?? null)
+      : withIanaZone(created.recurrence ?? null, start.timeZone),
     matchedExisting,
   };
 }
@@ -667,8 +673,8 @@ const MATCHED_EXISTING_MS = 2 * 60_000;
 
 /**
  * Graph may echo a recurrence's zone by its Windows name ("Pacific Standard
- * Time"), notably when it returns an existing series. Report the IANA zone
- * the series was written with instead, so results are consistent.
+ * Time"). For a series this call just created, that is the zone it was
+ * written with, so report its IANA name instead, for consistent results.
  */
 function withIanaZone(
   recurrence: Record<string, unknown> | null,

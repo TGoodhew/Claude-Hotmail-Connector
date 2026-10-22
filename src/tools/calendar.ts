@@ -206,7 +206,10 @@ const createEventShape = {
   showAs: z
     .enum(SHOW_AS)
     .optional()
-    .describe('How the time shows as busy (default busy); e.g. "free" for a travel-time block.'),
+    .describe(
+      "How the time shows to others: timed events default to busy, all-day events to free. " +
+        'E.g. "free" for a travel-time block.',
+    ),
   recurrence: z
     .object({
       pattern: z.object({

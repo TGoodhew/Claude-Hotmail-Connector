@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { GraphError, ValidationError } from "../util/errors.js";
 import type { GraphClient } from "./client.js";
@@ -387,6 +388,34 @@ describe("create_event polish from the live run (#135)", () => {
     expect(await key({ ...allDay, showAs: "busy" })).not.toBe(await key(allDay));
   });
 
+  it("keeps the key encoding of earlier versions, so a retry across an upgrade matches (Copilot review on #140)", async () => {
+    // The material a key was hashed from before all-day events defaulted to
+    // free: subject, written times, location, the all-day flag, and a showAs
+    // token unless busy.
+    const legacyKey = (showAsToken?: string) =>
+      createHash("sha256")
+        .update(
+          [
+            "Trip",
+            "2026-11-20T00:00:00",
+            tz,
+            "2026-11-21T00:00:00",
+            tz,
+            "",
+            "isAllDay",
+            ...(showAsToken ? [showAsToken] : []),
+          ].join(String.fromCharCode(0)),
+        )
+        .digest("hex")
+        .slice(0, 36);
+    const key = async (input: Partial<CreateEventInput>) =>
+      (await create(input)).payload.transactionId as string;
+    expect(await key({ ...allDay, showAs: "busy" })).toBe(legacyKey());
+    expect(await key({ ...allDay, showAs: "free" })).toBe(legacyKey("showAs:free"));
+    // The new implicit free is a free event: it keys as one, not as the old busy.
+    expect(await key(allDay)).toBe(legacyKey("showAs:free"));
+  });
+
   it("says when Graph returned an existing event for a repeated transactionId", async () => {
     const at = (createdDateTime: string) => ({ ...createdReply, createdDateTime });
     // Made minutes before this request: an earlier identical create made it.
@@ -425,6 +454,21 @@ describe("create_event polish from the live run (#135)", () => {
     };
     expect((await create({ recurrence }, iana)).result.recurrence).toMatchObject({
       range: { recurrenceTimeZone: "Europe/London" },
+    });
+    // A matched series may have been written in another zone (an explicit
+    // transactionId reused) or edited since: Graph's zone stands (Copilot review on #140).
+    const matched = { ...graphEcho, createdDateTime: "2026-10-22T14:00:00Z" };
+    const replay = await create(
+      {
+        start: { dateTime: "2026-11-23T09:00:00", timeZone: "Europe/London" },
+        end: { dateTime: "2026-11-23T09:30:00", timeZone: "Europe/London" },
+        recurrence,
+      },
+      matched,
+    );
+    expect(replay.result.matchedExisting).toBe(true);
+    expect(replay.result.recurrence).toMatchObject({
+      range: { recurrenceTimeZone: "Pacific Standard Time" },
     });
   });
 });
