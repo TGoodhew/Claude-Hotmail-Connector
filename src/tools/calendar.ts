@@ -206,7 +206,10 @@ const createEventShape = {
   showAs: z
     .enum(SHOW_AS)
     .optional()
-    .describe('How the time shows as busy (default busy); e.g. "free" for a travel-time block.'),
+    .describe(
+      "How the time shows to others: timed events default to busy, all-day events to free. " +
+        'E.g. "free" for a travel-time block.',
+    ),
   recurrence: z
     .object({
       pattern: z.object({
@@ -288,7 +291,14 @@ export const createEventTool: ToolDefinition<typeof createEventShape> = defineTo
       showAs: input.showAs,
       recurrence: input.recurrence,
     });
-    return toolResult(`Created event "${result.subject ?? input.subject}".`, { event: result });
+    const title = result.subject ?? input.subject;
+    return toolResult(
+      result.matchedExisting
+        ? `An event with these details already exists ("${title}"): nothing new was created. ` +
+            "It is in `event`; to create a second copy on purpose, pass a new transactionId."
+        : `Created event "${title}".`,
+      { event: result },
+    );
   },
 });
 
