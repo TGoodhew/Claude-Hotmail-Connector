@@ -1,11 +1,24 @@
 /**
- * MCP tool definitions for the calendar: list_events (read), create_event and
- * update_event (writes), and the guarded cancel_event (soft delete). Event times
- * are local wall-clock + IANA zone.
+ * MCP tool definitions for the calendar: list_calendars, list_events and
+ * get_event (reads), create_event and update_event (writes), and the guarded
+ * cancel_event (soft delete). Event times are local wall-clock + IANA zone.
  */
 
 import { z } from "zod";
-import { cancelEvent, createEvent, listEvents, updateEvent } from "../graph/calendar.js";
+import {
+  cancelEvent,
+  createEvent,
+  DAYS_OF_WEEK,
+  MAX_OCCURRENCES,
+  RECURRENCE_TYPES,
+  SHOW_AS,
+  WEEK_INDEXES,
+  getEvent,
+  listCalendars,
+  listEvents,
+  updateEvent,
+} from "../graph/calendar.js";
+import { DEFAULT_MAX_BODY_CHARS } from "../graph/mail.js";
 import {
   defineTool,
   toolResult,
@@ -28,6 +41,13 @@ const eventTimeShape = z.object({
     .describe("IANA time zone (defaults to the server's DEFAULT_TIMEZONE)."),
 });
 
+/** Which calendar: one from list_calendars, or the default calendar when omitted. */
+const calendarIdShape = z
+  .string()
+  .min(1)
+  .optional()
+  .describe("A calendar id from list_calendars. Omit for the default calendar.");
+
 function resolveTime(
   t: { dateTime: string; timeZone?: string },
   ctx: ToolContext,
@@ -48,6 +68,14 @@ const listEventsShape = {
     .optional()
     .describe("IANA time zone for the returned times (defaults to the server's DEFAULT_TIMEZONE)."),
   limit: z.number().int().min(1).max(100).default(25).describe("Max events to return (1-100)."),
+  calendarId: calendarIdShape,
+  pageToken: z
+    .string()
+    .optional()
+    .describe(
+      "Opaque token from a previous call's nextPageToken, for the next events. The range, time " +
+        "zone and calendar then come from the token; pass the other inputs unchanged.",
+    ),
 };
 
 export const listEventsTool: ToolDefinition<typeof listEventsShape> = defineTool({
@@ -56,24 +84,97 @@ export const listEventsTool: ToolDefinition<typeof listEventsShape> = defineTool
   description:
     "List events in the user's personal Outlook.com / Hotmail calendar in a date range (e.g. to " +
     "check for conflicts before adding a booking). " +
-    "Times are returned in the requested IANA time zone. Read-only. " +
+    "Times are returned in the requested IANA time zone. Each event says whether it is busy, " +
+    "tentative or free (showAs), cancelled, and part of a recurring series (type, " +
+    "seriesMasterId). If truncated is true the range has MORE events than returned: call again " +
+    "with nextPageToken before concluding a time is free. Read-only. " +
     UNTRUSTED_CONTENT_DESCRIPTION,
   inputShape: listEventsShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
   scopesAnyOf: ["Calendars.Read", "Calendars.ReadWrite"],
   async handler(input, ctx) {
-    const timeZone = input.timeZone ?? ctx.config.defaultTimeZone;
-    const events = await listEvents(ctx.graph, {
+    const { events, timeZone, truncated, nextPageToken } = await listEvents(ctx.graph, {
       startDateTime: input.startDateTime,
       endDateTime: input.endDateTime,
-      timeZone,
+      timeZone: input.timeZone ?? ctx.config.defaultTimeZone,
       limit: input.limit,
+      calendarId: input.calendarId,
+      pageToken: input.pageToken,
     });
-    const summary =
+    const found =
       events.length === 0
-        ? "No events found in that range."
-        : `Found ${events.length} event(s) (times in ${timeZone}).`;
-    return untrustedResult(summary, { count: events.length, timeZone, events });
+        ? "No events found"
+        : `Found ${events.length} event(s) (times in ${timeZone})`;
+    const more = !truncated
+      ? "."
+      : nextPageToken
+        ? "; more in this range (use nextPageToken)."
+        : "; more in this range that can't be listed here (narrow the range).";
+    return untrustedResult(`${found}${more}`, {
+      count: events.length,
+      timeZone,
+      truncated,
+      ...(nextPageToken ? { nextPageToken } : {}),
+      events,
+    });
+  },
+});
+
+const getEventShape = {
+  id: z.string().min(1).describe("The event id (from list_events)."),
+  timeZone: z
+    .string()
+    .optional()
+    .describe("IANA time zone for the returned times (defaults to the server's DEFAULT_TIMEZONE)."),
+  calendarId: calendarIdShape,
+  maxChars: z
+    .number()
+    .int()
+    .min(1_000)
+    .max(100_000)
+    .default(DEFAULT_MAX_BODY_CHARS)
+    .describe("Most characters of the event's notes to return (1,000-100,000, default 20,000)."),
+  startChar: z
+    .number()
+    .int()
+    .min(0)
+    .default(0)
+    .describe("Where in the notes to start: a previous result's body.nextStartChar."),
+};
+
+export const getEventTool: ToolDefinition<typeof getEventShape> = defineTool({
+  name: "get_event",
+  title: "Read a calendar event",
+  description:
+    "Read one event in the user's personal Outlook.com / Hotmail calendar in full: its notes " +
+    "(as plain text), attendees and their responses, organizer, reminder, free/busy (showAs) " +
+    "and, for a whole recurring series, its recurrence pattern. Use it to check an event " +
+    "before update_event or cancel_event. An occurrence of a series has no pattern of its own: " +
+    "read its seriesMasterId for that. Long notes are cut at maxChars: body.truncated is then " +
+    "true, and startChar=body.nextStartChar reads on. Read-only. " +
+    UNTRUSTED_CONTENT_DESCRIPTION,
+  inputShape: getEventShape,
+  annotations: { readOnlyHint: true, openWorldHint: true },
+  scopesAnyOf: ["Calendars.Read", "Calendars.ReadWrite"],
+  async handler(input, ctx) {
+    const timeZone = input.timeZone ?? ctx.config.defaultTimeZone;
+    const event = await getEvent(ctx.graph, {
+      id: input.id,
+      timeZone,
+      calendarId: input.calendarId,
+      maxChars: input.maxChars,
+      startChar: input.startChar,
+    });
+    // The summary stays free of the event's own text; that is all in the data.
+    const { body } = event;
+    const part = body.truncated
+      ? ` The notes are long: this is characters ${body.startChar ?? 0}-${body.nextStartChar} of ` +
+        `${body.totalChars}; call again with startChar=${body.nextStartChar} for more.`
+      : "";
+    return untrustedResult(`Read the event (times in ${timeZone}); its details follow.${part}`, {
+      timeZone,
+      event,
+    });
   },
 });
 
@@ -94,6 +195,64 @@ const createEventShape = {
     .string()
     .optional()
     .describe("Idempotency key; if omitted one is generated so retries don't duplicate."),
+  calendarId: calendarIdShape,
+  isAllDay: z
+    .boolean()
+    .optional()
+    .describe(
+      'All-day event: start and end are dates ("YYYY-MM-DD"), and end is the day AFTER the last ' +
+        'day (a one-day event on 20 July is start "2026-07-20", end "2026-07-21").',
+    ),
+  showAs: z
+    .enum(SHOW_AS)
+    .optional()
+    .describe(
+      "How the time shows to others: timed events default to busy, all-day events to free. " +
+        'E.g. "free" for a travel-time block.',
+    ),
+  recurrence: z
+    .object({
+      pattern: z.object({
+        type: z.enum(RECURRENCE_TYPES),
+        interval: z.number().int().min(1).max(99).describe("Every N days/weeks/months/years."),
+        daysOfWeek: z
+          .array(z.enum(DAYS_OF_WEEK))
+          .min(1)
+          .optional()
+          .describe("weekly, relativeMonthly, relativeYearly: which days."),
+        dayOfMonth: z
+          .number()
+          .int()
+          .min(1)
+          .max(31)
+          .optional()
+          .describe("absoluteMonthly, absoluteYearly: which day of the month."),
+        month: z.number().int().min(1).max(12).optional().describe("Yearly patterns: which month."),
+        index: z
+          .enum(WEEK_INDEXES)
+          .optional()
+          .describe('Relative patterns: which week, e.g. "first" Monday.'),
+        firstDayOfWeek: z.enum(DAYS_OF_WEEK).optional(),
+      }),
+      range: z.object({
+        type: z.enum(["endDate", "noEnd", "numbered"]),
+        startDate: z.string().describe("YYYY-MM-DD: must be the event's start date."),
+        endDate: z.string().optional().describe('YYYY-MM-DD, for type "endDate" (inclusive).'),
+        numberOfOccurrences: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_OCCURRENCES)
+          .optional()
+          .describe('For type "numbered".'),
+      }),
+    })
+    .optional()
+    .describe(
+      "Makes this a recurring series (Graph's patternedRecurrence). Each pattern type needs its " +
+        "fields: weekly needs daysOfWeek; absoluteMonthly dayOfMonth; relativeMonthly daysOfWeek " +
+        "and index; absoluteYearly dayOfMonth and month; relativeYearly daysOfWeek, index and month.",
+    ),
 };
 
 export const createEventTool: ToolDefinition<typeof createEventShape> = defineTool({
@@ -104,8 +263,11 @@ export const createEventTool: ToolDefinition<typeof createEventShape> = defineTo
     "plus separate travel-time blocks). " +
     "Times are LOCAL wall-clock paired with an IANA time zone (never a UTC 'Z'), so the " +
     "event lands at the intended local time. A transactionId makes repeated calls idempotent " +
-    "(no duplicates). IMPORTANT: confirm the details (title, date, start/end, timezone, location) " +
-    "with the user BEFORE calling, then echo back the created event.",
+    "(no duplicates). Supports all-day events (isAllDay), free/busy (showAs) and recurring " +
+    "series (recurrence). A recurring series can't be removed with cancel_event, only in " +
+    "Outlook, so confirm its pattern and end with extra care. IMPORTANT: confirm the details " +
+    "(title, date, start/end, timezone, location, any recurrence) with the user BEFORE calling, " +
+    "then echo back the created event.",
   inputShape: createEventShape,
   annotations: {
     readOnlyHint: false,
@@ -124,8 +286,19 @@ export const createEventTool: ToolDefinition<typeof createEventShape> = defineTo
       isReminderOn: input.isReminderOn,
       reminderMinutesBeforeStart: input.reminderMinutesBeforeStart,
       transactionId: input.transactionId,
+      calendarId: input.calendarId,
+      isAllDay: input.isAllDay,
+      showAs: input.showAs,
+      recurrence: input.recurrence,
     });
-    return toolResult(`Created event "${result.subject ?? input.subject}".`, { event: result });
+    const title = result.subject ?? input.subject;
+    return toolResult(
+      result.matchedExisting
+        ? `An event with these details already exists ("${title}"): nothing new was created. ` +
+            "It is in `event`; to create a second copy on purpose, pass a new transactionId."
+        : `Created event "${title}".`,
+      { event: result },
+    );
   },
 });
 
@@ -138,6 +311,7 @@ const updateEventShape = {
   body: z.string().optional().describe("New plain-text body."),
   isReminderOn: z.boolean().optional(),
   reminderMinutesBeforeStart: z.number().int().min(0).optional(),
+  calendarId: calendarIdShape,
 };
 
 export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTool({
@@ -162,6 +336,7 @@ export const updateEventTool: ToolDefinition<typeof updateEventShape> = defineTo
   async handler(input, ctx) {
     const { event, changes } = await updateEvent(ctx.graph, {
       id: input.id,
+      calendarId: input.calendarId,
       subject: input.subject,
       start: input.start ? resolveTime(input.start, ctx) : undefined,
       end: input.end ? resolveTime(input.end, ctx) : undefined,
@@ -191,6 +366,7 @@ const cancelEventShape = {
     .string()
     .optional()
     .describe("IANA time zone for the echoed times (defaults to the server's DEFAULT_TIMEZONE)."),
+  calendarId: calendarIdShape,
 };
 
 // Approved by the owner with guards (#55): soft delete only, title must match,
@@ -217,6 +393,7 @@ export const cancelEventTool: ToolDefinition<typeof cancelEventShape> = defineTo
     const timeZone = input.timeZone ?? ctx.config.defaultTimeZone;
     const event = await cancelEvent(ctx.graph, {
       id: input.id,
+      calendarId: input.calendarId,
       confirmSubject: input.confirmSubject,
       timeZone,
     });
@@ -227,8 +404,34 @@ export const cancelEventTool: ToolDefinition<typeof cancelEventShape> = defineTo
   },
 });
 
+const listCalendarsShape = {};
+
+export const listCalendarsTool: ToolDefinition<typeof listCalendarsShape> = defineTool({
+  name: "list_calendars",
+  title: "List calendars",
+  description:
+    "List the calendars in the user's personal Outlook.com / Hotmail account (their own and any " +
+    "shared with them), with which is the default and which can be edited. Use an id as " +
+    "calendarId in the other calendar tools; omit calendarId for the default calendar. " +
+    "Read-only. " +
+    UNTRUSTED_CONTENT_DESCRIPTION,
+  inputShape: listCalendarsShape,
+  annotations: { readOnlyHint: true, openWorldHint: true },
+  scopesAnyOf: ["Calendars.Read", "Calendars.ReadWrite"],
+  async handler(_input, ctx) {
+    const calendars = await listCalendars(ctx.graph);
+    // Names of calendars shared by others are their text, hence untrusted.
+    return untrustedResult(`Found ${calendars.length} calendar(s).`, {
+      count: calendars.length,
+      calendars,
+    });
+  },
+});
+
 export const calendarTools: RegisteredTool[] = [
+  toRegistered(listCalendarsTool),
   toRegistered(listEventsTool),
+  toRegistered(getEventTool),
   toRegistered(createEventTool),
   toRegistered(updateEventTool),
   toRegistered(cancelEventTool),

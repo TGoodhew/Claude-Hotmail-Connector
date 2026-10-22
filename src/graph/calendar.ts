@@ -8,19 +8,33 @@
  */
 
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { GraphError, ValidationError } from "../util/errors.js";
 import { htmlToText } from "../util/html.js";
 import {
   assertValidTimeZone,
   type GraphDateTime,
+  isValidTimeZone,
+  normalizeLocalDateTime,
   preferTimeZoneHeader,
   toGraphDateTime,
   utcToZonedWallClock,
   zonedWallClockToUtcIso,
 } from "../util/time.js";
-import type { GraphClient } from "./client.js";
+import type { GraphClient, ODataPage } from "./client.js";
+import { type MessageBody, sliceBody } from "./mail.js";
+import { CursorBase, decodeCursor, encodeCursor } from "./paging.js";
 
-const EVENT_SELECT = "id,subject,start,end,location,isAllDay,webLink";
+const EVENT_SELECT =
+  "id,subject,start,end,location,isAllDay,webLink,type,seriesMasterId,showAs,organizer,isCancelled";
+
+/**
+ * Where a calendar's events live: the default calendar, or the one
+ * `calendarId` names (from list_calendars).
+ */
+function calendarPath(calendarId: string | undefined, rest: string): string {
+  return calendarId ? `/me/calendars/${encodeURIComponent(calendarId)}/${rest}` : `/me/${rest}`;
+}
 
 /** The UTC instant (ms) of a local wall-clock time in its zone. */
 function instant(t: { dateTime: string; timeZone: string }): number {
@@ -37,6 +51,10 @@ export interface ListEventsInput {
   endDateTime: string;
   timeZone: string;
   limit: number;
+  /** A calendar from list_calendars; the default calendar if omitted. */
+  calendarId?: string;
+  /** A previous call's nextPageToken; the other inputs are then ignored. */
+  pageToken?: string;
 }
 
 export interface EventTime {
@@ -52,6 +70,24 @@ export interface EventSummary {
   location: string | null;
   isAllDay: boolean;
   webLink: string | null;
+  /** singleInstance | occurrence | exception | seriesMaster */
+  type: string | null;
+  /** The series an occurrence or exception belongs to. */
+  seriesMasterId: string | null;
+  /** free | tentative | busy | oof | workingElsewhere | unknown */
+  showAs: string | null;
+  organizer: { name?: string; address?: string } | null;
+  isCancelled: boolean;
+}
+
+export interface ListEventsResult {
+  events: EventSummary[];
+  /** The zone the times are in (from the cursor when paging). */
+  timeZone: string;
+  /** True when the range has more events than were returned. */
+  truncated: boolean;
+  /** Pass as `pageToken` for the next events; present when there is a next page. */
+  nextPageToken?: string;
 }
 
 interface GraphEvent {
@@ -68,6 +104,10 @@ interface GraphEvent {
   attendees?: unknown[];
   /** singleInstance | occurrence | exception | seriesMaster */
   type?: string;
+  seriesMasterId?: string;
+  showAs?: string;
+  organizer?: { emailAddress?: { name?: string; address?: string } };
+  isCancelled?: boolean;
   /** Version tag; sent back as `If-Match` so writes apply only to the checked version. */
   "@odata.etag"?: string;
 }
@@ -86,8 +126,23 @@ function shapeEvent(e: GraphEvent): EventSummary {
     location: e.location?.displayName ?? null,
     isAllDay: Boolean(e.isAllDay),
     webLink: e.webLink ?? null,
+    type: e.type ?? null,
+    seriesMasterId: e.seriesMasterId ?? null,
+    showAs: e.showAs ?? null,
+    organizer: e.organizer?.emailAddress
+      ? { name: e.organizer.emailAddress.name, address: e.organizer.emailAddress.address }
+      : null,
+    isCancelled: Boolean(e.isCancelled),
   };
 }
+
+// A list_events cursor (see ./paging.ts) also holds the display zone, since the
+// `Prefer` header that renders it isn't part of Graph's nextLink. `kind` keeps
+// a list_messages cursor from being followed here.
+const EventsCursorSchema = CursorBase.extend({
+  kind: z.literal("events"),
+  timeZone: z.string().min(1),
+});
 
 /**
  * List events in a date range via calendarView, rendered in `timeZone`.
@@ -97,11 +152,22 @@ function shapeEvent(e: GraphEvent): EventSummary {
  * are rendered in — a naive "today in Brisbane" query won't silently miss or
  * include boundary events); a value carrying an offset/`Z` pins the instant
  * directly. The `Prefer` header controls the zone of the times in the response.
+ *
+ * Returns one page of at most `limit` events. When the range holds more,
+ * `truncated` is set (#49), so a capped list is never mistaken for the whole
+ * range, and `nextPageToken` continues it.
  */
 export async function listEvents(
   graph: GraphClient,
   input: ListEventsInput,
-): Promise<EventSummary[]> {
+): Promise<ListEventsResult> {
+  if (input.pageToken) {
+    // The cursor alone decides the request, like list_messages.
+    const cursor = decodeCursor(input.pageToken, EventsCursorSchema, "list_events");
+    assertValidTimeZone(cursor.timeZone);
+    return eventsPage(graph, cursor.next, undefined, cursor.timeZone);
+  }
+
   assertValidTimeZone(input.timeZone);
 
   // Pin bare local bounds to the display zone so the query window and the
@@ -115,22 +181,112 @@ export async function listEvents(
     "endDateTime must be after startDateTime.",
   );
 
-  const events = await graph.getAllPages<GraphEvent>(
-    "/me/calendarView",
+  return eventsPage(
+    graph,
+    calendarPath(input.calendarId, "calendarView"),
+    {
+      startDateTime,
+      endDateTime,
+      $select: EVENT_SELECT,
+      $orderby: "start/dateTime",
+      $top: input.limit,
+    },
+    input.timeZone,
+  );
+}
+
+async function eventsPage(
+  graph: GraphClient,
+  path: string,
+  query: Record<string, string | number> | undefined,
+  timeZone: string,
+): Promise<ListEventsResult> {
+  const page = (
+    await graph.request<ODataPage<GraphEvent>>("GET", path, {
+      query,
+      headers: { prefer: preferTimeZoneHeader(timeZone) },
+    })
+  ).data;
+  const nextLink = page["@odata.nextLink"];
+  const nextPageToken = encodeCursor(nextLink, { kind: "events", timeZone });
+  return {
+    events: (page.value ?? []).map(shapeEvent),
+    timeZone,
+    // Set even if the nextLink can't be followed: the list is still incomplete.
+    truncated: Boolean(nextLink),
+    ...(nextPageToken ? { nextPageToken } : {}),
+  };
+}
+
+export interface GetEventInput {
+  id: string;
+  /** IANA zone for the returned times. */
+  timeZone: string;
+  /** The event's calendar, when it isn't the default one. */
+  calendarId?: string;
+  /** Most body characters to return (default: as for get_message). */
+  maxChars?: number;
+  /** Where in the (converted) body to start, to read past a previous cut. */
+  startChar?: number;
+}
+
+export interface EventAttendee {
+  name?: string;
+  address?: string;
+  /** required | optional | resource */
+  type: string | null;
+  /** none | organizer | tentativelyAccepted | accepted | declined | notResponded */
+  response: string | null;
+}
+
+export interface EventDetail extends EventSummary {
+  /** The notes, as plain text, capped like an email body (see `sliceBody`). */
+  body: MessageBody;
+  attendees: EventAttendee[];
+  isReminderOn: boolean | null;
+  reminderMinutesBeforeStart: number | null;
+  /** Graph's `patternedRecurrence` ({ pattern, range }); only a series master has one. */
+  recurrence: Record<string, unknown> | null;
+}
+
+interface GraphAttendee {
+  type?: string;
+  status?: { response?: string };
+  emailAddress?: { name?: string; address?: string };
+}
+
+/**
+ * Read one event in full (#50): its notes (HTML converted to text and capped,
+ * like get_message), attendees, reminder and recurrence, with times rendered in
+ * `timeZone`. An occurrence has no recurrence of its own: its series master
+ * (`seriesMasterId`) does.
+ */
+export async function getEvent(graph: GraphClient, input: GetEventInput): Promise<EventDetail> {
+  assertValidTimeZone(input.timeZone);
+  const e = await graph.get<GraphEvent & { recurrence?: Record<string, unknown> | null }>(
+    calendarPath(input.calendarId, `events/${encodeURIComponent(input.id)}`),
     {
       query: {
-        startDateTime,
-        endDateTime,
-        $select: EVENT_SELECT,
-        $orderby: "start/dateTime",
-        $top: input.limit,
+        $select: `${EVENT_SELECT},body,attendees,isReminderOn,reminderMinutesBeforeStart,recurrence`,
       },
       headers: { prefer: preferTimeZoneHeader(input.timeZone) },
     },
-    { maxItems: input.limit },
   );
-
-  return events.map(shapeEvent);
+  const raw = e.body?.content ?? "";
+  const text = e.body?.contentType?.toLowerCase() === "html" ? htmlToText(raw) : raw;
+  return {
+    ...shapeEvent(e),
+    body: sliceBody(text, "text", input.maxChars, input.startChar),
+    attendees: ((e.attendees ?? []) as GraphAttendee[]).map((a) => ({
+      name: a.emailAddress?.name,
+      address: a.emailAddress?.address,
+      type: a.type ?? null,
+      response: a.status?.response ?? null,
+    })),
+    isReminderOn: e.isReminderOn ?? null,
+    reminderMinutesBeforeStart: e.reminderMinutesBeforeStart ?? null,
+    recurrence: e.recurrence ?? null,
+  };
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────
@@ -152,10 +308,180 @@ export interface CreateEventInput {
   reminderMinutesBeforeStart?: number;
   /** Idempotency key; generated if omitted. */
   transactionId?: string;
+  /** A calendar from list_calendars; the default calendar if omitted. */
+  calendarId?: string;
+  /**
+   * An all-day event (#51): start and end are dates (or midnights) in one
+   * zone, and the end is exclusive, i.e. the day after the last day.
+   */
+  isAllDay?: boolean;
+  /** How the time shows to others (#51): e.g. "free" for a travel-time block. */
+  showAs?: ShowAs;
+  /** Makes the event a recurring series (#51); see {@link buildRecurrence}. */
+  recurrence?: RecurrenceInput;
+}
+
+export const SHOW_AS = ["free", "tentative", "busy", "oof", "workingElsewhere"] as const;
+export type ShowAs = (typeof SHOW_AS)[number];
+
+export const RECURRENCE_TYPES = [
+  "daily",
+  "weekly",
+  "absoluteMonthly",
+  "relativeMonthly",
+  "absoluteYearly",
+  "relativeYearly",
+] as const;
+export const DAYS_OF_WEEK = [
+  "sunday",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+] as const;
+export const WEEK_INDEXES = ["first", "second", "third", "fourth", "last"] as const;
+/** Most occurrences a "numbered" series may have. */
+export const MAX_OCCURRENCES = 999;
+
+/** A recurrence as the tool takes it: Graph's `patternedRecurrence`, minus its zone. */
+export interface RecurrenceInput {
+  pattern: {
+    type: (typeof RECURRENCE_TYPES)[number];
+    /** Every `interval` days / weeks / months / years. */
+    interval: number;
+    daysOfWeek?: (typeof DAYS_OF_WEEK)[number][];
+    dayOfMonth?: number;
+    month?: number;
+    index?: (typeof WEEK_INDEXES)[number];
+    firstDayOfWeek?: (typeof DAYS_OF_WEEK)[number];
+  };
+  range: {
+    type: "endDate" | "noEnd" | "numbered";
+    /** The first occurrence's date, YYYY-MM-DD: must be the event's start date. */
+    startDate: string;
+    endDate?: string;
+    numberOfOccurrences?: number;
+  };
+}
+
+/** A real calendar date `YYYY-MM-DD`, or a ValidationError naming `label`. */
+function calendarDate(s: string, label: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    throw new ValidationError(`${label} must be a date "YYYY-MM-DD"; got "${s}".`);
+  }
+  normalizeLocalDateTime(`${s}T00:00:00`); // rejects 2026-02-30 and the like
+  return s;
+}
+
+/**
+ * Graph's `patternedRecurrence` for `r`, checked against the event's start.
+ * Each pattern type gets exactly the fields it uses, and is refused without
+ * them, so the series is the one described rather than whatever Graph makes of
+ * a partial pattern. The range starts on the event's start date, in its zone.
+ */
+export function buildRecurrence(r: RecurrenceInput, start: GraphDateTime): Record<string, unknown> {
+  const { pattern: p, range } = r;
+  if (!Number.isInteger(p.interval) || p.interval < 1 || p.interval > 99) {
+    throw new ValidationError("recurrence.pattern.interval must be a whole number from 1 to 99.");
+  }
+  const need = <T>(value: T | undefined, field: string): T => {
+    if (value === undefined || (Array.isArray(value) && value.length === 0)) {
+      throw new ValidationError(`A ${p.type} recurrence needs ${field}.`);
+    }
+    return value;
+  };
+  // Days in week order, each once: the same days in another order are the same
+  // series, so they must also give the same idempotency key (Copilot review on #134).
+  const weekdays = (days: string[]) => DAYS_OF_WEEK.filter((d) => days.includes(d));
+  const pattern: Record<string, unknown> = { type: p.type, interval: p.interval };
+  switch (p.type) {
+    case "daily":
+      break;
+    case "weekly":
+      pattern.daysOfWeek = weekdays(need(p.daysOfWeek, "pattern.daysOfWeek"));
+      // Sunday is Graph's default, so it's left implicit: the same series
+      // either way, with the same key (Copilot review on #134).
+      if (p.firstDayOfWeek && p.firstDayOfWeek !== "sunday") {
+        pattern.firstDayOfWeek = p.firstDayOfWeek;
+      }
+      break;
+    case "absoluteMonthly":
+      pattern.dayOfMonth = need(p.dayOfMonth, "pattern.dayOfMonth");
+      break;
+    case "relativeMonthly":
+      pattern.daysOfWeek = weekdays(need(p.daysOfWeek, "pattern.daysOfWeek"));
+      pattern.index = need(p.index, "pattern.index");
+      break;
+    case "absoluteYearly":
+      pattern.dayOfMonth = need(p.dayOfMonth, "pattern.dayOfMonth");
+      pattern.month = need(p.month, "pattern.month");
+      break;
+    case "relativeYearly":
+      pattern.daysOfWeek = weekdays(need(p.daysOfWeek, "pattern.daysOfWeek"));
+      pattern.index = need(p.index, "pattern.index");
+      pattern.month = need(p.month, "pattern.month");
+      break;
+  }
+
+  const startDate = calendarDate(range.startDate, "recurrence.range.startDate");
+  if (startDate !== start.dateTime.slice(0, 10)) {
+    throw new ValidationError(
+      `recurrence.range.startDate (${startDate}) must be the event's start date ` +
+        `(${start.dateTime.slice(0, 10)}). Nothing was created.`,
+    );
+  }
+  const out: Record<string, unknown> = {
+    type: range.type,
+    startDate,
+    recurrenceTimeZone: start.timeZone,
+  };
+  if (range.type === "endDate") {
+    if (range.endDate === undefined) {
+      throw new ValidationError("An endDate recurrence range needs range.endDate.");
+    }
+    const endDate = calendarDate(range.endDate, "recurrence.range.endDate");
+    if (endDate < startDate) {
+      throw new ValidationError("recurrence.range.endDate must not be before its startDate.");
+    }
+    out.endDate = endDate;
+  } else if (range.type === "numbered") {
+    const n = range.numberOfOccurrences;
+    if (n === undefined || !Number.isInteger(n) || n < 1 || n > MAX_OCCURRENCES) {
+      throw new ValidationError(
+        `A numbered recurrence needs range.numberOfOccurrences from 1 to ${MAX_OCCURRENCES}.`,
+      );
+    }
+    out.numberOfOccurrences = n;
+  }
+  return { pattern, range: out };
+}
+
+/**
+ * The start or end of an all-day event: midnight in its zone. A date
+ * ("2026-07-20") means that midnight; a time must be midnight already.
+ */
+function allDayTime(t: EventDateTime, side: "start" | "end"): GraphDateTime {
+  const raw = t.dateTime.trim();
+  const local = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00:00` : raw;
+  const g = toGraphDateTime(local, t.timeZone);
+  // The conversion drops a fraction of a second, so check for one here: only
+  // an all-zero fraction is still midnight (Copilot review on #134).
+  const fraction = /\.(\d+)$/.exec(raw)?.[1] ?? "";
+  if (!g.dateTime.endsWith("T00:00:00") || /[1-9]/.test(fraction)) {
+    throw new ValidationError(
+      `An all-day event's ${side} must be a date ("YYYY-MM-DD") or midnight; got ` +
+        `"${t.dateTime}". Nothing was created.`,
+    );
+  }
+  return g;
 }
 
 export interface UpdateEventInput {
   id: string;
+  /** The event's calendar, when it isn't the default one. */
+  calendarId?: string;
   subject?: string;
   start?: EventDateTime;
   end?: EventDateTime;
@@ -203,6 +529,9 @@ export const WRITABLE_EVENT_FIELDS: ReadonlySet<string> = new Set([
   "isReminderOn",
   "reminderMinutesBeforeStart",
   "transactionId",
+  "isAllDay",
+  "showAs",
+  "recurrence",
 ]);
 
 /**
@@ -223,14 +552,31 @@ export function assertWritableEventPayload(payload: Record<string, unknown>): vo
  * creating a duplicate — which is what `idempotentHint: true` promises the
  * client. An explicit `input.transactionId` always takes precedence.
  */
-function deterministicTransactionId(input: CreateEventInput): string {
+function deterministicTransactionId(input: CreateEventInput, written: WrittenTimes): string {
+  // A plain event keys on its times as given, as it always has. An all-day
+  // event or a series keys on what is written (normalised times; the
+  // recurrence without the fields its type ignores), so equivalent inputs
+  // share a key rather than creating a duplicate on retry (Copilot review on
+  // #134). That matters most for a series, which cancel_event can't remove.
+  const times = input.isAllDay || written.recurrence ? written : input;
+  // The availability written: an all-day event's is free unless given.
+  const showAs = input.showAs ?? (input.isAllDay ? "free" : "busy");
   const material = [
     input.subject,
-    input.start.dateTime,
-    input.start.timeZone,
-    input.end.dateTime,
-    input.end.timeZone,
+    times.start.dateTime,
+    times.start.timeZone,
+    times.end.dateTime,
+    times.end.timeZone,
     input.location ?? "",
+    // Only when set, so a plain event's id is what it always was.
+    ...(input.isAllDay ? ["isAllDay"] : []),
+    // The availability written, in the encoding keys have always used: a token
+    // unless it's busy. A "free" block and a "busy" one are different events,
+    // not a retry of each other; an all-day event's implicit free keys like an
+    // explicit one; and a key made before all-day events defaulted to free is
+    // unchanged, so a retry across versions still matches (Copilot review on #140).
+    ...(showAs !== "busy" ? [`showAs:${showAs}`] : []),
+    ...(written.recurrence ? [JSON.stringify(written.recurrence)] : []),
   ].join(String.fromCharCode(0));
   return createHash("sha256").update(material).digest("hex").slice(0, 36);
 }
@@ -241,22 +587,45 @@ function deterministicTransactionId(input: CreateEventInput): string {
  * Times are sent as local wall-clock + IANA time zone via {@link toGraphDateTime}
  * (which rejects offset/`Z` values), so the event lands at the intended local
  * time. When no `transactionId` is supplied a deterministic one is derived from
- * the event details, so a retried identical create does not duplicate.
- * `deriveId` is injectable for tests.
+ * the event details, so a retried identical create does not duplicate. An
+ * all-day event is midnight to midnight in one zone, and a recurrence is built
+ * by {@link buildRecurrence} (#51). An all-day event shows as free unless
+ * `showAs` says otherwise, as Outlook does.
+ *
+ * Graph answers a repeated `transactionId` with the event it already made
+ * (verified live, #48), so the result says whether this call created the
+ * event or matched an existing one (`matchedExisting`).
+ * `deriveId` and `now` are injectable for tests.
  */
 export async function createEvent(
   graph: GraphClient,
   input: CreateEventInput,
-  deriveId: (input: CreateEventInput) => string = deterministicTransactionId,
-): Promise<EventWriteResult> {
-  const transactionId = input.transactionId ?? deriveId(input);
-  const start = toGraphDateTime(input.start.dateTime, input.start.timeZone);
-  const end = toGraphDateTime(input.end.dateTime, input.end.timeZone);
+  deriveId: (input: CreateEventInput, written: WrittenTimes) => string = deterministicTransactionId,
+  now: () => number = Date.now,
+): Promise<CreatedEvent> {
+  let start: GraphDateTime;
+  let end: GraphDateTime;
+  if (input.isAllDay) {
+    // Graph requires midnight to midnight, in one zone (#51).
+    start = allDayTime(input.start, "start");
+    end = allDayTime(input.end, "end");
+    if (start.timeZone !== end.timeZone) {
+      throw new ValidationError(
+        "An all-day event's start and end must be in the same time zone. Nothing was created.",
+      );
+    }
+  } else {
+    start = toGraphDateTime(input.start.dateTime, input.start.timeZone);
+    end = toGraphDateTime(input.end.dateTime, input.end.timeZone);
+  }
   assertEndAfterStart(
     instant(start),
     instant(end),
     "The event's end must be after its start. Nothing was created.",
   );
+  const recurrence = input.recurrence ? buildRecurrence(input.recurrence, start) : undefined;
+  const transactionId =
+    input.transactionId ?? deriveId(input, { start, end, ...(recurrence ? { recurrence } : {}) });
   const payload: Record<string, unknown> = {
     subject: input.subject,
     start,
@@ -268,10 +637,71 @@ export async function createEvent(
     ...(input.reminderMinutesBeforeStart !== undefined
       ? { reminderMinutesBeforeStart: input.reminderMinutesBeforeStart }
       : {}),
+    ...(input.isAllDay ? { isAllDay: true } : {}),
+    // An all-day event shows as free unless told otherwise, as in Outlook.
+    ...(input.showAs || input.isAllDay ? { showAs: input.showAs ?? "free" } : {}),
+    ...(recurrence ? { recurrence } : {}),
   };
   assertWritableEventPayload(payload);
-  const created = await graph.post<GraphEvent>("/me/events", payload);
-  return shapeWrite(created, transactionId);
+  const sentAt = now();
+  const created = await graph.post<
+    GraphEvent & { recurrence?: Record<string, unknown> | null; createdDateTime?: string }
+  >(calendarPath(input.calendarId, "events"), payload);
+  // An event made well before this request is one an earlier create with the
+  // same transactionId made: Graph returned it rather than a duplicate.
+  const createdAt = Date.parse(created.createdDateTime ?? "");
+  const matchedExisting = Number.isFinite(createdAt) && createdAt < sentAt - MATCHED_EXISTING_MS;
+  return {
+    ...shapeWrite(created, transactionId),
+    isAllDay: Boolean(created.isAllDay),
+    showAs: created.showAs ?? null,
+    // A matched event may be a series written in another zone (an explicit
+    // transactionId reused) or since edited: then Graph's zone stands.
+    recurrence: matchedExisting
+      ? (created.recurrence ?? null)
+      : withIanaZone(created.recurrence ?? null, start.timeZone),
+    matchedExisting,
+  };
+}
+
+/**
+ * An event created more than this long before the request counts as matched
+ * rather than new. Generous, so a slow request or a skewed clock doesn't
+ * misreport a new event; a retry within it is reported as created, as before.
+ */
+const MATCHED_EXISTING_MS = 2 * 60_000;
+
+/**
+ * Graph may echo a recurrence's zone by its Windows name ("Pacific Standard
+ * Time"). For a series this call just created, that is the zone it was
+ * written with, so report its IANA name instead, for consistent results.
+ */
+function withIanaZone(
+  recurrence: Record<string, unknown> | null,
+  timeZone: string,
+): Record<string, unknown> | null {
+  const range = recurrence?.range as Record<string, unknown> | undefined;
+  const zone = range?.recurrenceTimeZone;
+  if (!recurrence || !range || typeof zone !== "string" || isValidTimeZone(zone)) {
+    return recurrence;
+  }
+  return { ...recurrence, range: { ...range, recurrenceTimeZone: timeZone } };
+}
+
+/** What a create writes, after validation: the idempotency key is derived from it. */
+export interface WrittenTimes {
+  start: GraphDateTime;
+  end: GraphDateTime;
+  recurrence?: Record<string, unknown>;
+}
+
+/** What create_event echoes: the written event, with the #51 fields. */
+export interface CreatedEvent extends EventWriteResult {
+  isAllDay: boolean;
+  showAs: string | null;
+  recurrence: Record<string, unknown> | null;
+  /** True when Graph returned an event an earlier identical create made: nothing new was created. */
+  matchedExisting: boolean;
 }
 
 /** Fields `update_event` can change, in the order changes are reported. */
@@ -402,7 +832,7 @@ export async function updateEvent(
   const fields = UPDATABLE_FIELDS.filter((f) => f in patch);
   const zone = input.start?.timeZone ?? input.end?.timeZone;
   const headers = zone ? { prefer: preferTimeZoneHeader(zone) } : undefined;
-  const path = `/me/events/${encodeURIComponent(input.id)}`;
+  const path = calendarPath(input.calendarId, `events/${encodeURIComponent(input.id)}`);
   // Changing either side needs both, to check the result still ends after it starts.
   const select = new Set(["id", "attendees", ...fields, ...(zone ? ["start", "end"] : [])]);
 
@@ -460,6 +890,8 @@ export async function updateEvent(
 
 export interface CancelEventInput {
   id: string;
+  /** The event's calendar, when it isn't the default one. */
+  calendarId?: string;
   /** Must match the event's title (case-insensitive): guards against a wrong id. */
   confirmSubject: string;
   /** IANA zone for the echoed start/end. */
@@ -486,7 +918,7 @@ export async function cancelEvent(
   input: CancelEventInput,
 ): Promise<EventWriteResult> {
   assertValidTimeZone(input.timeZone);
-  const path = `/me/events/${encodeURIComponent(input.id)}`;
+  const path = calendarPath(input.calendarId, `events/${encodeURIComponent(input.id)}`);
   const event = await graph.get<GraphEvent>(path, {
     query: { $select: "id,subject,start,end,location,webLink,attendees,type" },
     headers: { prefer: preferTimeZoneHeader(input.timeZone) },
@@ -521,4 +953,42 @@ export async function cancelEvent(
   const precondition = ifMatch(event, "delete");
   await onCheckedVersion(() => graph.delete(path, { headers: precondition }));
   return shapeWrite(event);
+}
+
+// ── Calendars ────────────────────────────────────────────────────────────────
+
+export interface CalendarSummary {
+  id: string;
+  name: string | null;
+  isDefaultCalendar: boolean;
+  /** Whether events can be created or changed in it. */
+  canEdit: boolean;
+  owner: { name?: string; address?: string } | null;
+}
+
+interface GraphCalendar {
+  id: string;
+  name?: string;
+  isDefaultCalendar?: boolean;
+  canEdit?: boolean;
+  owner?: { name?: string; address?: string };
+}
+
+/** Most calendars list_calendars returns. */
+export const MAX_CALENDARS = 100;
+
+/** The user's calendars (`GET /me/calendars`), for list_events' `calendarId`. */
+export async function listCalendars(graph: GraphClient): Promise<CalendarSummary[]> {
+  const calendars = await graph.getAllPages<GraphCalendar>(
+    "/me/calendars",
+    { query: { $select: "id,name,isDefaultCalendar,canEdit,owner", $top: MAX_CALENDARS } },
+    { maxItems: MAX_CALENDARS },
+  );
+  return calendars.map((c) => ({
+    id: c.id,
+    name: c.name ?? null,
+    isDefaultCalendar: Boolean(c.isDefaultCalendar),
+    canEdit: Boolean(c.canEdit),
+    owner: c.owner ? { name: c.owner.name, address: c.owner.address } : null,
+  }));
 }

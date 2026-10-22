@@ -210,6 +210,7 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
   const outer: TableState[] = [];
   let table: TableState = { cell: false, row: false };
   let preText: string[] | null = null; // inside <pre>: its text so far
+  let preStart = false; // nothing has followed the <pre> tag yet
   let inHead = false;
   let cellEmpty = false; // an open cell has had no content yet
 
@@ -222,9 +223,7 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
   };
   const endPre = (parts: string[]) => {
     preText = null;
-    const block = tidy(parts.join(""))
-      .replace(/^\n/, "") // HTML ignores a newline straight after <pre>
-      .trimEnd();
+    const block = tidy(parts.join("")).trimEnd();
     // A <pre> is a block: a line break before it (none at the start of a cell)
     // and one owed after it, which ending the cell cancels like any other.
     if (!(table.cell && cellEmpty)) owed += 1;
@@ -233,7 +232,13 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
   };
   const text = (raw: string) => {
     if (inHead) return;
-    if (preText) return void preText.push(decodeEntities(raw));
+    if (preText) {
+      // HTML ignores one newline straight after the <pre> tag in the source,
+      // but keeps one from markup (`<pre><br>`) or after anything else (#125).
+      const t = preStart ? raw.replace(/^(?:\r\n|\r|\n)/, "") : raw; // one line ending, any style
+      preStart = false;
+      return void preText.push(decodeEntities(t));
+    }
     // Decoded first, then invisibles dropped, then whitespace collapsed: an
     // encoded tab or newline (`&#9;`, `&#10;`) is spacing, as in a browser, not a
     // column or line break, and a BOM vanishes whether literal or encoded.
@@ -295,6 +300,7 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
     }
     if (lt > i) text(html.slice(i, lt));
     i = lt;
+    preStart = false; // a tag or comment comes first, so a later newline counts
 
     if (html.startsWith("<!--", i)) {
       const end = missing.has("-->") ? -1 : html.indexOf("-->", i + 4);
@@ -349,13 +355,25 @@ function render(html: string, pres: string[], ignoreHead: boolean): string | nul
       continue;
     }
     if (!close && name === "head") inHead = !ignoreHead;
-    else if (!close && name === "pre") preText = [];
-    else if (TABLE_PARTS.has(name)) tablePart(name, close);
+    else if (!close && name === "pre") {
+      preText = [];
+      preStart = true;
+    } else if (TABLE_PARTS.has(name)) tablePart(name, close);
     else if (close && BLOCKS.has(name)) owed += 1;
   }
   // A <head> that never really ended: the caller renders again ignoring it.
   if (inHead) return null;
   if (preText) endPre(preText); // an unclosed <pre> runs to the end, as in a browser
+  // The end of input ends open cells, rows and tables as their closing tags
+  // would, so a trailing empty cell keeps its column (#125).
+  for (let enclosing = outer.pop(); enclosing; enclosing = outer.pop()) {
+    dropCellEndBreaks();
+    endRow();
+    table = enclosing;
+    out.push("\n"); // as an explicit </table> does
+  }
+  dropCellEndBreaks(); // cells and rows outside any table (stray <td>s)
+  endRow();
   return out.join("");
 }
 

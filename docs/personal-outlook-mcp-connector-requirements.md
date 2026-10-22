@@ -218,42 +218,92 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Read-only. `Mail.Read`.
 
 ### 7.4 `list_events` — read calendar
-- **Graph:** `GET /me/calendarView?startDateTime=…&endDateTime=…`.
+- **Graph:** `GET /me/calendarView?startDateTime=…&endDateTime=…`, or
+  `/me/calendars/{calendarId}/calendarView` for another calendar.
 - **Inputs:** `startDateTime`, `endDateTime` (required), `timeZone?` (IANA, default §9.5), `limit?` (1–100,
-  default 25).
+  default 25), `calendarId?` (from `list_calendars`; default calendar if omitted), `pageToken?`.
 - MUST send `Prefer: outlook.timezone="<IANA tz>"` so returned times are in the requested zone.
 - A bare local `startDateTime`/`endDateTime` MUST be interpreted in `timeZone`. This includes date-only
   and fractional-second forms *(→ #33)*. `end` MUST be after `start`.
-- **Output per event:** `id`, `subject`, `start` / `end` (with timeZone), `location`, `isAllDay`, `webLink`.
-  SHOULD add `showAs`, `type`, `seriesMasterId` and a truncation flag / cursor *(→ #49)*.
+- **Output per event:** `id`, `subject`, `start` / `end` (with timeZone), `location`, `isAllDay`, `webLink`,
+  `type` (singleInstance / occurrence / exception / seriesMaster), `seriesMasterId`, `showAs`
+  (free / tentative / busy / …), `organizer` and `isCancelled` *(#49)*.
+- **Never silently capped.** One page of at most `limit` events is returned. `truncated: true` means the
+  range has more, and the description tells the model to page before concluding a time is free.
+  `nextPageToken` is an opaque cursor, like §7.2's: base64url JSON `{v, next, kind: "events", timeZone}`.
+  It carries the display zone because Graph's nextLink doesn't carry the `Prefer` header, and
+  `kind` stops a `list_messages` cursor from being followed here. With a `pageToken`, the other inputs
+  are ignored. A nextLink outside the Graph base still sets `truncated`, but gives no cursor.
 - Read-only. `Calendars.Read`.
 
+### 7.4a `list_calendars` — the user's calendars
+- **Graph:** `GET /me/calendars` (at most 100).
+- **Output per calendar:** `id`, `name`, `isDefaultCalendar`, `canEdit`, `owner`. The names of
+  calendars shared by others are their text, so the result carries the untrusted-content notice (T12).
+- `calendarId` is accepted by `list_events`, `create_event`, `update_event` and `cancel_event`. It goes in
+  the path (`/me/calendars/{id}/…`), never in a write payload. Read-only. `Calendars.Read`.
+
+### 7.4b `get_event` — read one event in full
+- **Graph:** `GET /me/events/{id}` (or `/me/calendars/{calendarId}/events/{id}`) with `Prefer: outlook.timezone`.
+- **Inputs:** `id` (required), `timeZone?`, `calendarId?`, and `maxChars?` / `startChar?` for the notes (as §7.3).
+- **Output:** everything `list_events` gives, plus the notes as plain text (HTML converted, capped and
+  resumable like an email body, §7.3), `attendees` (name, address, type, response), `isReminderOn`,
+  `reminderMinutesBeforeStart` and `recurrence` (Graph's `patternedRecurrence`; only a series master has
+  one, so an occurrence points at it through `seriesMasterId`) *(#50)*.
+- The result carries the untrusted-content notice (T12), and the summary line holds none of the event's
+  text. Read-only. `Calendars.Read`.
+
 ### 7.5 `create_event` — write calendar
-- **Graph:** `POST /me/events` → `201 Created`.
+- **Graph:** `POST /me/events` → `201 Created` (or `POST /me/calendars/{calendarId}/events`).
 - **Inputs:** `subject`; `start` / `end` as `{ dateTime, timeZone }`, where `dateTime` is **local wall-clock,
   no offset/`Z`** and `timeZone` is IANA; `location?`; `body?` (plain text); `isReminderOn?`;
-  `reminderMinutesBeforeStart?`; `transactionId?`.
+  `reminderMinutesBeforeStart?`; `transactionId?`; `calendarId?`; `isAllDay?`; `showAs?`; `recurrence?`.
 - **Timezone correctness (critical):** send local wall-clock + IANA `timeZone`. Values with `Z` or an
   offset MUST be rejected. `end` MUST be after `start` *(→ #33)*.
+- **All-day** *(#51)*: `start`/`end` are dates (`YYYY-MM-DD`) or midnights, in **one** zone, and `end` is
+  exclusive (the day after the last day). They are sent as midnight wall-clock in that zone, never
+  shifted; anything that isn't whole days is refused before writing.
+- **showAs** *(#51)*: `free` / `tentative` / `busy` / `oof` / `workingElsewhere`, e.g. `free` for travel-time blocks.
+  An all-day event defaults to `free`, as in Outlook; a timed one to Graph's `busy` *(#135, owner decision)*.
+  The idempotency key carries a token for any availability written other than `busy`, the same encoding
+  as before, so an implicit and an explicit `free` key alike and keys stay stable across versions.
+- **Recurrence** *(#51)*: Graph's `patternedRecurrence`, built field by field.
+  - Each pattern type gets exactly the fields it uses and is refused without them (`weekly`: `daysOfWeek`;
+    `absoluteMonthly`: `dayOfMonth`; `relativeMonthly`: `daysOfWeek` + `index`; `absoluteYearly`:
+    `dayOfMonth` + `month`; `relativeYearly`: all three). `interval` is 1–99.
+  - `range.startDate` MUST be the event's start date; `recurrenceTimeZone` is the start's zone. An
+    `endDate` range needs an `endDate` not before it; a `numbered` one needs 1–999 occurrences.
+  - `cancel_event` refuses series (§7.8), so a mistaken series can only be removed in Outlook. The
+    description tells the model to confirm the pattern and end with extra care.
 - **Idempotency.** If the caller omits `transactionId`, the server derives a **deterministic** one
-  (SHA-256 over subject, start/end dateTime + timeZone, and location), so an identical retry doesn't
+  (SHA-256 over subject, start/end dateTime + timeZone, and location, plus the all-day flag and the
+  recurrence when set, both as written: an all-day event keys on its midnights and a series on its
+  validated recurrence, so equivalent inputs share a key), so an identical retry doesn't
   create a duplicate. A random id per call would not dedupe retries, because each retry is a new tool
   call. Documented limits:
   - two genuinely identical events (same title, times, location) can't both be created without an
     explicit `transactionId`;
   - body/reminder differences are not part of the key.
 
-  Graph's response to a repeated id MUST be verified and documented. The live test (§12) asserts
-  that a repeat returns the same event; record its result here once it has been run *(→ #48)*.
+  **Verified live** *(#48, 2026-10-22, personal Outlook.com account)*: repeating a create with the same
+  `transactionId` returns the **same event**; no duplicate is created. The live test (§12) asserts this
+  on every run.
 - **No attendees.** Attendees and invitations MUST NOT be sendable, because invitations send email.
   Three layers enforce this:
   - tool input schemas have no attendee fields, and unknown arguments are stripped;
   - payloads are built field by field;
   - `assertWritableEventPayload` rejects any property outside `WRITABLE_EVENT_FIELDS` (`subject`,
     `start`, `end`, `location`, `body`, `isReminderOn`, `reminderMinutesBeforeStart`,
-    `transactionId`) before a create or update is sent.
+    `transactionId`, `isAllDay`, `showAs`, `recurrence`) before a create or update is sent.
 - **Safety:** a write. The description instructs the model to confirm details with the user first. The
-  tool returns the created event (id, webLink, normalized start/end) so Claude can echo it.
+  tool returns the created event (id, webLink, normalized start/end, `isAllDay`, `showAs`, `recurrence`)
+  so Claude can echo it.
+  - `matchedExisting` is true when Graph returned an event that an earlier identical create had made
+    (created more than 2 minutes before the request). The summary then says nothing new was created,
+    rather than "Created" *(#135)*.
+  - For a series the call just created, a recurrence zone that Graph echoes by its Windows name
+    ("Pacific Standard Time") is reported by the IANA name it was written with. A matched series keeps
+    Graph's zone, since it may have been written in another zone or edited since.
 - Annotations: `destructiveHint: false`, `idempotentHint: true`. `Calendars.ReadWrite`.
 
 ### 7.6 `update_event` — edit an event
@@ -278,7 +328,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Same attendee prohibition for the payload as §7.5. `Calendars.ReadWrite`.
 
 ### 7.7 Planned read tools (optional)
-`get_event` (#50), all-day / recurring creation (#51), free/busy lookup (#52), mail folder awareness with
+Free/busy lookup (#52), mail folder awareness with
 Junk/Deleted excluded by default (#53), attachment text (#54).
 
 ### 7.8 `cancel_event` — guarded soft delete
@@ -425,7 +475,7 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | T9 | **Hostile launch environment.** A repo's `.env` swaps the client id, tenant, cache dir or scopes. | `.env` is read only from the checkout root, never the CWD (§8.4). Scope override can only narrow (§6). | ✅ #41, #70 |
 | T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; *→ #83* |
 | T11 | **Interference with the loopback sign-in.** A stray or hostile local request hits the redirect port. | Random `state`, checked in constant time. Mismatched requests get a 400 and neither abort nor complete the sign-in (§8.2). | ✅ #41 |
-| T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message` and `list_events` descriptions repeat it. Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
+| T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message`, `list_events`, `get_event` and `list_calendars` descriptions repeat it. Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
 
 **Rules (normative)**
 1. All mail and calendar content returned by tools is **untrusted data**, never instructions.
