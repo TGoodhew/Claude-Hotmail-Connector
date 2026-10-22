@@ -477,6 +477,12 @@ describe("mail folders (#53)", () => {
       "/me/mailFolders/F-junkemail/childFolders",
       "/me/mailFolders/old-project/childFolders",
     ]);
+    // Hidden folders are walked too: the listing returns their messages.
+    for (const [p, o] of get.mock.calls) {
+      if (p.endsWith("/childFolders")) {
+        expect((o as { query?: Record<string, unknown> }).query?.includeHiddenFolders).toBe("true");
+      }
+    }
   });
 
   it("keeps folder lookups to three at a time, alongside the listing", async () => {
@@ -513,6 +519,17 @@ describe("mail folders (#53)", () => {
     await expect(
       listMessages({ request, get: paged } as unknown as GraphClient, baseInput()),
     ).rejects.toThrow(/too many subfolders/);
+    // A huge tree is refused as soon as the count is passed, not walked in full.
+    const wide = Array.from({ length: MAX_EXCLUDED_SUBFOLDERS }, (_, i) => `w${i}`);
+    const tree: Record<string, string[]> = { "F-deleteditems": wide };
+    for (const w of wide)
+      tree[w] = Array.from({ length: MAX_EXCLUDED_SUBFOLDERS }, (_, i) => `${w}-${i}`);
+    const huge = treeGet(tree);
+    await expect(
+      listMessages({ request, get: huge } as unknown as GraphClient, baseInput()),
+    ).rejects.toThrow(/too many subfolders/);
+    const walks = huge.mock.calls.filter(([p]) => p.endsWith("/childFolders")).length;
+    expect(walks).toBeLessThanOrEqual(1 + 3); // the root's, then at most one batch in flight
     // Opting in doesn't need the walk.
     await listMessages(
       tooMany as unknown as GraphClient,
@@ -530,6 +547,17 @@ describe("mail folders (#53)", () => {
     expect(junk.messages.map((m) => m.folder)).toEqual(["junkemail"]);
     await listMessages(graphWith(request), baseInput({ folder: "AAMk/x+y=" }));
     expect(request.mock.calls[1]![1]).toBe("/me/mailFolders/AAMk%2Fx%2By%3D/messages");
+  });
+
+  it("refuses a folder that would resolve away in the URL", async () => {
+    // "/me/mailFolders/../messages" would become "/me/messages": everything, nothing left out.
+    const request = vi.fn<RequestMock>(async () => pageOf([]));
+    for (const folder of [".", "..", " .. ", "   "]) {
+      await expect(listMessages(graphWith(request), baseInput({ folder }))).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    }
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("keeps leaving them out on later pages", async () => {

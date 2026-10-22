@@ -136,7 +136,14 @@ async function childFolders(graph: GraphClient, id: string): Promise<FolderRef[]
   try {
     const page = await graph.get<ODataPage<{ id: string; childFolderCount?: number }>>(
       `/me/mailFolders/${encodeURIComponent(id)}/childFolders`,
-      { query: { $select: "id,childFolderCount", $top: MAX_EXCLUDED_SUBFOLDERS } },
+      {
+        query: {
+          $select: "id,childFolderCount",
+          $top: MAX_EXCLUDED_SUBFOLDERS,
+          // Hidden folders too: the listing returns their messages all the same.
+          includeHiddenFolders: "true",
+        },
+      },
     );
     if (page["@odata.nextLink"]) throw new ValidationError(TOO_MANY_SUBFOLDERS);
     return (page.value ?? []).map((f) => ({ id: f.id, childFolderCount: f.childFolderCount ?? 0 }));
@@ -150,28 +157,47 @@ async function childFolders(graph: GraphClient, id: string): Promise<FolderRef[]
  * Junk Email and Deleted Items, and every folder beneath them: a deleted folder
  * moves under Deleted Items with its messages still filed in it, so the two
  * roots alone would let them through. Refuses, rather than leak, past
- * {@link MAX_EXCLUDED_SUBFOLDERS}.
+ * {@link MAX_EXCLUDED_SUBFOLDERS}, counted as each response arrives so a huge
+ * tree is refused early rather than walked in full.
  */
-async function excludedFolderIds(graph: GraphClient, known: KnownFolder[]): Promise<Set<string>> {
+function excludedFolderIds(graph: GraphClient, known: KnownFolder[]): Promise<Set<string>> {
   const roots = known.filter((f) => EXCLUDED_BY_DEFAULT.includes(f.name));
   const ids = new Set(roots.map((f) => f.id));
-  let frontier: FolderRef[] = roots;
-  while (frontier.length > 0) {
-    const parents = frontier.filter((f) => f.childFolderCount > 0).map((f) => f.id);
-    const children = (
-      await mapLimit(parents, FOLDER_LOOKUPS_AT_ONCE, (id) => childFolders(graph, id))
-    ).flat();
-    frontier = [];
-    for (const c of children) {
-      if (ids.has(c.id)) continue;
-      ids.add(c.id);
-      if (ids.size - roots.length > MAX_EXCLUDED_SUBFOLDERS) {
-        throw new ValidationError(TOO_MANY_SUBFOLDERS);
+  const queue = roots.filter((f) => f.childFolderCount > 0).map((f) => f.id);
+  return new Promise((resolve, reject) => {
+    let running = 0;
+    let failed = false;
+    const fail = (e: unknown) => {
+      failed = true;
+      reject(e);
+    };
+    // Start lookups up to the limit; finish once nothing is queued or running.
+    const pump = () => {
+      if (failed) return;
+      if (queue.length === 0 && running === 0) {
+        resolve(ids);
+        return;
       }
-      frontier.push(c);
-    }
-  }
-  return ids;
+      while (running < FOLDER_LOOKUPS_AT_ONCE && queue.length > 0) {
+        running++;
+        childFolders(graph, queue.shift()!).then((children) => {
+          running--;
+          if (failed) return;
+          for (const c of children) {
+            if (ids.has(c.id)) continue;
+            ids.add(c.id);
+            if (ids.size - roots.length > MAX_EXCLUDED_SUBFOLDERS) {
+              fail(new ValidationError(TOO_MANY_SUBFOLDERS));
+              return;
+            }
+            if (c.childFolderCount > 0) queue.push(c.id);
+          }
+          pump();
+        }, fail);
+      }
+    };
+    pump();
+  });
 }
 
 interface GraphMessage {
@@ -308,12 +334,18 @@ export async function listMessages(
     // Junk and Deleted unless asked (phishing in Junk must not pass for real
     // mail, #53). Graph can't combine $search with a $filter on the folder, so
     // that exclusion is applied to each page as it comes.
-    path = input.folder
-      ? `/me/mailFolders/${encodeURIComponent(input.folder.trim())}/messages`
-      : "/me/messages";
+    const folder = input.folder?.trim();
+    // "." or ".." would be resolved away in the URL, listing the whole mailbox
+    // with nothing left out.
+    if (folder !== undefined && (folder === "" || folder === "." || folder === "..")) {
+      throw new ValidationError(
+        "folder must be a well-known folder name or a folder id from list_mail_folders.",
+      );
+    }
+    path = folder ? `/me/mailFolders/${encodeURIComponent(folder)}/messages` : "/me/messages";
     query = built.query;
     clientDateFilter = built.clientDateFilter;
-    excludeJunkAndDeleted = !input.folder && !input.includeJunkAndDeleted;
+    excludeJunkAndDeleted = !folder && !input.includeJunkAndDeleted;
   }
 
   const [page, { folders, excluded }] = await Promise.all([

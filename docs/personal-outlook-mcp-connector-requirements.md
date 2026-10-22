@@ -216,8 +216,10 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
     the cursor carries it to later pages. A page can therefore come back short; `excludedCount` says how
     many were left out, and the summary says how to include them.
   - The exclusion covers every folder **beneath** Junk Email and Deleted Items too: a deleted folder moves
-    under Deleted Items with its messages still filed in it. Past 200 such subfolders the listing is
-    refused (pass a `folder`, or opt in) rather than let them through.
+    under Deleted Items with its messages still filed in it. Hidden subfolders count too. Past 200 such
+    subfolders the listing is refused (pass a `folder`, or opt in) rather than let them through, as soon
+    as the count is passed rather than after walking the whole tree.
+  - A `folder` of `.` or `..` (or blank) is refused: the URL would resolve it away to the whole mailbox.
   - The well-known folder ids are looked up per call. A mailbox without one (e.g. no Archive) is fine.
     Folder lookups run at most three at a time, so with the listing's own request a call stays within
     Outlook's four concurrent requests per mailbox.
