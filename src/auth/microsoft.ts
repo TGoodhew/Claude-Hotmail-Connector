@@ -430,6 +430,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     inflightAbort?.abort();
     inflightSignIn = null;
     inflightAbort = null;
+    inflightPage = null;
     inflightRefresh = null;
   }
 
@@ -479,7 +480,23 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     return inflightRefresh.promise;
   }
 
-  async function interactiveSignIn(signal?: AbortSignal): Promise<TokenSet> {
+  /** Open `url` in the default browser (or the injected launcher). */
+  function openInBrowser(url: string): Promise<void> {
+    return deps.openBrowser
+      ? deps.openBrowser(url)
+      : import("open").then((m) => m.default(url).then(launcherSucceeded));
+  }
+
+  /**
+   * The browser sign-in: listen on loopback, open Microsoft's page, exchange the
+   * code. `onPage` is told the page's URL once it's open, so a later caller can
+   * open it again (#139), and null once Microsoft's redirect has been accepted:
+   * from then on the page can't complete a sign-in, so it isn't reopened.
+   */
+  async function interactiveSignIn(
+    signal?: AbortSignal,
+    onPage?: (authorizeUrl: string | null) => void,
+  ): Promise<TokenSet> {
     const pkce = generatePkce();
     const state = base64url(randomBytes(16));
     return await new Promise<TokenSet>((resolve, reject) => {
@@ -520,6 +537,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
           return;
         }
         completed = true;
+        onPage?.(null);
         // Respond to the browser first, then finish the exchange.
         if (oauthError) {
           res.end(page("Sign-in failed", "You can close this tab and try again."));
@@ -582,9 +600,8 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
           codeChallenge: pkce.challenge,
         });
         log.info("Opening browser for Microsoft sign-in", { redirectUri });
-        const launch = deps.openBrowser
-          ? deps.openBrowser(authorizeUrl)
-          : import("open").then((m) => m.default(authorizeUrl).then(launcherSucceeded));
+        onPage?.(authorizeUrl);
+        const launch = openInBrowser(authorizeUrl);
         launch.catch((e: unknown) => {
           // The browser evidently worked: Microsoft's redirect has arrived and the
           // token exchange is under way, so a late launcher failure is irrelevant.
@@ -615,6 +632,9 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   // the same attempt rather than opening another window.
   let inflightSignIn: Promise<TokenSet> | null = null;
   let inflightAbort: AbortController | null = null;
+  // The pending sign-in's page, and when it was last opened: a caller that
+  // joins it opens it again, in case the user closed the tab (#139).
+  let inflightPage: { url: string; openedAt: number } | null = null;
   let lastSignInFailureAt: number | undefined;
   // Completed sign-ins in this process, with the latest result: lets a caller
   // whose refresh failed notice that a sign-in finished meanwhile, even if its
@@ -651,7 +671,9 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
             shared = await sharedState();
             if (signOuts !== epoch) throw new SignedOutError();
           }
-          const tokens = await interactiveSignIn(abort.signal);
+          const tokens = await interactiveSignIn(abort.signal, (url) => {
+            if (inflightAbort === abort) inflightPage = url ? { url, openedAt: now() } : null;
+          });
           try {
             await saveUnlessSignedOut(tokens, epoch, shared, "sign-in", () => succeeded(tokens));
             return tokens;
@@ -683,6 +705,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
           if (inflightAbort === abort) {
             inflightSignIn = null;
             inflightAbort = null;
+            inflightPage = null;
           }
         }
       })();
@@ -701,6 +724,39 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   function held(tokens: TokenSet): string {
     heldToken = { accessToken: tokens.accessToken, expiresAt: tokens.expiresAt, epoch: signOuts };
     return tokens.accessToken;
+  }
+
+  /** Minimum gap between openings of the same pending sign-in page. */
+  const REOPEN_AFTER_MS = 15_000;
+
+  /**
+   * Open the pending sign-in's page again, unless it was opened just now. Returns
+   * how that launch went, as far as known so far: undefined if not reopened.
+   */
+  function reopenPendingPage(): { outcome: "pending" | "opened" | "failed" } | undefined {
+    const page = inflightPage;
+    if (!page || now() - page.openedAt < REOPEN_AFTER_MS) return undefined;
+    page.openedAt = now();
+    log.info("Opening the pending Microsoft sign-in page again");
+    const relaunch: { outcome: "pending" | "opened" | "failed" } = { outcome: "pending" };
+    // The sign-in carries on whether or not this launch works.
+    openInBrowser(page.url).then(
+      () => {
+        relaunch.outcome = "opened";
+      },
+      (e: unknown) => {
+        relaunch.outcome = "failed";
+        // Let the next request try again straight away.
+        page.openedAt = 0;
+        log.warn("Could not reopen the Microsoft sign-in page", {
+          error: e instanceof Error ? e.message : String(e),
+        });
+        if (deps.printUrlIfBrowserFails) {
+          process.stderr.write(`\nOpen this URL to sign in:\n${page.url}\n\n`);
+        }
+      },
+    );
+    return relaunch;
   }
 
   async function signInOnDemand(
@@ -728,10 +784,34 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       );
     }
     const pending = signInAndSave(shared);
+    // Joining a pending sign-in: open its page again, in case the user closed
+    // the tab and has no other way back to it. Not again within a short while,
+    // so quick repeat calls don't stack up tabs (#139).
+    const relaunch = joining ? reopenPendingPage() : undefined;
     const tokens = waitMs === undefined ? await pending : await settleWithin(pending, waitMs);
     if (tokens) {
       await ensureStillCurrent();
       return held(tokens);
+    }
+    // Only claim the page opened again if the launch said so.
+    switch (relaunch?.outcome) {
+      case "opened":
+        throw new SignInRequiredError(
+          "The Microsoft sign-in that's in progress has been opened again in your browser (in " +
+            "case its tab was closed). Finish signing in there, then ask me to try again.",
+        );
+      case "failed":
+        throw new SignInRequiredError(
+          "A Microsoft sign-in is still in progress, but its page couldn't be opened again in " +
+            "your browser. If you've closed its tab, check that a default web browser is set, " +
+            `then ask me to try again ${LOGIN_HINT}.`,
+        );
+      case "pending":
+        throw new SignInRequiredError(
+          "Still waiting for you to finish the Microsoft sign-in in your browser; I've asked it " +
+            "to show the page again in case its tab was closed. Once you've signed in, ask me " +
+            "to try again.",
+        );
     }
     throw new SignInRequiredError(
       joining

@@ -409,8 +409,12 @@ signed in to that tenant. Registration settings:
   itself in the system browser and waits up to 45 s, inside typical 60 s MCP request timeouts. If you
   finish in time, the call proceeds; otherwise it returns a user-facing "finish signing in, then
   retry" message and the sign-in continues in the background. Concurrent and later calls **join the
-  same attempt** rather than opening another window. After a failed or cancelled attempt there is a
-  30 s cooldown, so automatic retries can't loop on the user. Startup never signs in, and CLI
+  same attempt** rather than starting another. A call that joins it opens **the same page** again,
+  at most every 15 s, in case the user closed its tab; finishing it completes the original
+  sign-in *(#139)*. Once Microsoft's redirect has been accepted the page is never reopened (it can no
+  longer complete a sign-in). The message says the page opened again only once the launch has reported success;
+  if the launch fails it says so (check the default browser) and the next call tries again at once,
+  with the sign-in still pending. After a failed or cancelled attempt there is a 30 s cooldown, so automatic retries can't loop on the user. Startup never signs in, and CLI
   diagnostics (`whoami`) stay non-interactive. MCP URL-mode elicitation MAY be added where clients
   support it.
 - A loopback request with a missing or wrong `state` is answered 400 and ignored. It neither aborts
