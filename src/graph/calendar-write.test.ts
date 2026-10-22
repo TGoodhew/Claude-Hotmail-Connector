@@ -316,6 +316,36 @@ describe("all-day, free/busy and recurring creation (#51)", () => {
     expect((payload.recurrence as { pattern: unknown }).pattern).toMatchObject({
       daysOfWeek: ["monday", "wednesday"],
     });
+    // Sunday as the first day of the week is Graph's default: implicit either way.
+    const sundayFirst = weekly(["monday", "wednesday"]);
+    sundayFirst.pattern.firstDayOfWeek = "sunday";
+    expect(await key({ recurrence: sundayFirst })).toBe(monWed);
+    const sundayPayload = (await posted({ recurrence: sundayFirst })).payload;
+    expect((sundayPayload.recurrence as { pattern: object }).pattern).not.toHaveProperty(
+      "firstDayOfWeek",
+    );
+    const mondayFirst = weekly(["monday", "wednesday"]);
+    mondayFirst.pattern.firstDayOfWeek = "monday";
+    expect(await key({ recurrence: mondayFirst })).not.toBe(monWed); // a real difference
+    // A series keys on its written times, whatever form they were given in.
+    const at = (start: string, end: string): Partial<CreateEventInput> => ({
+      start: { dateTime: start, timeZone: tz },
+      end: { dateTime: end, timeZone: tz },
+      recurrence: weekly(["monday"]),
+    });
+    expect(await key(at("2026-07-20T10:00", "2026-07-20T11:00"))).toBe(
+      await key(at("2026-07-20T10:00:00", "2026-07-20T11:00:00.000")),
+    );
+  });
+
+  it("keys a non-default showAs, and treats busy as the default (Copilot review on #134)", async () => {
+    const key = async (input: Partial<CreateEventInput>) =>
+      (await posted(input)).payload.transactionId as string;
+    const plain = await key({});
+    expect(await key({ showAs: "busy" })).toBe(plain); // busy is what an omitted showAs means
+    const free = await key({ showAs: "free" });
+    expect(free).not.toBe(plain); // a free block isn't a retry of a busy event
+    expect(await key({ showAs: "tentative" })).not.toBe(free);
   });
 });
 

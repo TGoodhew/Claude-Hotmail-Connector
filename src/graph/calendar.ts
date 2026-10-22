@@ -400,7 +400,11 @@ export function buildRecurrence(r: RecurrenceInput, start: GraphDateTime): Recor
       break;
     case "weekly":
       pattern.daysOfWeek = weekdays(need(p.daysOfWeek, "pattern.daysOfWeek"));
-      if (p.firstDayOfWeek) pattern.firstDayOfWeek = p.firstDayOfWeek;
+      // Sunday is Graph's default, so it's left implicit: the same series
+      // either way, with the same key (Copilot review on #134).
+      if (p.firstDayOfWeek && p.firstDayOfWeek !== "sunday") {
+        pattern.firstDayOfWeek = p.firstDayOfWeek;
+      }
       break;
     case "absoluteMonthly":
       pattern.dayOfMonth = need(p.dayOfMonth, "pattern.dayOfMonth");
@@ -549,10 +553,11 @@ export function assertWritableEventPayload(payload: Record<string, unknown>): vo
  */
 function deterministicTransactionId(input: CreateEventInput, written: WrittenTimes): string {
   // A plain event keys on its times as given, as it always has. An all-day
-  // event keys on the midnights written, and a series on the recurrence as
-  // written (fields its type ignores are dropped), so equivalent inputs share
-  // a key rather than creating a duplicate on retry (Copilot review on #134).
-  const times = input.isAllDay ? written : input;
+  // event or a series keys on what is written (normalised times; the
+  // recurrence without the fields its type ignores), so equivalent inputs
+  // share a key rather than creating a duplicate on retry (Copilot review on
+  // #134). That matters most for a series, which cancel_event can't remove.
+  const times = input.isAllDay || written.recurrence ? written : input;
   const material = [
     input.subject,
     times.start.dateTime,
@@ -562,6 +567,9 @@ function deterministicTransactionId(input: CreateEventInput, written: WrittenTim
     input.location ?? "",
     // Only when set, so a plain event's id is what it always was.
     ...(input.isAllDay ? ["isAllDay"] : []),
+    // Availability other than the default: a "free" block and a "busy" one
+    // are different events, not a retry of each other.
+    ...(input.showAs && input.showAs !== "busy" ? [`showAs:${input.showAs}`] : []),
     ...(written.recurrence ? [JSON.stringify(written.recurrence)] : []),
   ].join(String.fromCharCode(0));
   return createHash("sha256").update(material).digest("hex").slice(0, 36);
