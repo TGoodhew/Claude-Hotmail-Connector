@@ -21,7 +21,8 @@ export interface ToolContext {
    * Account actions not done through Graph (e.g. `sign_out`). `signOutEpoch`
    * lets the server bind each tool call's Graph requests to one sign-out epoch.
    */
-  auth?: Pick<MicrosoftAuth, "signOut"> & Partial<Pick<MicrosoftAuth, "signOutEpoch">>;
+  auth?: Pick<MicrosoftAuth, "signOut"> &
+    Partial<Pick<MicrosoftAuth, "signOutEpoch" | "syncSignOuts">>;
 }
 
 /** MCP behaviour hints surfaced to the client/model. */

@@ -63,9 +63,10 @@ export interface FileCoordinatorOptions {
   /** Give up waiting for the lock after this long (default 10s). */
   lockTimeoutMs?: number;
   /**
-   * A lock is stale, and removed, when the process that took it has exited, or
-   * in any case once it is this old (default 2 minutes, which also covers a
-   * reused process id; locks are held for milliseconds).
+   * A lock is stale, and removed, when the process that took it has exited. A
+   * running holder keeps it however long it takes (it may just be paused, e.g.
+   * across sleep). Only a lock that never got a process id (its taker died
+   * creating it) goes by age: stale once it is this old (default 2 minutes).
    */
   staleLockMs?: number;
   now?: () => number;
@@ -76,7 +77,7 @@ const STATE_FILE = "auth-state.json";
 const LOCK_FILE = "auth.lock";
 /** Guards removing a stale lock, so only one waiter does it at a time. */
 const REAP_FILE = "auth.lock.reap";
-/** A reaper holds its guard for milliseconds; one this old was left by a crash. */
+/** A reaper holds its guard for milliseconds; an id-less one this old was left by a crash. */
 const REAP_STALE_MS = 5_000;
 
 function isErrno(e: unknown, code: string): boolean {
@@ -90,6 +91,70 @@ function isRunning(pid: number): boolean {
     return true;
   } catch (e) {
     return isErrno(e, "EPERM");
+  }
+}
+
+/** A lock or guard file as found: what it holds and when it was written. */
+interface Holder {
+  content: string;
+  mtimeMs: number;
+}
+
+async function inspect(path: string): Promise<Holder | null> {
+  try {
+    const { mtimeMs } = await stat(path);
+    return { content: await readFile(path, "utf8"), mtimeMs };
+  } catch (e) {
+    if (isErrno(e, "ENOENT")) return null;
+    throw e;
+  }
+}
+
+/**
+ * Whether a lock or guard's holder is gone. The holder's process id leads the
+ * file (`<pid>-<random>`): it is gone once that process has exited. A file
+ * without one was left by a taker that died creating it, once it is older than
+ * `maxAgeMs` (until then it may still be being written).
+ */
+function holderGone(h: Holder, nowMs: number, maxAgeMs: number): boolean {
+  const pid = Number(h.content.split("-")[0]);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return nowMs - h.mtimeMs > maxAgeMs;
+  // This process's own holders are alive: it doesn't keep locks it isn't using.
+  return pid !== process.pid && !isRunning(pid);
+}
+
+/**
+ * Remove `path` only if it still holds `expected`. It is moved aside first
+ * (atomic), so what is checked is what was taken. Anything else, i.e. a file
+ * that replaced the expected one since, is put back unless yet another has
+ * appeared, so this can't delete a replacement the way a check-then-`rm` could.
+ * Exported for tests.
+ */
+export async function removeIfUnchanged(path: string, expected: string): Promise<void> {
+  const aside = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.old`;
+  try {
+    await rename(path, aside);
+  } catch (e) {
+    // Gone already, or (Windows) open in its writer for a moment: leave it.
+    if (isErrno(e, "ENOENT") || isErrno(e, "EPERM") || isErrno(e, "EBUSY")) return;
+    throw e;
+  }
+  try {
+    const content = await readFile(aside, "utf8");
+    if (content !== expected) {
+      try {
+        const fh = await open(path, "wx");
+        try {
+          await fh.writeFile(content);
+        } finally {
+          await fh.close();
+        }
+      } catch (e) {
+        if (!isErrno(e, "EEXIST")) throw e;
+      }
+    }
+  } finally {
+    await rm(aside, { force: true });
   }
 }
 
@@ -134,29 +199,33 @@ export function createFileCoordinator(
     await rename(tmp, statePath); // atomic replace: readers see the old or the new file
   }
 
+  /** Create `path` exclusively holding a new token, or return null if it exists. */
+  async function take(path: string): Promise<string | null> {
+    const token = `${process.pid}-${randomBytes(8).toString("hex")}`;
+    try {
+      const fh = await open(path, "wx");
+      try {
+        await fh.writeFile(token);
+      } finally {
+        await fh.close();
+      }
+      return token;
+    } catch (e) {
+      if (isErrno(e, "EEXIST")) return null;
+      throw e;
+    }
+  }
+
   /** Take the lock, returning the token that proves this holder owns it. */
   async function acquire(): Promise<string> {
     await mkdir(dir, { recursive: true });
-    const token = `${process.pid}-${randomBytes(8).toString("hex")}`;
     const deadline = now() + timeoutMs;
     for (;;) {
-      try {
-        const fh = await open(lockPath, "wx"); // exclusive create: fails if held
-        try {
-          await fh.writeFile(token);
-        } finally {
-          await fh.close();
-        }
-        return token;
-      } catch (e) {
-        if (!isErrno(e, "EEXIST")) throw e;
-      }
-      const stale = await isStale();
-      if (stale === null) continue; // released between our attempts: try again at once
-      if (stale) {
-        await reap();
-        continue;
-      }
+      const token = await take(lockPath);
+      if (token) return token;
+      const held = await inspect(lockPath);
+      if (!held) continue; // released between our attempts: try again at once
+      if (holderGone(held, now(), staleMs) && (await reap(held.content))) continue;
       if (now() >= deadline) {
         throw new AuthError(
           "Another Hotmail Connector process is busy with the sign-in. Try again in a moment.",
@@ -167,52 +236,30 @@ export function createFileCoordinator(
   }
 
   /**
-   * Whether the current lock is stale (null: there is none). It is when the
-   * process recorded in it has exited, or once it is older than `staleMs`.
+   * Remove the stale lock that held `stale`; false if another waiter is
+   * reaping. One waiter reaps at a time (an exclusive guard file), it checks
+   * again under the guard, and both the lock and a guard left by a crashed
+   * reaper are removed only if they still hold what was judged stale (see
+   * {@link removeIfUnchanged}), so no waiter can remove a lock or guard that
+   * another has taken since it looked.
    */
-  async function isStale(): Promise<boolean | null> {
-    let content: string;
-    let mtimeMs: number;
-    try {
-      mtimeMs = (await stat(lockPath)).mtimeMs;
-      content = await readFile(lockPath, "utf8");
-    } catch (e) {
-      if (isErrno(e, "ENOENT")) return null;
-      throw e;
-    }
-    if (now() - mtimeMs > staleMs) return true;
-    const pid = Number(content.split("-")[0]);
-    // No id yet (just created) or our own process: its holder is alive.
-    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return false;
-    return !isRunning(pid);
-  }
-
-  /**
-   * Remove a stale lock. Only one waiter reaps at a time (an exclusive guard
-   * file), and it checks again under the guard, so it can't remove a lock that
-   * another waiter has taken since it looked: while the guard is held, the
-   * stale lock can only go away by being reaped here.
-   */
-  async function reap(): Promise<void> {
-    try {
-      await (await open(reapPath, "wx")).close();
-    } catch (e) {
-      if (!isErrno(e, "EEXIST")) throw e;
-      // Another waiter is reaping. A guard left by one that crashed mid-reap
-      // (held for milliseconds) is removed, then we try again.
-      try {
-        if (now() - (await stat(reapPath)).mtimeMs > REAP_STALE_MS) {
-          await rm(reapPath, { force: true });
-        }
-      } catch (err) {
-        if (!isErrno(err, "ENOENT")) throw err;
+  async function reap(stale: string): Promise<boolean> {
+    const guard = await take(reapPath);
+    if (!guard) {
+      const reaper = await inspect(reapPath);
+      if (reaper && holderGone(reaper, now(), REAP_STALE_MS)) {
+        await removeIfUnchanged(reapPath, reaper.content);
       }
-      return;
+      return false;
     }
     try {
-      if (await isStale()) await rm(lockPath, { force: true });
+      const held = await inspect(lockPath);
+      if (held?.content === stale && holderGone(held, now(), staleMs)) {
+        await removeIfUnchanged(lockPath, stale);
+      }
+      return true;
     } finally {
-      await rm(reapPath, { force: true });
+      await removeIfUnchanged(reapPath, guard);
     }
   }
 

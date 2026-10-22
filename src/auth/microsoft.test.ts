@@ -1270,4 +1270,144 @@ describe("sign-in and sign-out across processes (#95)", () => {
     expect(result.ok && result.value.accessToken).toBe("FRESH-AT");
     expect(store.current?.accessToken).toBe("FRESH-AT");
   });
+
+  it("a Graph request whose 401 retry spans a sign-out elsewhere stops instead of signing in (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    });
+    const server = processWith(store, dir, reply("UNUSED"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+    let releaseResponse!: () => void;
+    const responseGate = new Promise<void>((r) => (releaseResponse = r));
+    let graphCalls = 0;
+    const graph = createGraphClient({
+      auth: server.auth,
+      baseUrl: "https://graph.microsoft.com/v1.0",
+      fetchImpl: (async () => {
+        graphCalls += 1;
+        await responseGate; // the response is slow…
+        return jsonResponse({ error: { code: "InvalidAuthenticationToken" } }, 401);
+      }) as unknown as typeof fetch,
+      interactiveSignIn: { waitMs: 1_000 },
+    });
+    const call = outcome(graph.get("/me"));
+    await until(() => graphCalls === 1);
+    await cli.auth.signOut(); // …`logout` runs meanwhile…
+    releaseResponse(); // …then the 401 triggers the retry.
+
+    const result = await call;
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(server.authorizeUrl()).toBe(""); // no browser was opened
+    expect(store.current).toBeNull();
+  });
+
+  it("a valid cached token read just before a sign-out elsewhere isn't used (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const base = memoryStore({
+      accessToken: "PRE-LOGOUT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    });
+    let reading = false;
+    let finishRead = (): void => undefined;
+    const slowRead: TokenStore = {
+      async load() {
+        const read = base.current; // read before the logout…
+        reading = true;
+        await new Promise<void>((r) => (finishRead = r)); // …returned after it
+        return read;
+      },
+      save: (t) => base.save(t),
+      clear: (o) => base.clear(o),
+    };
+    const server = processWith(slowRead, dir, reply("UNUSED"));
+    const cli = processWith(base, dir, reply("UNUSED"));
+
+    const lookup = outcome(server.auth.getAccessToken({ interactive: false }));
+    await until(() => reading);
+    await cli.auth.signOut();
+    finishRead();
+
+    const result = await lookup;
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+  });
+
+  it("signing in again after a sign-out elsewhere doesn't join the stale browser sign-in (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore(null);
+    const server = processWith(store, dir, reply("SERVER-AT"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+
+    const stale = outcome(server.auth.signIn());
+    await until(() => server.authorizeUrl() !== "");
+    const staleUrl = server.authorizeUrl();
+    await cli.auth.signOut(); // while that browser flow is still open
+
+    const again = outcome(server.auth.signIn());
+    await until(() => server.authorizeUrl() !== staleUrl); // a new flow, not the old one
+    const staleResult = await stale;
+    expect(!staleResult.ok && staleResult.error).toBeInstanceOf(SignedOutError);
+    await redirectBack(server.authorizeUrl(), { code: "C" });
+    const result = await again;
+    expect(result.ok && result.value.accessToken).toBe("SERVER-AT");
+    expect(store.current?.accessToken).toBe("SERVER-AT");
+  });
+
+  it("an on-demand sign-in after a sign-out elsewhere doesn't join the stale one either (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore(null);
+    const server = processWith(store, dir, reply("SERVER-AT"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+
+    // A tool call opens the browser, then stops waiting for it.
+    const first = await outcome(server.auth.getAccessToken({ interactiveWaitMs: 20 }));
+    expect(!first.ok && first.error).toBeInstanceOf(SignInRequiredError);
+    const staleUrl = server.authorizeUrl();
+    expect(staleUrl).not.toBe("");
+    await cli.auth.signOut();
+
+    // The next call, after the logout, gets a sign-in that can still save.
+    const next = outcome(server.auth.getAccessToken({ interactiveWaitMs: 2_000 }));
+    await until(() => server.authorizeUrl() !== staleUrl);
+    await redirectBack(server.authorizeUrl(), { code: "C" });
+    const result = await next;
+    expect(result.ok && result.value).toBe("SERVER-AT");
+  });
+
+  it("the first request to notice a sign-out elsewhere isn't itself stopped by it", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    });
+    const server = processWith(store, dir, reply("UNUSED"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+    await server.auth.getAccessToken({ interactive: false }); // server has seen the state
+    await cli.auth.signOut();
+    store.current = {
+      accessToken: "NEW",
+      refreshToken: "RT2",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    }; // and `login` again, say
+
+    // A standalone lookup, and an operation whose epoch is noted after syncing.
+    expect(await server.auth.getAccessToken({ interactive: false })).toBe("NEW");
+    await cli.auth.signOut();
+    await server.auth.syncSignOuts();
+    const epoch = server.auth.signOutEpoch();
+    const result = await outcome(
+      server.auth.getAccessToken({ interactive: false, signOutEpoch: epoch }),
+    );
+    // Just "not signed in": the operation began after the sign-out it saw.
+    expect(!result.ok && result.error).toBeInstanceOf(AuthError);
+    expect(!result.ok && result.error).not.toBeInstanceOf(SignedOutError);
+  });
 });

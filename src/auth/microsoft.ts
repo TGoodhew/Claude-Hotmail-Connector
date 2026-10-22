@@ -227,6 +227,12 @@ export interface MicrosoftAuth {
   getAccount(): Promise<string | undefined>;
   /** Current sign-out epoch: note it when an operation starts (see `signOutEpoch` above). */
   signOutEpoch(): number;
+  /**
+   * Catch up with sign-outs in other processes (#95), so an epoch noted next
+   * reflects them: call before noting one. A sign-out elsewhere that is first
+   * seen later ends the operations of the epochs before it.
+   */
+  syncSignOuts(): Promise<void>;
 }
 
 export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
@@ -319,6 +325,12 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   // already belong to the new epoch, so they must wait for it rather than
   // read (and refresh) the credentials being deleted.
   let pendingSignOut: Promise<void> | null = null;
+  // The shared sign-out count last seen here (#95). A rise in it is another
+  // process's sign-out, which ends everything in flight here just as a local
+  // one does (see `observe`).
+  let sharedSignOutsSeen: number | undefined;
+  // signOut() calls in this process, as opposed to sign-outs seen from elsewhere.
+  let localSignOuts = 0;
   let commits: Promise<unknown> = Promise.resolve();
   function serialized<T>(op: () => Promise<T>): Promise<T> {
     const run = commits.then(op, op);
@@ -343,6 +355,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     return serialized(async () => {
       if (signOuts !== epoch) throw new SignedOutError();
       await coordinator.withLock(async (current) => {
+        observe(current);
         if (current.signOuts !== shared.signOuts) throw new SignedOutError();
         if (current.signIns !== shared.signIns) throw new SignedInElsewhereError();
         await store.save(tokens);
@@ -362,11 +375,43 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
    */
   async function savedElsewhere(epoch: number, shared: SharedAuthState): Promise<TokenSet | null> {
     const saved = await coordinator.withLock(async (current) => {
+      observe(current);
       if (current.signOuts !== shared.signOuts) throw new SignedOutError();
       return { value: await store.load().catch(() => null) };
     });
     if (signOuts !== epoch) throw new SignedOutError();
     return saved && saved.expiresAt - now() > DEFAULT_MIN_TTL_MS ? saved : null;
+  }
+
+  /**
+   * End everything in flight here: called at a sign-out, synchronously, and
+   * when one in another process is first seen. Requests compare the epoch they
+   * noted with `signOuts`, so they all stop (SignedOutError) rather than save,
+   * join a now-useless browser sign-in, or start a new one for an operation from
+   * before the sign-out.
+   */
+  function invalidate(): void {
+    signOuts += 1;
+    lastSignedIn = undefined;
+    // Cancel and detach a pending browser sign-in, so its listener closes and
+    // a fresh sign-in can start straight away instead of joining it.
+    inflightAbort?.abort();
+    inflightSignIn = null;
+    inflightAbort = null;
+    inflightRefresh = null;
+  }
+
+  /** Note the shared counters; a sign-out elsewhere since they were last seen invalidates. */
+  function observe(state: SharedAuthState): SharedAuthState {
+    if (sharedSignOutsSeen !== undefined && state.signOuts > sharedSignOutsSeen) invalidate();
+    if (sharedSignOutsSeen === undefined || state.signOuts > sharedSignOutsSeen) {
+      sharedSignOutsSeen = state.signOuts;
+    }
+    return state;
+  }
+
+  async function sharedState(): Promise<SharedAuthState> {
+    return observe(await coordinator.snapshot());
   }
 
   let inflightRefresh: { epoch: number; id: object; promise: Promise<TokenSet> } | null = null;
@@ -561,7 +606,8 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
             if (signOuts !== epoch) throw new SignedOutError();
             // Noted before the browser opens: a sign-out or sign-in in another
             // process from here on decides whether this one may save (#95).
-            shared = await coordinator.snapshot();
+            shared = await sharedState();
+            if (signOuts !== epoch) throw new SignedOutError();
           }
           const tokens = await interactiveSignIn(abort.signal);
           try {
@@ -613,9 +659,9 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     // not start or join a new sign-in after it, nor take a token from one.
     const ensureStillCurrent = async () => {
       if (signOuts !== epoch) throw new SignedOutError();
-      if ((await coordinator.snapshot()).signOuts !== shared.signOuts) {
-        throw new SignedOutError();
-      }
+      const latest = await sharedState();
+      // Both after the await: a local sign-out may have happened during it.
+      if (signOuts !== epoch || latest.signOuts !== shared.signOuts) throw new SignedOutError();
     };
     await ensureStillCurrent();
     const joining = inflightSignIn !== null;
@@ -651,7 +697,8 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       // Noted before any await (or taken from the calling operation): if the user
       // signs out while this request is in flight, including while it waits
       // below, it stops (see "Sign-out ordering").
-      const epoch = options.signOutEpoch ?? signOuts;
+      let epoch = options.signOutEpoch ?? signOuts;
+      const localAtStart = localSignOuts;
       const ensureNotSignedOut = () => {
         if (signOuts !== epoch) throw new SignedOutError();
       };
@@ -663,7 +710,11 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       const signInsAtStart = signInsCompleted;
       // Noted before the cache is read: a sign-out in another process after this
       // point stops a refresh of what we read from saving it back (#95).
-      const shared = await coordinator.snapshot();
+      const shared = await sharedState();
+      // A lookup that isn't part of a larger operation starts from what it first
+      // sees: a sign-out elsewhere that this read is the first to notice came
+      // before it. (An operation's own epoch was noted after syncSignOuts().)
+      if (options.signOutEpoch === undefined && localSignOuts === localAtStart) epoch = signOuts;
       ensureNotSignedOut();
 
       let cached: TokenSet | null = null;
@@ -678,6 +729,9 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       ensureNotSignedOut();
 
       if (cached && cached.expiresAt - now() > minTtlMs) {
+        // The read may have raced a sign-out elsewhere: catch up before using it.
+        await sharedState();
+        ensureNotSignedOut();
         return cached.accessToken;
       }
 
@@ -709,7 +763,8 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       ensureNotSignedOut();
       // A sign-out in another process since this request began ends it too,
       // before it can use a later sign-in or fall back to a browser one (#95).
-      if ((await coordinator.snapshot()).signOuts !== shared.signOuts) throw new SignedOutError();
+      await sharedState();
+      ensureNotSignedOut();
 
       if (!interactive) {
         throw new AuthError("Not signed in. Interactive Microsoft sign-in is required.");
@@ -740,19 +795,16 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     },
 
     async signIn(): Promise<TokenSet> {
+      // Catch up first, so this belongs to the current epoch and doesn't join a
+      // pending sign-in that a sign-out elsewhere has made useless.
+      await sharedState();
       return signInAndSave();
     },
 
     async signOut(): Promise<void> {
       // Synchronously, before any await: everything in flight is now stale.
-      signOuts += 1;
-      lastSignedIn = undefined;
-      // Cancel and detach a pending browser sign-in, so its listener closes and
-      // a fresh sign-in can start straight away instead of joining it.
-      inflightAbort?.abort();
-      inflightSignIn = null;
-      inflightAbort = null;
-      inflightRefresh = null;
+      localSignOuts += 1;
+      invalidate();
       // Cache and key: nothing of the sign-in stays on disk. Queued behind any
       // save already in progress, so that save can't land after the cleanup.
       // Under the cross-process lock the shared sign-out count goes up too, even
@@ -760,6 +812,9 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       // won't save afterwards (#95).
       const cleanup = serialized(async () => {
         const failure = await coordinator.withLock(async (current) => {
+          observe(current);
+          // This sign-out's own bump, already acted on above, isn't one from elsewhere.
+          sharedSignOutsSeen = current.signOuts + 1;
           let error: unknown;
           try {
             await store.clear({ includeKey: true });
@@ -780,6 +835,10 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
 
     signOutEpoch(): number {
       return signOuts;
+    },
+
+    async syncSignOuts(): Promise<void> {
+      await sharedState();
     },
 
     async getAccount(): Promise<string | undefined> {

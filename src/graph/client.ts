@@ -78,7 +78,8 @@ export interface GraphClient {
 }
 
 export interface GraphClientDeps {
-  auth: Pick<MicrosoftAuth, "getAccessToken"> & Partial<Pick<MicrosoftAuth, "signOutEpoch">>;
+  auth: Pick<MicrosoftAuth, "getAccessToken"> &
+    Partial<Pick<MicrosoftAuth, "signOutEpoch" | "syncSignOuts">>;
   baseUrl: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -228,6 +229,12 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
   const defaultTimeoutMs = deps.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const now = deps.now ?? Date.now;
 
+  /** The sign-out epoch for an operation starting now, sign-outs elsewhere included (#95). */
+  async function currentEpoch(): Promise<number | undefined> {
+    if (deps.auth.syncSignOuts) await deps.auth.syncSignOuts();
+    return deps.auth.signOutEpoch?.();
+  }
+
   /** Wait `ms`, but stop at once (as a cancellation) if `signal` aborts. */
   async function backOff(ms: number, signal?: AbortSignal): Promise<void> {
     if (!signal) return sleep(ms);
@@ -339,7 +346,7 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
     let refreshed = false;
     // One epoch for the whole request, retries included: a retry or 401
     // recovery that outlives a sign-out must stop, not sign in again.
-    const signOutEpoch = opts.signOutEpoch ?? deps.auth.signOutEpoch?.();
+    const signOutEpoch = opts.signOutEpoch ?? (await currentEpoch());
     const repeatable = safeToRepeat(method, opts.body);
     const remainingMs = (): number =>
       opts.deadline === undefined ? Number.POSITIVE_INFINITY : opts.deadline - now();
@@ -452,7 +459,7 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       let pages = 0;
       const maxPages = cap + MAX_EXTRA_PAGES;
       // Every page belongs to the same operation: page 2 after a sign-out stops.
-      const signOutEpoch = opts.signOutEpoch ?? deps.auth.signOutEpoch?.();
+      const signOutEpoch = opts.signOutEpoch ?? (await currentEpoch());
       const epochOpt = signOutEpoch !== undefined ? { signOutEpoch } : {};
       do {
         // On the first request send the full opts; for nextLink pages keep the

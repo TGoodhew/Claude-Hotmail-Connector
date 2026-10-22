@@ -164,6 +164,14 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   `login`/`logout`): counters in `auth-state.json` next to the cache, updated under an exclusive
   `auth.lock`, make a sign-out anywhere win over anything that began before it. Of two browser
   sign-ins in different processes, the first to finish is saved and the other uses it *(#95)*.
+  - A process that sees another's sign-out treats it as its own. Its pending sign-in and refresh are
+    dropped, and operations from before it stop. Each tool call catches up first, so a call that
+    starts after a sign-out elsewhere isn't stopped by it.
+  - A lock is broken only once the process holding it has exited. A running holder keeps it
+    however long it takes, for example across sleep. Locks and reaper guards are removed only if
+    they still hold what was judged stale: the file is moved aside, checked, and put back if it
+    changed. Known limit: if a dead holder's process id has been reused, waiters time out until
+    that process exits.
 - Annotations: `destructiveHint: true` (local data), `idempotentHint: true`, `openWorldHint: false`.
   The description says to call it only when the user asks. Misuse only means signing in again.
 

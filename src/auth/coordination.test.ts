@@ -1,5 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +15,7 @@ import { AuthError } from "../util/errors.js";
 import {
   createFileCoordinator,
   createMemoryCoordinator,
+  removeIfUnchanged,
   type AuthCoordinator,
 } from "./coordination.js";
 
@@ -146,6 +155,39 @@ describe("createFileCoordinator (#95)", () => {
     expect(readFileSync(join(dir, "auth.lock"), "utf8")).toBe(`${process.pid}-other-instance`);
   });
 
+  it("doesn't break an old lock whose holder is still running, e.g. paused across sleep (Copilot review on #126)", async () => {
+    const dir = tempDir();
+    const lock = join(dir, "auth.lock");
+    writeFileSync(lock, `${process.ppid}-paused-holder`); // another process, still running
+    const old = new Date(Date.now() - 60 * 60_000);
+    utimesSync(lock, old, old);
+    const c = createFileCoordinator(dir, { lockTimeoutMs: 80, staleLockMs: 1_000 });
+    await expect(c.withLock(async () => ({ value: 1 }))).rejects.toBeInstanceOf(AuthError);
+    expect(readFileSync(lock, "utf8")).toBe(`${process.ppid}-paused-holder`);
+  });
+
+  it("recovers when a reaper also died holding its guard, without two waiters reaping at once (Copilot review on #126)", async () => {
+    const dir = tempDir();
+    const exited = spawnSync(process.execPath, ["-e", ""]).pid!;
+    writeFileSync(join(dir, "auth.lock"), `${exited}-holder`);
+    writeFileSync(join(dir, "auth.lock.reap"), `${exited}-reaper`);
+    const coordinators = Array.from({ length: 4 }, () => createFileCoordinator(dir));
+    let active = 0;
+    let overlapped = false;
+    await Promise.all(
+      coordinators.map((c) =>
+        c.withLock(async () => {
+          active += 1;
+          if (active > 1) overlapped = true;
+          await new Promise((r) => setTimeout(r, 15));
+          active -= 1;
+          return { value: undefined };
+        }),
+      ),
+    );
+    expect(overlapped).toBe(false);
+    expect(readdirSync(dir)).toEqual([]); // lock, guard and set-aside files all gone
+  });
   it("releases the lock when the locked section throws, and stores nothing", async () => {
     const dir = tempDir();
     const c = createFileCoordinator(dir);
@@ -156,5 +198,30 @@ describe("createFileCoordinator (#95)", () => {
     ).rejects.toThrow("boom");
     expect(existsSync(join(dir, "auth.lock"))).toBe(false);
     expect(await c.snapshot()).toEqual({ signOuts: 0, signIns: 0 });
+  });
+});
+
+describe("removeIfUnchanged (Copilot review on #126)", () => {
+  it("removes the file when it still holds what was judged stale", async () => {
+    const dir = tempDir();
+    const f = join(dir, "auth.lock");
+    writeFileSync(f, "stale");
+    await removeIfUnchanged(f, "stale");
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it("puts back a file that replaced the stale one since", async () => {
+    const dir = tempDir();
+    const f = join(dir, "auth.lock");
+    writeFileSync(f, "new-holder");
+    await removeIfUnchanged(f, "stale");
+    expect(readFileSync(f, "utf8")).toBe("new-holder");
+    expect(readdirSync(dir)).toEqual(["auth.lock"]);
+  });
+
+  it("does nothing when the file is already gone", async () => {
+    const dir = tempDir();
+    await removeIfUnchanged(join(dir, "auth.lock"), "stale");
+    expect(readdirSync(dir)).toEqual([]);
   });
 });

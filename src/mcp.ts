@@ -82,6 +82,8 @@ export function createMcpServer(
           // Every Graph request of this call shares one scope: the sign-out epoch
           // at its start (a follow-up after a sign-out stops instead of signing
           // in again), the client's cancellation, and one overall deadline.
+          // Sign-outs in other processes are caught up on first (#95).
+          await ctx.auth?.syncSignOuts?.();
           const graph = scopeToOperation(ctx.graph, {
             signOutEpoch: ctx.auth?.signOutEpoch?.(),
             signal: extra?.signal,
