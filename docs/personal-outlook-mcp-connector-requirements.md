@@ -236,28 +236,44 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - **Graph:** `POST /me/events` → `201 Created` (or `POST /me/calendars/{calendarId}/events`).
 - **Inputs:** `subject`; `start` / `end` as `{ dateTime, timeZone }`, where `dateTime` is **local wall-clock,
   no offset/`Z`** and `timeZone` is IANA; `location?`; `body?` (plain text); `isReminderOn?`;
-  `reminderMinutesBeforeStart?`; `transactionId?`; `calendarId?`.
+  `reminderMinutesBeforeStart?`; `transactionId?`; `calendarId?`; `isAllDay?`; `showAs?`; `recurrence?`.
 - **Timezone correctness (critical):** send local wall-clock + IANA `timeZone`. Values with `Z` or an
   offset MUST be rejected. `end` MUST be after `start` *(→ #33)*.
+- **All-day** *(#51)*: `start`/`end` are dates (`YYYY-MM-DD`) or midnights, in **one** zone, and `end` is
+  exclusive (the day after the last day). They are sent as midnight wall-clock in that zone, never
+  shifted; anything that isn't whole days is refused before writing.
+- **showAs** *(#51)*: `free` / `tentative` / `busy` / `oof` / `workingElsewhere`, e.g. `free` for travel-time blocks.
+- **Recurrence** *(#51)*: Graph's `patternedRecurrence`, built field by field.
+  - Each pattern type gets exactly the fields it uses and is refused without them (`weekly`: `daysOfWeek`;
+    `absoluteMonthly`: `dayOfMonth`; `relativeMonthly`: `daysOfWeek` + `index`; `absoluteYearly`:
+    `dayOfMonth` + `month`; `relativeYearly`: all three). `interval` is 1–99.
+  - `range.startDate` MUST be the event's start date; `recurrenceTimeZone` is the start's zone. An
+    `endDate` range needs an `endDate` not before it; a `numbered` one needs 1–999 occurrences.
+  - `cancel_event` refuses series (§7.8), so a mistaken series can only be removed in Outlook. The
+    description tells the model to confirm the pattern and end with extra care.
 - **Idempotency.** If the caller omits `transactionId`, the server derives a **deterministic** one
-  (SHA-256 over subject, start/end dateTime + timeZone, and location), so an identical retry doesn't
+  (SHA-256 over subject, start/end dateTime + timeZone, and location, plus the all-day flag and the
+  recurrence when set, both as written: an all-day event keys on its midnights and a series on its
+  validated recurrence, so equivalent inputs share a key), so an identical retry doesn't
   create a duplicate. A random id per call would not dedupe retries, because each retry is a new tool
   call. Documented limits:
   - two genuinely identical events (same title, times, location) can't both be created without an
     explicit `transactionId`;
   - body/reminder differences are not part of the key.
 
-  Graph's response to a repeated id MUST be verified and documented. The live test (§12) asserts
-  that a repeat returns the same event; record its result here once it has been run *(→ #48)*.
+  **Verified live** *(#48, 2026-10-22, personal Outlook.com account)*: repeating a create with the same
+  `transactionId` returns the **same event**; no duplicate is created. The live test (§12) asserts this
+  on every run.
 - **No attendees.** Attendees and invitations MUST NOT be sendable, because invitations send email.
   Three layers enforce this:
   - tool input schemas have no attendee fields, and unknown arguments are stripped;
   - payloads are built field by field;
   - `assertWritableEventPayload` rejects any property outside `WRITABLE_EVENT_FIELDS` (`subject`,
     `start`, `end`, `location`, `body`, `isReminderOn`, `reminderMinutesBeforeStart`,
-    `transactionId`) before a create or update is sent.
+    `transactionId`, `isAllDay`, `showAs`, `recurrence`) before a create or update is sent.
 - **Safety:** a write. The description instructs the model to confirm details with the user first. The
-  tool returns the created event (id, webLink, normalized start/end) so Claude can echo it.
+  tool returns the created event (id, webLink, normalized start/end, `isAllDay`, `showAs`, `recurrence`)
+  so Claude can echo it.
 - Annotations: `destructiveHint: false`, `idempotentHint: true`. `Calendars.ReadWrite`.
 
 ### 7.6 `update_event` — edit an event
@@ -282,7 +298,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Same attendee prohibition for the payload as §7.5. `Calendars.ReadWrite`.
 
 ### 7.7 Planned read tools (optional)
-All-day / recurring creation (#51), free/busy lookup (#52), mail folder awareness with
+Free/busy lookup (#52), mail folder awareness with
 Junk/Deleted excluded by default (#53), attachment text (#54).
 
 ### 7.8 `cancel_event` — guarded soft delete

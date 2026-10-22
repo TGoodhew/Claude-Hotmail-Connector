@@ -3,8 +3,11 @@ import { GraphError, ValidationError } from "../util/errors.js";
 import type { GraphClient } from "./client.js";
 import {
   assertWritableEventPayload,
+  buildRecurrence,
   cancelEvent,
   createEvent,
+  type CreateEventInput,
+  type RecurrenceInput,
   updateEvent,
   WRITABLE_EVENT_FIELDS,
 } from "./calendar.js";
@@ -111,6 +114,358 @@ describe("createEvent", () => {
       }),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(post).not.toHaveBeenCalled();
+  });
+});
+
+describe("all-day, free/busy and recurring creation (#51)", () => {
+  const posted = async (input: Partial<CreateEventInput>, reply: object = createdReply) => {
+    const post = vi.fn<PostMock>(async () => reply);
+    const result = await createEvent(graphWith({ post }), {
+      subject: "Trip",
+      start: { dateTime: "2026-07-20T10:00:00", timeZone: "Australia/Brisbane" },
+      end: { dateTime: "2026-07-20T11:00:00", timeZone: "Australia/Brisbane" },
+      ...input,
+    });
+    return { payload: post.mock.calls[0]![1] as Record<string, unknown>, result, post };
+  };
+
+  it("writes an all-day event as midnight to midnight in its own zone, never shifted", async () => {
+    for (const timeZone of ["Australia/Brisbane", "America/New_York", "Asia/Kolkata", "UTC"]) {
+      const { payload } = await posted({
+        isAllDay: true,
+        start: { dateTime: "2026-07-20", timeZone },
+        end: { dateTime: "2026-07-22", timeZone }, // two days: the 20th and 21st
+      });
+      expect(payload).toMatchObject({
+        isAllDay: true,
+        start: { dateTime: "2026-07-20T00:00:00", timeZone },
+        end: { dateTime: "2026-07-22T00:00:00", timeZone },
+      });
+    }
+    // Midnight given as a time is fine too.
+    const { payload } = await posted({
+      isAllDay: true,
+      start: { dateTime: "2026-07-20T00:00", timeZone: "Europe/London" },
+      end: { dateTime: "2026-07-21T00:00:00", timeZone: "Europe/London" },
+    });
+    expect(payload.start).toEqual({ dateTime: "2026-07-20T00:00:00", timeZone: "Europe/London" });
+    // So is an all-zero fraction of a second.
+    const zero = await posted({
+      isAllDay: true,
+      start: { dateTime: "2026-07-20T00:00:00.000", timeZone: "Europe/London" },
+      end: { dateTime: "2026-07-21", timeZone: "Europe/London" },
+    });
+    expect(zero.payload.start).toEqual({
+      dateTime: "2026-07-20T00:00:00",
+      timeZone: "Europe/London",
+    });
+  });
+
+  it("refuses an all-day event that isn't whole days in one zone, before writing", async () => {
+    const tz = "Australia/Brisbane";
+    const cases: [Partial<CreateEventInput>, RegExp][] = [
+      [
+        {
+          start: { dateTime: "2026-07-20T09:00:00", timeZone: tz },
+          end: { dateTime: "2026-07-21", timeZone: tz },
+        },
+        /start must be a date/,
+      ],
+      [
+        {
+          start: { dateTime: "2026-07-20", timeZone: tz },
+          end: { dateTime: "2026-07-21T12:00", timeZone: tz },
+        },
+        /end must be a date/,
+      ],
+      [
+        {
+          start: { dateTime: "2026-07-20", timeZone: tz },
+          end: { dateTime: "2026-07-21", timeZone: "UTC" },
+        },
+        /same time zone/,
+      ],
+      [
+        {
+          start: { dateTime: "2026-07-20", timeZone: tz },
+          end: { dateTime: "2026-07-20", timeZone: tz },
+        },
+        /end must be after its start/,
+      ],
+      [
+        // Half a second past midnight isn't midnight (Copilot review on #134).
+        {
+          start: { dateTime: "2026-07-20T00:00:00.5", timeZone: tz },
+          end: { dateTime: "2026-07-21", timeZone: tz },
+        },
+        /start must be a date/,
+      ],
+      [
+        {
+          start: { dateTime: "2026-07-20", timeZone: tz },
+          end: { dateTime: "2026-07-21T00:00:00.001", timeZone: tz },
+        },
+        /end must be a date/,
+      ],
+    ];
+    for (const [input, error] of cases) {
+      const post = vi.fn<PostMock>(async () => createdReply);
+      await expect(
+        createEvent(graphWith({ post }), {
+          subject: "Holiday",
+          isAllDay: true,
+          ...input,
+        } as CreateEventInput),
+      ).rejects.toThrow(error);
+      expect(post).not.toHaveBeenCalled();
+    }
+  });
+
+  it("sets showAs, e.g. free for a travel block", async () => {
+    const { payload } = await posted({ showAs: "free" });
+    expect(payload.showAs).toBe("free");
+    const plain = await posted({});
+    expect(plain.payload).not.toHaveProperty("showAs");
+    expect(plain.payload).not.toHaveProperty("isAllDay");
+    expect(plain.payload).not.toHaveProperty("recurrence");
+  });
+
+  it("writes a recurring series in the event's zone, and echoes the new fields", async () => {
+    const recurrence: RecurrenceInput = {
+      pattern: { type: "weekly", interval: 1, daysOfWeek: ["monday", "wednesday"] },
+      range: { type: "numbered", startDate: "2026-07-20", numberOfOccurrences: 10 },
+    };
+    const reply = {
+      ...createdReply,
+      isAllDay: false,
+      showAs: "busy",
+      recurrence: { from: "graph" },
+    };
+    const { payload, result } = await posted({ recurrence }, reply);
+    expect(payload.recurrence).toEqual({
+      pattern: { type: "weekly", interval: 1, daysOfWeek: ["monday", "wednesday"] },
+      range: {
+        type: "numbered",
+        startDate: "2026-07-20",
+        numberOfOccurrences: 10,
+        recurrenceTimeZone: "Australia/Brisbane",
+      },
+    });
+    expect(result).toMatchObject({
+      isAllDay: false,
+      showAs: "busy",
+      recurrence: { from: "graph" },
+    });
+    const plain = await posted({}, createdReply);
+    expect(plain.result).toMatchObject({ isAllDay: false, showAs: null, recurrence: null });
+  });
+
+  it("gives a recurring or all-day create its own idempotency key, keeping a plain one's", async () => {
+    const key = async (input: Partial<CreateEventInput>) =>
+      (await posted(input)).payload.transactionId as string;
+    const plain = await key({});
+    expect(await key({})).toBe(plain); // stable
+    const daily: RecurrenceInput = {
+      pattern: { type: "daily", interval: 1 },
+      range: { type: "noEnd", startDate: "2026-07-20" },
+    };
+    expect(await key({ recurrence: daily })).not.toBe(plain);
+    const allDay = {
+      isAllDay: true,
+      start: { dateTime: "2026-07-20T00:00:00", timeZone: "Australia/Brisbane" },
+      end: { dateTime: "2026-07-21T00:00:00", timeZone: "Australia/Brisbane" },
+    };
+    expect(await key(allDay)).not.toBe(await key({ ...allDay, isAllDay: undefined }));
+  });
+
+  it("keys equivalent inputs alike, so a retry phrased differently doesn't duplicate (Copilot review on #134)", async () => {
+    const key = async (input: Partial<CreateEventInput>) =>
+      (await posted(input)).payload.transactionId as string;
+    const daily: RecurrenceInput = {
+      pattern: { type: "daily", interval: 1 },
+      range: { type: "noEnd", startDate: "2026-07-20" },
+    };
+    // Fields the pattern and range types ignore are dropped before keying.
+    const padded: RecurrenceInput = {
+      pattern: { type: "daily", interval: 1, dayOfMonth: 3, daysOfWeek: ["monday"] },
+      range: { type: "noEnd", startDate: "2026-07-20", endDate: "2026-12-31" },
+    };
+    expect(await key({ recurrence: padded })).toBe(await key({ recurrence: daily }));
+    // An all-day date and its midnight are the same event.
+    const tz = "Australia/Brisbane";
+    const asDates = {
+      isAllDay: true,
+      start: { dateTime: "2026-07-20", timeZone: tz },
+      end: { dateTime: "2026-07-21", timeZone: tz },
+    };
+    const asMidnights = {
+      isAllDay: true,
+      start: { dateTime: "2026-07-20T00:00:00", timeZone: tz },
+      end: { dateTime: "2026-07-21T00:00", timeZone: tz },
+    };
+    expect(await key(asDates)).toBe(await key(asMidnights));
+    // The same weekdays in another order, or repeated, are the same series.
+    const weekly = (daysOfWeek: RecurrenceInput["pattern"]["daysOfWeek"]): RecurrenceInput => ({
+      pattern: { type: "weekly", interval: 1, daysOfWeek },
+      range: { type: "noEnd", startDate: "2026-07-20" },
+    });
+    const monWed = await key({ recurrence: weekly(["monday", "wednesday"]) });
+    expect(await key({ recurrence: weekly(["wednesday", "monday"]) })).toBe(monWed);
+    expect(await key({ recurrence: weekly(["wednesday", "monday", "monday"]) })).toBe(monWed);
+    const { payload } = await posted({ recurrence: weekly(["wednesday", "monday", "monday"]) });
+    expect((payload.recurrence as { pattern: unknown }).pattern).toMatchObject({
+      daysOfWeek: ["monday", "wednesday"],
+    });
+    // Sunday as the first day of the week is Graph's default: implicit either way.
+    const sundayFirst = weekly(["monday", "wednesday"]);
+    sundayFirst.pattern.firstDayOfWeek = "sunday";
+    expect(await key({ recurrence: sundayFirst })).toBe(monWed);
+    const sundayPayload = (await posted({ recurrence: sundayFirst })).payload;
+    expect((sundayPayload.recurrence as { pattern: object }).pattern).not.toHaveProperty(
+      "firstDayOfWeek",
+    );
+    const mondayFirst = weekly(["monday", "wednesday"]);
+    mondayFirst.pattern.firstDayOfWeek = "monday";
+    expect(await key({ recurrence: mondayFirst })).not.toBe(monWed); // a real difference
+    // A series keys on its written times, whatever form they were given in.
+    const at = (start: string, end: string): Partial<CreateEventInput> => ({
+      start: { dateTime: start, timeZone: tz },
+      end: { dateTime: end, timeZone: tz },
+      recurrence: weekly(["monday"]),
+    });
+    expect(await key(at("2026-07-20T10:00", "2026-07-20T11:00"))).toBe(
+      await key(at("2026-07-20T10:00:00", "2026-07-20T11:00:00.000")),
+    );
+  });
+
+  it("keys a non-default showAs, and treats busy as the default (Copilot review on #134)", async () => {
+    const key = async (input: Partial<CreateEventInput>) =>
+      (await posted(input)).payload.transactionId as string;
+    const plain = await key({});
+    expect(await key({ showAs: "busy" })).toBe(plain); // busy is what an omitted showAs means
+    const free = await key({ showAs: "free" });
+    expect(free).not.toBe(plain); // a free block isn't a retry of a busy event
+    expect(await key({ showAs: "tentative" })).not.toBe(free);
+  });
+});
+
+describe("buildRecurrence (#51)", () => {
+  const start = { dateTime: "2026-07-20T06:00:00", timeZone: "Australia/Brisbane" };
+  const range = { type: "noEnd" as const, startDate: "2026-07-20" };
+  const build = (pattern: RecurrenceInput["pattern"], r: Partial<RecurrenceInput["range"]> = {}) =>
+    buildRecurrence({ pattern, range: { ...range, ...r } }, start);
+
+  it("gives each pattern type exactly the fields it uses", () => {
+    expect(
+      build({ type: "daily", interval: 2, daysOfWeek: ["monday"], dayOfMonth: 3 }).pattern,
+    ).toEqual({
+      type: "daily",
+      interval: 2,
+    });
+    expect(
+      build({
+        type: "weekly",
+        interval: 1,
+        daysOfWeek: ["friday"],
+        firstDayOfWeek: "monday",
+        month: 4,
+      }).pattern,
+    ).toEqual({ type: "weekly", interval: 1, daysOfWeek: ["friday"], firstDayOfWeek: "monday" });
+    expect(build({ type: "absoluteMonthly", interval: 1, dayOfMonth: 15 }).pattern).toEqual({
+      type: "absoluteMonthly",
+      interval: 1,
+      dayOfMonth: 15,
+    });
+    expect(
+      build({ type: "relativeMonthly", interval: 1, daysOfWeek: ["monday"], index: "first" })
+        .pattern,
+    ).toEqual({ type: "relativeMonthly", interval: 1, daysOfWeek: ["monday"], index: "first" });
+    expect(
+      build({ type: "absoluteYearly", interval: 1, dayOfMonth: 25, month: 12 }).pattern,
+    ).toEqual({
+      type: "absoluteYearly",
+      interval: 1,
+      dayOfMonth: 25,
+      month: 12,
+    });
+    expect(
+      build({
+        type: "relativeYearly",
+        interval: 1,
+        daysOfWeek: ["thursday"],
+        index: "last",
+        month: 11,
+      }).pattern,
+    ).toEqual({
+      type: "relativeYearly",
+      interval: 1,
+      daysOfWeek: ["thursday"],
+      index: "last",
+      month: 11,
+    });
+  });
+
+  it("refuses a pattern missing what its type needs", () => {
+    expect(() => build({ type: "weekly", interval: 1 })).toThrow(
+      /weekly recurrence needs pattern.daysOfWeek/,
+    );
+    expect(() => build({ type: "weekly", interval: 1, daysOfWeek: [] })).toThrow(/daysOfWeek/);
+    expect(() => build({ type: "absoluteMonthly", interval: 1 })).toThrow(/pattern.dayOfMonth/);
+    expect(() => build({ type: "relativeMonthly", interval: 1, daysOfWeek: ["monday"] })).toThrow(
+      /pattern.index/,
+    );
+    expect(() => build({ type: "absoluteYearly", interval: 1, dayOfMonth: 1 })).toThrow(
+      /pattern.month/,
+    );
+    expect(() =>
+      build({ type: "relativeYearly", interval: 1, daysOfWeek: ["monday"], index: "first" }),
+    ).toThrow(/pattern.month/);
+    for (const interval of [0, 100, 1.5]) {
+      expect(() => build({ type: "daily", interval })).toThrow(/interval/);
+    }
+  });
+
+  it("starts the range on the event's start date, in its zone", () => {
+    expect(build({ type: "daily", interval: 1 }).range).toEqual({
+      type: "noEnd",
+      startDate: "2026-07-20",
+      recurrenceTimeZone: "Australia/Brisbane",
+    });
+    expect(() => build({ type: "daily", interval: 1 }, { startDate: "2026-07-21" })).toThrow(
+      /must be the event's start date \(2026-07-20\)/,
+    );
+    for (const startDate of ["2026-7-20", "2026-02-30", "soon"]) {
+      expect(() => build({ type: "daily", interval: 1 }, { startDate })).toThrow(ValidationError);
+    }
+  });
+
+  it("checks the end of an endDate or numbered range", () => {
+    const daily = { type: "daily" as const, interval: 1 };
+    expect(build(daily, { type: "endDate", endDate: "2026-08-31" }).range).toMatchObject({
+      endDate: "2026-08-31",
+    });
+    expect(build(daily, { type: "endDate", endDate: "2026-07-20" }).range).toMatchObject({
+      endDate: "2026-07-20", // a single occurrence
+    });
+    expect(() => build(daily, { type: "endDate" })).toThrow(/needs range.endDate/);
+    expect(() => build(daily, { type: "endDate", endDate: "2026-07-19" })).toThrow(
+      /before its startDate/,
+    );
+    expect(() => build(daily, { type: "endDate", endDate: "2026-13-01" })).toThrow(ValidationError);
+    expect(build(daily, { type: "numbered", numberOfOccurrences: 5 }).range).toMatchObject({
+      numberOfOccurrences: 5,
+    });
+    for (const numberOfOccurrences of [undefined, 0, 1_000, 2.5]) {
+      expect(() => build(daily, { type: "numbered", numberOfOccurrences })).toThrow(
+        /numberOfOccurrences/,
+      );
+    }
+    // A noEnd range carries neither.
+    expect(build(daily, { endDate: "2026-08-31", numberOfOccurrences: 3 }).range).toEqual({
+      type: "noEnd",
+      startDate: "2026-07-20",
+      recurrenceTimeZone: "Australia/Brisbane",
+    });
   });
 });
 
