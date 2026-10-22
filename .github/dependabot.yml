@@ -17,7 +17,16 @@ updates:
       # so TypeScript 7.x can't be installed alongside it yet (#106, #144); later majors still come.
       - dependency-name: typescript
         versions: [">=7.0.0 <8.0.0"]
+      # vitest 5 needs Node 22.12+, but CI still runs the tests on Node 20 (#148).
+      - dependency-name: vitest
+        versions: [">=5.0.0 <6.0.0"]
+      - dependency-name: "@vitest/*"
+        versions: [">=5.0.0 <6.0.0"]
     groups:
+      # vitest and its plugins must be the same version: a major moves them together.
+      vitest:
+        patterns: ["vitest", "@vitest/*"]
+        update-types: [major]
       # Batch tooling (lint/format/test/build) into one PR; runtime deps stay separate.
       dev-tooling:
         dependency-type: development
