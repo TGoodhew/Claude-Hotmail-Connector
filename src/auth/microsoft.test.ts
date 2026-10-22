@@ -1168,6 +1168,60 @@ describe("sign-in and sign-out across processes (#95)", () => {
     expect(store.current?.accessToken).toBe("CODE-AT");
   });
 
+  it("a later sign-in doesn't adopt an older account when the winner's save failed (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    // Account X is already signed in.
+    const base = memoryStore({
+      accessToken: "ACCOUNT-X",
+      refreshToken: "RT-X",
+      expiresAt: 10_000_000,
+      scopes: config.scopes,
+    });
+    let saves = 0;
+    const store: TokenStore = {
+      load: () => base.load(),
+      async save(t) {
+        if (++saves === 1) throw new Error("disk full"); // the winner's save fails
+        await base.save(t);
+      },
+      clear: (o) => base.clear(o),
+    };
+    const first = processWith(store, dir, reply("ACCOUNT-A"));
+    const second = processWith(store, dir, reply("ACCOUNT-B"));
+
+    const firstSignIn = outcome(first.auth.signIn());
+    const secondSignIn = outcome(second.auth.signIn());
+    await until(() => first.authorizeUrl() !== "" && second.authorizeUrl() !== "");
+
+    await redirectBack(first.authorizeUrl(), { code: "A" }); // raises the count, then fails to save
+    const a = await firstSignIn;
+    expect(!a.ok && (a.error as Error).message).toMatch(/disk full/);
+
+    await redirectBack(second.authorizeUrl(), { code: "B" });
+    const b = await secondSignIn;
+    // Not account X (an older sign-in no one chose now): told to try again.
+    expect(b.ok).toBe(false);
+    expect(!b.ok && b.error).toBeInstanceOf(SignInRequiredError);
+    expect(!b.ok && (b.error as Error).message).toMatch(/try again/);
+    expect(base.current?.accessToken).toBe("ACCOUNT-X"); // untouched
+  });
+
+  it("a refreshed sign-in keeps its generation, so it still counts as the winner", async () => {
+    const dir = sharedDir();
+    const store = memoryStore(null);
+    const desktop = processWith(store, dir, reply("DESKTOP-AT"));
+    const signIn = outcome(desktop.auth.signIn());
+    await until(() => desktop.authorizeUrl() !== "");
+    await redirectBack(desktop.authorizeUrl(), { code: "D" });
+    expect((await signIn).ok).toBe(true);
+    const generation = store.current?.signInGeneration;
+    expect(generation).toBe(1);
+    // Expire it, refresh it: the generation survives.
+    store.current = { ...store.current!, expiresAt: 500 };
+    await desktop.auth.getAccessToken({ interactive: false });
+    expect(store.current?.signInGeneration).toBe(generation);
+  });
+
   /** A token endpoint that answers only when told to. */
   function slowEndpoint() {
     const s = { sent: false, answer: (_r: Response): void => undefined };

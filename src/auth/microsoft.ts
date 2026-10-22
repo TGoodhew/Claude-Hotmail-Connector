@@ -302,11 +302,15 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         scopes: config.scopes,
       }),
     );
-    return toTokenSet(resp, now(), {
+    const refreshed = toTokenSet(resp, now(), {
       refreshToken: current.refreshToken,
       scopes: current.scopes,
       account: current.account,
     });
+    // Still the same sign-in: it keeps its generation.
+    return current.signInGeneration === undefined
+      ? refreshed
+      : { ...refreshed, signInGeneration: current.signInGeneration };
   }
 
   // Single-flight guard: collapse concurrent refreshes into one network call.
@@ -364,8 +368,15 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         // count for a pending refresh of the old one to overwrite. (Lookups
         // read the counters and the cache together under this lock, so none
         // can pair the new count with the tokens being replaced.)
-        if (kind === "sign-in") await persist({ ...current, signIns: current.signIns + 1 });
-        await store.save(tokens);
+        if (kind === "sign-in") {
+          const signIns = current.signIns + 1;
+          await persist({ ...current, signIns });
+          // Marked with its generation, so a sign-in that loses to this one can
+          // tell whether this save happened (see savedElsewhere).
+          await store.save({ ...tokens, signInGeneration: signIns });
+        } else {
+          await store.save(tokens);
+        }
         return { value: undefined };
       });
       onSaved?.();
@@ -381,7 +392,11 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     const saved = await coordinator.withLock(async (current) => {
       observe(current);
       if (current.signOuts !== shared.signOuts) throw new SignedOutError();
-      return { value: await store.load().catch(() => null) };
+      const found = await store.load().catch(() => null);
+      // Only the sign-in that won: a raised count whose save then failed
+      // leaves an older account cached, which is no one's answer now
+      // (Copilot review on #126).
+      return { value: found?.signInGeneration === current.signIns ? found : null };
     });
     if (signOuts !== epoch) throw new SignedOutError();
     return saved && saved.expiresAt - now() > DEFAULT_MIN_TTL_MS ? saved : null;
@@ -623,8 +638,11 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
             // one rather than replacing it with this (possibly other) account.
             const saved = await savedElsewhere(epoch, shared);
             if (!saved) {
+              // The other sign-in's save failed, or its tokens are no longer
+              // usable: neither it nor this one is signed in, so say try again.
               throw new SignInRequiredError(
-                "A Microsoft sign-in finished in another window first. Ask me to try again.",
+                "Another Microsoft sign-in was in progress at the same time, so this one wasn't " +
+                  "saved. Ask me to try again.",
               );
             }
             log.info("Using the sign-in that finished first in another process");
