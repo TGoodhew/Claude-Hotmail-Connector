@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { ValidationError } from "../util/errors.js";
+import { GraphError, ValidationError } from "../util/errors.js";
 import type { GraphClient } from "./client.js";
 import {
   buildMessagesQuery,
   DEFAULT_MAX_BODY_CHARS,
   getMessage,
+  listMailFolders,
   listMessages,
+  MAX_MAIL_FOLDERS,
   sliceBody,
   type ListMessagesInput,
 } from "./mail.js";
@@ -53,8 +55,17 @@ describe("buildMessagesQuery", () => {
   });
 });
 
+/** Answers the well-known folder lookups (#53) with "F-<name>"; the rest goes to `get`. */
+function withFolders(get?: unknown) {
+  return async (path: string, opts?: unknown) => {
+    const m = /^\/me\/mailFolders\/([a-z]+)$/.exec(path);
+    if (m) return { id: `F-${m[1]}` };
+    return (get as (p: string, o?: unknown) => Promise<unknown>)(path, opts);
+  };
+}
+
 function graphWith(request: unknown, get?: unknown): GraphClient {
-  return { request, get } as unknown as GraphClient;
+  return { request, get: withFolders(get) } as unknown as GraphClient;
 }
 
 type RequestMock = (
@@ -96,6 +107,8 @@ describe("listMessages", () => {
         webLink: "https://outlook/1",
         bodyPreview: "Your booking...",
         hasAttachments: false,
+        folderId: null,
+        folder: null,
       },
     ]);
     // An opaque cursor, never the raw URL (#30).
@@ -376,5 +389,157 @@ describe("body size cap (#38)", () => {
     });
     expect(msg.body.content).toHaveLength(1_000);
     expect(msg.body).toMatchObject({ truncated: true, totalChars: 49_999, nextStartChar: 1_000 });
+  });
+});
+
+describe("mail folders (#53)", () => {
+  const msg = (id: string, parentFolderId?: string) => ({
+    id,
+    subject: id,
+    receivedDateTime: "2026-07-10T09:00:00Z",
+    hasAttachments: false,
+    ...(parentFolderId ? { parentFolderId } : {}),
+  });
+  const pageOf = (value: unknown[], next?: string) => ({
+    status: 200,
+    data: { value, ...(next ? { "@odata.nextLink": next } : {}) },
+    headers: new Headers(),
+  });
+  const mixed = [
+    msg("in", "F-inbox"),
+    msg("junk", "F-junkemail"),
+    msg("bin", "F-deleteditems"),
+    msg("custom", "custom-folder-id"),
+  ];
+
+  it("leaves Junk Email and Deleted Items out by default, says how many, and labels the rest", async () => {
+    const request = vi.fn<RequestMock>(async () => pageOf(mixed));
+    const res = await listMessages(graphWith(request), baseInput());
+    expect(request.mock.calls[0]![1]).toBe("/me/messages");
+    expect(res.messages.map((m) => [m.id, m.folder, m.folderId])).toEqual([
+      ["in", "inbox", "F-inbox"],
+      ["custom", null, "custom-folder-id"],
+    ]);
+    expect(res.excludedCount).toBe(2);
+  });
+
+  it("keeps them, labelled, when asked", async () => {
+    const request = vi.fn<RequestMock>(async () => pageOf(mixed));
+    const res = await listMessages(graphWith(request), baseInput({ includeJunkAndDeleted: true }));
+    expect(res.messages.map((m) => m.folder)).toEqual(["inbox", "junkemail", "deleteditems", null]);
+    expect(res.excludedCount).toBe(0);
+  });
+
+  it("lists one folder by well-known name or id, without leaving anything out", async () => {
+    const request = vi.fn<RequestMock>(async () => pageOf([msg("j", "F-junkemail")]));
+    const junk = await listMessages(
+      graphWith(request),
+      baseInput({ folder: "junkemail", query: "hotel" }),
+    );
+    expect(request.mock.calls[0]![1]).toBe("/me/mailFolders/junkemail/messages");
+    expect(junk.messages.map((m) => m.folder)).toEqual(["junkemail"]);
+    await listMessages(graphWith(request), baseInput({ folder: "AAMk/x+y=" }));
+    expect(request.mock.calls[1]![1]).toBe("/me/mailFolders/AAMk%2Fx%2By%3D/messages");
+  });
+
+  it("keeps leaving them out on later pages", async () => {
+    const request = vi
+      .fn<RequestMock>()
+      .mockResolvedValueOnce(
+        pageOf([msg("a", "F-inbox")], "https://graph.microsoft.com/v1.0/me/messages?$skip=10"),
+      )
+      .mockResolvedValueOnce(pageOf([msg("b", "F-junkemail"), msg("c", "F-inbox")]));
+    const p1 = await listMessages(graphWith(request), baseInput());
+    const p2 = await listMessages(graphWith(request), baseInput({ pageToken: p1.nextPageToken }));
+    expect(p2.messages.map((m) => m.id)).toEqual(["c"]);
+    expect(p2.excludedCount).toBe(1);
+    // …and an opted-in listing keeps including them on later pages.
+    const r2 = vi
+      .fn<RequestMock>()
+      .mockResolvedValueOnce(
+        pageOf([msg("a", "F-inbox")], "https://graph.microsoft.com/v1.0/me/messages?$skip=10"),
+      )
+      .mockResolvedValueOnce(pageOf([msg("b", "F-junkemail")]));
+    const q1 = await listMessages(graphWith(r2), baseInput({ includeJunkAndDeleted: true }));
+    const q2 = await listMessages(graphWith(r2), baseInput({ pageToken: q1.nextPageToken }));
+    expect(q2.messages.map((m) => m.id)).toEqual(["b"]);
+  });
+
+  it("copes with a mailbox that lacks a well-known folder (e.g. no Archive)", async () => {
+    const request = vi.fn<RequestMock>(async () => pageOf([msg("in", "F-inbox")]));
+    const get = async (path: string) => {
+      if (path === "/me/mailFolders/archive") throw new GraphError("nope", { status: 404 });
+      return { id: `F-${path.slice(16)}` };
+    };
+    const res = await listMessages({ request, get } as unknown as GraphClient, baseInput());
+    expect(res.messages.map((m) => m.folder)).toEqual(["inbox"]);
+    // Any other failure still surfaces.
+    const failing = async () => {
+      throw new GraphError("boom", { status: 500 });
+    };
+    await expect(
+      listMessages({ request, get: failing } as unknown as GraphClient, baseInput()),
+    ).rejects.toThrow("boom");
+  });
+
+  it("get_message says which folder the message is in", async () => {
+    const get = vi.fn<GetMock>(async () => ({
+      id: "m1",
+      parentFolderId: "F-junkemail",
+      body: { contentType: "text", content: "x" },
+      hasAttachments: false,
+    }));
+    const res = await getMessage(graphWith(undefined, get), { id: "m1", format: "text" });
+    expect(res).toMatchObject({ folderId: "F-junkemail", folder: "junkemail" });
+  });
+
+  it("lists the top-level folders, with their well-known names", async () => {
+    const getAllPages = vi.fn(async () => [
+      {
+        id: "F-inbox",
+        displayName: "Inbox",
+        childFolderCount: 1,
+        unreadItemCount: 3,
+        totalItemCount: 40,
+      },
+      { id: "F-junkemail", displayName: "Junk Email" },
+      { id: "trips", displayName: "Trips", parentFolderId: "root" },
+    ]);
+    const graph = { getAllPages, get: withFolders() } as unknown as GraphClient;
+    const folders = await listMailFolders(graph);
+    expect(folders).toEqual([
+      {
+        id: "F-inbox",
+        name: "Inbox",
+        wellKnownName: "inbox",
+        parentFolderId: null,
+        childFolderCount: 1,
+        unreadItemCount: 3,
+        totalItemCount: 40,
+      },
+      {
+        id: "F-junkemail",
+        name: "Junk Email",
+        wellKnownName: "junkemail",
+        parentFolderId: null,
+        childFolderCount: 0,
+        unreadItemCount: 0,
+        totalItemCount: 0,
+      },
+      {
+        id: "trips",
+        name: "Trips",
+        wellKnownName: null,
+        parentFolderId: "root",
+        childFolderCount: 0,
+        unreadItemCount: 0,
+        totalItemCount: 0,
+      },
+    ]);
+    expect(getAllPages).toHaveBeenCalledWith(
+      "/me/mailFolders",
+      expect.objectContaining({ query: expect.objectContaining({ $top: MAX_MAIL_FOLDERS }) }),
+      { maxItems: MAX_MAIL_FOLDERS },
+    );
   });
 });

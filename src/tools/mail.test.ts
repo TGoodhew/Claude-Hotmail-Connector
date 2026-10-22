@@ -2,15 +2,25 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createGraphClient, type GraphClient } from "../graph/client.js";
 import { ValidationError } from "../util/errors.js";
-import { getMessageTool, listMessagesTool, mailTools } from "./mail.js";
+import { getMessageTool, listMailFoldersTool, listMessagesTool, mailTools } from "./mail.js";
 import {
   UNTRUSTED_CONTENT_DESCRIPTION,
   UNTRUSTED_CONTENT_NOTICE,
   type ToolContext,
 } from "./types.js";
 
+/** Answers the well-known folder lookups (#53) with "F-<name>"; the rest goes to `get`. */
+function withFolders(get?: unknown) {
+  return async (path: string, opts?: unknown) => {
+    if (path.startsWith("/me/mailFolders/")) return { id: `F-${path.slice(16)}` };
+    return (get as (p: string, o?: unknown) => Promise<unknown>)(path, opts);
+  };
+}
+
 function ctxWith(graph: Partial<GraphClient>): ToolContext {
-  return { graph: graph as GraphClient, config: {} as ToolContext["config"] };
+  // Well-known folder lookups (#53) answer "F-<name>"; the rest goes to the test's get.
+  const get = withFolders(graph.get) as unknown as GraphClient["get"];
+  return { graph: { ...graph, get } as GraphClient, config: {} as ToolContext["config"] };
 }
 
 describe("mail tool schemas", () => {
@@ -28,8 +38,12 @@ describe("mail tool schemas", () => {
     expect(() => schema.parse({ id: "abc", format: "pdf" })).toThrow();
   });
 
-  it("exposes both tools as read-only", () => {
-    expect(mailTools.map((t) => t.name).sort()).toEqual(["get_message", "list_messages"]);
+  it("exposes all three tools as read-only", () => {
+    expect(mailTools.map((t) => t.name).sort()).toEqual([
+      "get_message",
+      "list_mail_folders",
+      "list_messages",
+    ]);
     for (const t of mailTools) expect(t.annotations?.readOnlyHint).toBe(true);
   });
 });
@@ -82,6 +96,12 @@ describe("prompt-injection fixture: pageToken exfiltration (#30)", () => {
     };
     const fetchImpl = vi.fn(async (url: string) => {
       if (!url.startsWith("https://graph.microsoft.com/")) throw new Error(`leaked to ${url}`);
+      if (url.includes("/mailFolders/")) {
+        return new Response(JSON.stringify({ id: "F" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       return new Response(JSON.stringify({ value: [injected] }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -108,7 +128,10 @@ describe("prompt-injection fixture: pageToken exfiltration (#30)", () => {
     for (const [url] of fetchImpl.mock.calls) {
       expect(String(url).startsWith("https://graph.microsoft.com/v1.0/")).toBe(true);
     }
-    expect(fetchImpl).toHaveBeenCalledOnce();
+    // One listing (plus its folder lookups); nothing for the injected page.
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes("/messages"))).toHaveLength(
+      1,
+    );
   });
 });
 
@@ -153,8 +176,72 @@ describe("prompt-injection fixture: instructions in a message (#88)", () => {
   });
 
   it("says so in both tool descriptions", () => {
-    for (const t of [listMessagesTool, getMessageTool]) {
+    for (const t of [listMessagesTool, getMessageTool, listMailFoldersTool]) {
       expect(t.description).toContain(UNTRUSTED_CONTENT_DESCRIPTION);
     }
+  });
+});
+
+describe("mail folders in the tools (#53)", () => {
+  it("list_messages says how many Junk / Deleted messages it left out, and how to see them", async () => {
+    const request = vi.fn(async () => ({
+      status: 200,
+      data: {
+        value: [
+          { id: "a", parentFolderId: "F-inbox", hasAttachments: false },
+          { id: "b", parentFolderId: "F-junkemail", hasAttachments: false },
+        ],
+      },
+      headers: new Headers(),
+    }));
+    const res = await listMessagesTool.handler(
+      { limit: 10 },
+      ctxWith({ request: request as unknown as GraphClient["request"] }),
+    );
+    expect(res.content[0]!.text).toContain(
+      "1 more on this page were in Junk Email or Deleted Items",
+    );
+    expect(res.content[0]!.text).toContain("includeJunkAndDeleted");
+    expect(res.structuredContent).toMatchObject({ count: 1, excludedCount: 1 });
+    expect(listMessagesTool.description).toContain("junkemail");
+  });
+
+  it("list_messages accepts a folder and the opt-in", () => {
+    const schema = z.object(listMessagesTool.inputShape);
+    expect(schema.parse({ folder: "inbox", includeJunkAndDeleted: true })).toMatchObject({
+      folder: "inbox",
+      includeJunkAndDeleted: true,
+    });
+    expect(() => schema.parse({ folder: "" })).toThrow();
+  });
+
+  it("get_message flags a message in Junk Email in its summary", async () => {
+    const get = vi.fn(async () => ({
+      id: "m1",
+      parentFolderId: "F-junkemail",
+      body: { contentType: "text", content: "Your flight is confirmed" },
+      hasAttachments: false,
+    }));
+    const res = await getMessageTool.handler(
+      { id: "m1", format: "text", maxChars: 20_000, startChar: 0 },
+      ctxWith({ get: get as unknown as GraphClient["get"] }),
+    );
+    expect(res.content[0]!.text.split("\n\n")[0]).toContain("in Junk Email");
+    expect(res.structuredContent).toMatchObject({ folder: "junkemail" });
+  });
+
+  it("list_mail_folders is read-only and marks folder names untrusted", async () => {
+    expect(listMailFoldersTool.annotations?.readOnlyHint).toBe(true);
+    expect(listMailFoldersTool.scopesAnyOf).toEqual(["Mail.Read"]);
+    const getAllPages = vi.fn(async () => [{ id: "F-inbox", displayName: "Inbox" }]);
+    const res = await listMailFoldersTool.handler(
+      {},
+      ctxWith({ getAllPages: getAllPages as unknown as GraphClient["getAllPages"] }),
+    );
+    expect(Object.keys(res.structuredContent ?? {})[0]).toBe("notice");
+    expect(res.structuredContent).toMatchObject({
+      count: 1,
+      folders: [{ id: "F-inbox", wellKnownName: "inbox" }],
+    });
   });
 });

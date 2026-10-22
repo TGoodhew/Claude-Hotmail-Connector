@@ -11,11 +11,12 @@
 
 import { z } from "zod";
 import { htmlToText } from "../util/html.js";
-import { ValidationError } from "../util/errors.js";
+import { GraphError, ValidationError } from "../util/errors.js";
 import type { GraphClient, ODataPage } from "./client.js";
 import { CursorBase, decodeCursor, encodeCursor } from "./paging.js";
 
-const MESSAGE_SELECT = "id,subject,from,receivedDateTime,webLink,bodyPreview,hasAttachments";
+const MESSAGE_SELECT =
+  "id,subject,from,receivedDateTime,webLink,bodyPreview,hasAttachments,parentFolderId";
 
 export interface ListMessagesInput {
   query?: string;
@@ -25,7 +26,30 @@ export interface ListMessagesInput {
   receivedBefore?: string;
   limit: number;
   pageToken?: string;
+  /**
+   * Only this folder: a well-known name (see {@link WELL_KNOWN_FOLDERS}) or a
+   * folder id from list_mail_folders. All folders if omitted (#53).
+   */
+  folder?: string;
+  /** Without a folder, Junk Email and Deleted Items are left out unless this is set. */
+  includeJunkAndDeleted?: boolean;
 }
+
+/**
+ * Folder names Graph accepts in place of an id. `junkemail` and `deleteditems`
+ * are the ones left out by default; the others label results.
+ */
+export const WELL_KNOWN_FOLDERS = [
+  "inbox",
+  "junkemail",
+  "deleteditems",
+  "archive",
+  "sentitems",
+  "drafts",
+] as const;
+export type WellKnownFolder = (typeof WELL_KNOWN_FOLDERS)[number];
+/** Left out of a listing across folders unless asked for (#53). */
+const EXCLUDED_BY_DEFAULT: readonly WellKnownFolder[] = ["junkemail", "deleteditems"];
 
 export interface MessageSummary {
   id: string;
@@ -35,11 +59,39 @@ export interface MessageSummary {
   webLink: string | null;
   bodyPreview: string | null;
   hasAttachments: boolean;
+  /** The message's folder id (`parentFolderId`). */
+  folderId: string | null;
+  /** Its well-known name when it's one of those (e.g. "junkemail"), else null. */
+  folder: WellKnownFolder | null;
 }
 
 export interface ListMessagesResult {
   messages: MessageSummary[];
   nextPageToken?: string;
+  /** Messages on this page left out because they're in Junk Email or Deleted Items. */
+  excludedCount: number;
+}
+
+/**
+ * The ids of the well-known folders, so results can be labelled and Junk /
+ * Deleted left out. Looked up per call (in parallel); a folder the mailbox
+ * doesn't have (e.g. no Archive) is simply absent.
+ */
+async function wellKnownFolderIds(graph: GraphClient): Promise<Map<string, WellKnownFolder>> {
+  const found = await Promise.all(
+    WELL_KNOWN_FOLDERS.map(async (name) => {
+      try {
+        const f = await graph.get<{ id?: string }>(`/me/mailFolders/${name}`, {
+          query: { $select: "id" },
+        });
+        return f.id ? ([f.id, name] as const) : undefined;
+      } catch (e) {
+        if (e instanceof GraphError && e.status === 404) return undefined;
+        throw e;
+      }
+    }),
+  );
+  return new Map(found.filter((f): f is readonly [string, WellKnownFolder] => f !== undefined));
 }
 
 interface GraphMessage {
@@ -51,6 +103,7 @@ interface GraphMessage {
   bodyPreview?: string;
   hasAttachments?: boolean;
   body?: { contentType?: string; content?: string };
+  parentFolderId?: string;
 }
 
 function toInstant(iso: string, label: string): string {
@@ -109,7 +162,7 @@ export function buildMessagesQuery(input: ListMessagesInput): BuiltMessagesQuery
   return { mode: "filter", query: q };
 }
 
-function shapeSummary(m: GraphMessage): MessageSummary {
+function shapeSummary(m: GraphMessage, folders: Map<string, WellKnownFolder>): MessageSummary {
   const ea = m.from?.emailAddress;
   return {
     id: m.id,
@@ -119,19 +172,23 @@ function shapeSummary(m: GraphMessage): MessageSummary {
     webLink: m.webLink ?? null,
     bodyPreview: m.bodyPreview ?? null,
     hasAttachments: Boolean(m.hasAttachments),
+    folderId: m.parentFolderId ?? null,
+    folder: (m.parentFolderId && folders.get(m.parentFolderId)) || null,
   };
 }
 
 // ── Paging cursor ────────────────────────────────────────────────────────────
 //
 // See ./paging.ts. Besides the next page, a list_messages cursor holds the query
-// mode (for the eventual-consistency header) and any client-side date bounds,
-// so later pages behave like the first (#31).
+// mode (for the eventual-consistency header), any client-side date bounds, and
+// whether Junk / Deleted are left out, so later pages behave like the first
+// (#31, #53).
 
 const CursorSchema = CursorBase.extend({
   mode: z.enum(["search", "filter"]),
   afterMs: z.number().finite().optional(),
   beforeMs: z.number().finite().optional(),
+  excludeJunkAndDeleted: z.boolean().optional(),
 });
 type Cursor = z.infer<typeof CursorSchema>;
 
@@ -154,6 +211,7 @@ export async function listMessages(
   let path: string;
   let query: Record<string, string | number> | undefined;
   let clientDateFilter: { afterMs?: number; beforeMs?: number } | undefined;
+  let excludeJunkAndDeleted: boolean;
 
   if (input.pageToken) {
     const cursor = decodeCursor(input.pageToken, CursorSchema, "list_messages");
@@ -162,28 +220,98 @@ export async function listMessages(
     if (cursor.afterMs !== undefined || cursor.beforeMs !== undefined) {
       clientDateFilter = { afterMs: cursor.afterMs, beforeMs: cursor.beforeMs };
     }
+    excludeJunkAndDeleted = cursor.excludeJunkAndDeleted ?? false;
   } else {
     const built = buildMessagesQuery(input);
     mode = built.mode;
-    path = "/me/messages";
+    // A folder narrows the listing to it; otherwise it spans every folder, less
+    // Junk and Deleted unless asked (phishing in Junk must not pass for real
+    // mail, #53). Graph can't combine $search with a $filter on the folder, so
+    // that exclusion is applied to each page as it comes.
+    path = input.folder
+      ? `/me/mailFolders/${encodeURIComponent(input.folder.trim())}/messages`
+      : "/me/messages";
     query = built.query;
     clientDateFilter = built.clientDateFilter;
+    excludeJunkAndDeleted = !input.folder && !input.includeJunkAndDeleted;
   }
 
-  const page = (
-    await graph.request<ODataPage<GraphMessage>>("GET", path, {
-      query,
-      // $search on messages benefits from eventual consistency.
-      headers: mode === "search" ? { consistencylevel: "eventual" } : undefined,
-    })
-  ).data;
+  const [page, folders] = await Promise.all([
+    graph
+      .request<ODataPage<GraphMessage>>("GET", path, {
+        query,
+        // $search on messages benefits from eventual consistency.
+        headers: mode === "search" ? { consistencylevel: "eventual" } : undefined,
+      })
+      .then((r) => r.data),
+    wellKnownFolderIds(graph),
+  ]);
 
-  const messages = (page.value ?? [])
-    .filter((m) => withinDateFilter(m, clientDateFilter))
-    .map(shapeSummary);
-  const nextPageToken = encodeCursor(page["@odata.nextLink"], { mode, ...clientDateFilter });
+  const inDates = (page.value ?? []).filter((m) => withinDateFilter(m, clientDateFilter));
+  const excluded = excludeJunkAndDeleted
+    ? new Set(
+        [...folders].filter(([, name]) => EXCLUDED_BY_DEFAULT.includes(name)).map(([id]) => id),
+      )
+    : new Set<string>();
+  const kept = inDates.filter((m) => !(m.parentFolderId && excluded.has(m.parentFolderId)));
+  const nextPageToken = encodeCursor(page["@odata.nextLink"], {
+    mode,
+    ...clientDateFilter,
+    ...(excludeJunkAndDeleted ? { excludeJunkAndDeleted } : {}),
+  });
 
-  return { messages, ...(nextPageToken ? { nextPageToken } : {}) };
+  return {
+    messages: kept.map((m) => shapeSummary(m, folders)),
+    excludedCount: inDates.length - kept.length,
+    ...(nextPageToken ? { nextPageToken } : {}),
+  };
+}
+
+export interface MailFolder {
+  id: string;
+  name: string | null;
+  /** Its well-known name (e.g. "junkemail"), when it's one of those. */
+  wellKnownName: WellKnownFolder | null;
+  parentFolderId: string | null;
+  childFolderCount: number;
+  unreadItemCount: number;
+  totalItemCount: number;
+}
+
+/** Most folders list_mail_folders returns. */
+export const MAX_MAIL_FOLDERS = 100;
+
+/** The mailbox's top-level folders (`GET /me/mailFolders`), for list_messages' `folder` (#53). */
+export async function listMailFolders(graph: GraphClient): Promise<MailFolder[]> {
+  const [raw, known] = await Promise.all([
+    graph.getAllPages<{
+      id: string;
+      displayName?: string;
+      parentFolderId?: string;
+      childFolderCount?: number;
+      unreadItemCount?: number;
+      totalItemCount?: number;
+    }>(
+      "/me/mailFolders",
+      {
+        query: {
+          $select: "id,displayName,parentFolderId,childFolderCount,unreadItemCount,totalItemCount",
+          $top: MAX_MAIL_FOLDERS,
+        },
+      },
+      { maxItems: MAX_MAIL_FOLDERS },
+    ),
+    wellKnownFolderIds(graph),
+  ]);
+  return raw.map((f) => ({
+    id: f.id,
+    name: f.displayName ?? null,
+    wellKnownName: known.get(f.id) ?? null,
+    parentFolderId: f.parentFolderId ?? null,
+    childFolderCount: f.childFolderCount ?? 0,
+    unreadItemCount: f.unreadItemCount ?? 0,
+    totalItemCount: f.totalItemCount ?? 0,
+  }));
 }
 
 /** Default cap on a returned body, so one newsletter can't flood the model's context (#38). */
@@ -262,6 +390,9 @@ export interface MessageDetail {
   body: MessageBody;
   hasAttachments: boolean;
   attachments: AttachmentMeta[];
+  /** The message's folder id, and its well-known name (e.g. "junkemail") when it's one of those. */
+  folderId: string | null;
+  folder: WellKnownFolder | null;
 }
 
 interface GraphAttachment {
@@ -281,9 +412,14 @@ export async function getMessage(
   input: GetMessageInput,
 ): Promise<MessageDetail> {
   const id = encodeURIComponent(input.id);
-  const msg = await graph.get<GraphMessage>(`/me/messages/${id}`, {
-    query: { $select: "id,subject,from,receivedDateTime,webLink,body,hasAttachments" },
-  });
+  const [msg, folders] = await Promise.all([
+    graph.get<GraphMessage>(`/me/messages/${id}`, {
+      query: {
+        $select: "id,subject,from,receivedDateTime,webLink,body,hasAttachments,parentFolderId",
+      },
+    }),
+    wellKnownFolderIds(graph),
+  ]);
 
   const rawContent = msg.body?.content ?? "";
   const rawType = (msg.body?.contentType ?? "text").toLowerCase();
@@ -319,5 +455,7 @@ export async function getMessage(
     body: sliceBody(content, contentType, input.maxChars, input.startChar),
     hasAttachments: Boolean(msg.hasAttachments),
     attachments,
+    folderId: msg.parentFolderId ?? null,
+    folder: (msg.parentFolderId && folders.get(msg.parentFolderId)) || null,
   };
 }
