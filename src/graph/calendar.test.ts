@@ -1,7 +1,105 @@
 import { describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../util/errors.js";
 import type { GraphClient } from "./client.js";
-import { listCalendars, listEvents, MAX_CALENDARS } from "./calendar.js";
+import { getEvent, listCalendars, listEvents, MAX_CALENDARS } from "./calendar.js";
+
+describe("getEvent (#50)", () => {
+  type GetMock = (
+    path: string,
+    opts?: { query?: Record<string, string>; headers?: Record<string, string> },
+  ) => Promise<unknown>;
+  const graphGet = (get: GetMock) => ({ get }) as unknown as GraphClient;
+  const series = {
+    id: "s1",
+    subject: "Swim squad",
+    start: { dateTime: "2026-07-20T06:00:00.0000000", timeZone: "Australia/Brisbane" },
+    end: { dateTime: "2026-07-20T07:00:00.0000000", timeZone: "Australia/Brisbane" },
+    type: "seriesMaster",
+    showAs: "busy",
+    organizer: { emailAddress: { name: "Coach", address: "coach@example.com" } },
+    body: { contentType: "html", content: "<p>Bring <b>fins</b></p>" },
+    attendees: [
+      {
+        type: "required",
+        status: { response: "accepted" },
+        emailAddress: { name: "Sam", address: "sam@example.com" },
+      },
+      {},
+    ],
+    isReminderOn: true,
+    reminderMinutesBeforeStart: 30,
+    recurrence: {
+      pattern: { type: "weekly", interval: 1, daysOfWeek: ["monday"] },
+      range: { type: "noEnd", startDate: "2026-07-20" },
+    },
+  };
+
+  it("reads the full event in the requested zone, with its notes as text", async () => {
+    const get = vi.fn<GetMock>(async () => series);
+    const e = await getEvent(graphGet(get), { id: "s/1", timeZone: "Australia/Brisbane" });
+    const [path, opts] = get.mock.calls[0]!;
+    expect(path).toBe("/me/events/s%2F1");
+    expect(opts?.headers?.prefer).toBe('outlook.timezone="Australia/Brisbane"');
+    const select = String(opts?.query?.$select).split(",");
+    for (const f of ["body", "attendees", "recurrence", "isReminderOn", "seriesMasterId"]) {
+      expect(select).toContain(f);
+    }
+    expect(e).toMatchObject({
+      id: "s1",
+      subject: "Swim squad",
+      type: "seriesMaster",
+      showAs: "busy",
+      organizer: { name: "Coach", address: "coach@example.com" },
+      body: { contentType: "text", content: "Bring fins", truncated: false },
+      attendees: [
+        { name: "Sam", address: "sam@example.com", type: "required", response: "accepted" },
+        { name: undefined, address: undefined, type: null, response: null },
+      ],
+      isReminderOn: true,
+      reminderMinutesBeforeStart: 30,
+      recurrence: series.recurrence,
+    });
+  });
+
+  it("caps long notes and reads on from startChar, like get_message", async () => {
+    const long = { id: "e1", body: { contentType: "text", content: "x".repeat(2_500) } };
+    const get = vi.fn<GetMock>(async () => long);
+    const first = await getEvent(graphGet(get), { id: "e1", timeZone: "UTC", maxChars: 1_000 });
+    expect(first.body).toMatchObject({ truncated: true, totalChars: 2_500, nextStartChar: 1_000 });
+    const next = await getEvent(graphGet(get), {
+      id: "e1",
+      timeZone: "UTC",
+      maxChars: 1_000,
+      startChar: 2_000,
+    });
+    expect(next.body).toMatchObject({ truncated: false, startChar: 2_000 });
+    expect(next.body.content).toHaveLength(500);
+  });
+
+  it("gives empty values for an event without notes, attendees or a pattern", async () => {
+    const e = await getEvent(
+      graphGet(async () => ({ id: "e2" })),
+      { id: "e2", timeZone: "UTC" },
+    );
+    expect(e).toMatchObject({
+      body: { content: "", truncated: false },
+      attendees: [],
+      isReminderOn: null,
+      reminderMinutesBeforeStart: null,
+      recurrence: null,
+    });
+  });
+
+  it("reads within another calendar, and rejects a bad zone before calling Graph", async () => {
+    const get = vi.fn<GetMock>(async () => ({ id: "e3" }));
+    await getEvent(graphGet(get), { id: "e3", timeZone: "UTC", calendarId: "cal/2" });
+    expect(get.mock.calls[0]![0]).toBe("/me/calendars/cal%2F2/events/e3");
+    await expect(
+      getEvent(graphGet(get), { id: "e3", timeZone: "Nowhere/Nope" }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+});
 
 type RequestMock = (
   method: string,

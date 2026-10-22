@@ -1,17 +1,19 @@
 /**
- * MCP tool definitions for the calendar: list_calendars and list_events (reads),
- * create_event and update_event (writes), and the guarded cancel_event (soft
- * delete). Event times are local wall-clock + IANA zone.
+ * MCP tool definitions for the calendar: list_calendars, list_events and
+ * get_event (reads), create_event and update_event (writes), and the guarded
+ * cancel_event (soft delete). Event times are local wall-clock + IANA zone.
  */
 
 import { z } from "zod";
 import {
   cancelEvent,
   createEvent,
+  getEvent,
   listCalendars,
   listEvents,
   updateEvent,
 } from "../graph/calendar.js";
+import { DEFAULT_MAX_BODY_CHARS } from "../graph/mail.js";
 import {
   defineTool,
   toolResult,
@@ -109,6 +111,64 @@ export const listEventsTool: ToolDefinition<typeof listEventsShape> = defineTool
       truncated,
       ...(nextPageToken ? { nextPageToken } : {}),
       events,
+    });
+  },
+});
+
+const getEventShape = {
+  id: z.string().min(1).describe("The event id (from list_events)."),
+  timeZone: z
+    .string()
+    .optional()
+    .describe("IANA time zone for the returned times (defaults to the server's DEFAULT_TIMEZONE)."),
+  calendarId: calendarIdShape,
+  maxChars: z
+    .number()
+    .int()
+    .min(1_000)
+    .max(100_000)
+    .default(DEFAULT_MAX_BODY_CHARS)
+    .describe("Most characters of the event's notes to return (1,000-100,000, default 20,000)."),
+  startChar: z
+    .number()
+    .int()
+    .min(0)
+    .default(0)
+    .describe("Where in the notes to start: a previous result's body.nextStartChar."),
+};
+
+export const getEventTool: ToolDefinition<typeof getEventShape> = defineTool({
+  name: "get_event",
+  title: "Read a calendar event",
+  description:
+    "Read one event in the user's personal Outlook.com / Hotmail calendar in full: its notes " +
+    "(as plain text), attendees and their responses, organizer, reminder, free/busy (showAs) " +
+    "and, for a whole recurring series, its recurrence pattern. Use it to check an event " +
+    "before update_event or cancel_event. An occurrence of a series has no pattern of its own: " +
+    "read its seriesMasterId for that. Long notes are cut at maxChars: body.truncated is then " +
+    "true, and startChar=body.nextStartChar reads on. Read-only. " +
+    UNTRUSTED_CONTENT_DESCRIPTION,
+  inputShape: getEventShape,
+  annotations: { readOnlyHint: true, openWorldHint: true },
+  scopesAnyOf: ["Calendars.Read", "Calendars.ReadWrite"],
+  async handler(input, ctx) {
+    const timeZone = input.timeZone ?? ctx.config.defaultTimeZone;
+    const event = await getEvent(ctx.graph, {
+      id: input.id,
+      timeZone,
+      calendarId: input.calendarId,
+      maxChars: input.maxChars,
+      startChar: input.startChar,
+    });
+    // The summary stays free of the event's own text; that is all in the data.
+    const { body } = event;
+    const part = body.truncated
+      ? ` The notes are long: this is characters ${body.startChar ?? 0}-${body.nextStartChar} of ` +
+        `${body.totalChars}; call again with startChar=${body.nextStartChar} for more.`
+      : "";
+    return untrustedResult(`Read the event (times in ${timeZone}); its details follow.${part}`, {
+      timeZone,
+      event,
     });
   },
 });
@@ -296,6 +356,7 @@ export const listCalendarsTool: ToolDefinition<typeof listCalendarsShape> = defi
 export const calendarTools: RegisteredTool[] = [
   toRegistered(listCalendarsTool),
   toRegistered(listEventsTool),
+  toRegistered(getEventTool),
   toRegistered(createEventTool),
   toRegistered(updateEventTool),
   toRegistered(cancelEventTool),
