@@ -43,7 +43,7 @@ const listMessagesShape = {
     .optional()
     .describe(
       `Only this folder: one of ${WELL_KNOWN_FOLDERS.join(", ")}, or a folder id from ` +
-        "list_mail_folders. Omit to search all folders (Junk Email and Deleted Items excluded).",
+        "list_mail_folders. Omit to search all folders (Junk Email, Deleted Items and their subfolders excluded).",
     ),
   includeJunkAndDeleted: z
     .boolean()

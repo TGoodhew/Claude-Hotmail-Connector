@@ -7,6 +7,7 @@ import {
   getMessage,
   listMailFolders,
   listMessages,
+  MAX_EXCLUDED_SUBFOLDERS,
   MAX_MAIL_FOLDERS,
   sliceBody,
   type ListMessagesInput,
@@ -428,6 +429,95 @@ describe("mail folders (#53)", () => {
     const res = await listMessages(graphWith(request), baseInput({ includeJunkAndDeleted: true }));
     expect(res.messages.map((m) => m.folder)).toEqual(["inbox", "junkemail", "deleteditems", null]);
     expect(res.excludedCount).toBe(0);
+  });
+
+  /** A get mock with a tree of subfolders beneath the well-known folders. */
+  function treeGet(children: Record<string, string[]>, inFlight?: { now: number; max: number }) {
+    const count = (id: string) => children[id]?.length ?? 0;
+    return vi.fn<GetMock>(async (path) => {
+      if (inFlight) inFlight.max = Math.max(inFlight.max, ++inFlight.now);
+      await new Promise((r) => setTimeout(r, 1));
+      if (inFlight) inFlight.now--;
+      const known = /^\/me\/mailFolders\/([a-z]+)$/.exec(path);
+      if (known) return { id: `F-${known[1]}`, childFolderCount: count(`F-${known[1]}`) };
+      const kids = /^\/me\/mailFolders\/([^/]+)\/childFolders$/.exec(path);
+      if (kids) {
+        const parent = decodeURIComponent(kids[1]!);
+        return {
+          value: (children[parent] ?? []).map((id) => ({ id, childFolderCount: count(id) })),
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+  }
+
+  it("leaves out folders beneath Deleted Items and Junk Email too", async () => {
+    // A deleted folder moves under Deleted Items; its messages stay filed in it.
+    const get = treeGet({
+      "F-deleteditems": ["old-project"],
+      "old-project": ["old-project/2025"],
+      "F-junkemail": ["junk-sub"],
+      "F-inbox": ["receipts"],
+    });
+    const request = vi.fn<RequestMock>(async () =>
+      pageOf([
+        msg("a", "old-project"),
+        msg("b", "old-project/2025"),
+        msg("c", "junk-sub"),
+        msg("d", "receipts"),
+      ]),
+    );
+    const res = await listMessages({ request, get } as unknown as GraphClient, baseInput());
+    expect(res.messages.map((m) => m.id)).toEqual(["d"]);
+    expect(res.excludedCount).toBe(3);
+    // Only the excluded trees are walked.
+    const walked = get.mock.calls.map(([p]) => p).filter((p) => p.endsWith("/childFolders"));
+    expect(walked.sort()).toEqual([
+      "/me/mailFolders/F-deleteditems/childFolders",
+      "/me/mailFolders/F-junkemail/childFolders",
+      "/me/mailFolders/old-project/childFolders",
+    ]);
+  });
+
+  it("keeps folder lookups to three at a time, alongside the listing", async () => {
+    const inFlight = { now: 0, max: 0 };
+    const get = treeGet(
+      {
+        "F-deleteditems": ["s1", "s2", "s3", "s4"],
+        s1: ["t1"],
+        s2: ["t2"],
+        s3: ["t3"],
+        s4: ["t4"],
+      },
+      inFlight,
+    );
+    const request = vi.fn<RequestMock>(async () => pageOf([msg("x", "t4")]));
+    const res = await listMessages({ request, get } as unknown as GraphClient, baseInput());
+    expect(res.excludedCount).toBe(1);
+    expect(inFlight.max).toBe(3);
+  });
+
+  it("refuses, rather than leak, when the excluded folders have too many subfolders", async () => {
+    const many = Array.from({ length: MAX_EXCLUDED_SUBFOLDERS + 1 }, (_, i) => `s${i}`);
+    const request = vi.fn<RequestMock>(async () => pageOf([]));
+    const tooMany = { request, get: treeGet({ "F-deleteditems": many }) };
+    await expect(listMessages(tooMany as unknown as GraphClient, baseInput())).rejects.toThrow(
+      /too many subfolders/,
+    );
+    // A folder with more children than one page holds, likewise.
+    const paged = vi.fn<GetMock>(async (path) =>
+      path.endsWith("/childFolders")
+        ? { value: [], "@odata.nextLink": "https://graph.microsoft.com/v1.0/next" }
+        : { id: `F-${path.split("/").pop()}`, childFolderCount: 1 },
+    );
+    await expect(
+      listMessages({ request, get: paged } as unknown as GraphClient, baseInput()),
+    ).rejects.toThrow(/too many subfolders/);
+    // Opting in doesn't need the walk.
+    await listMessages(
+      tooMany as unknown as GraphClient,
+      baseInput({ includeJunkAndDeleted: true }),
+    );
   });
 
   it("lists one folder by well-known name or id, without leaving anything out", async () => {

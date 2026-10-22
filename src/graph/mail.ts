@@ -73,25 +73,105 @@ export interface ListMessagesResult {
 }
 
 /**
- * The ids of the well-known folders, so results can be labelled and Junk /
- * Deleted left out. Looked up per call (in parallel); a folder the mailbox
- * doesn't have (e.g. no Archive) is simply absent.
+ * Folder lookups in flight at once. Outlook allows four concurrent requests per
+ * mailbox, and a listing has its own request running alongside these.
  */
-async function wellKnownFolderIds(graph: GraphClient): Promise<Map<string, WellKnownFolder>> {
-  const found = await Promise.all(
-    WELL_KNOWN_FOLDERS.map(async (name) => {
-      try {
-        const f = await graph.get<{ id?: string }>(`/me/mailFolders/${name}`, {
-          query: { $select: "id" },
-        });
-        return f.id ? ([f.id, name] as const) : undefined;
-      } catch (e) {
-        if (e instanceof GraphError && e.status === 404) return undefined;
-        throw e;
+const FOLDER_LOOKUPS_AT_ONCE = 3;
+/** Most subfolders of Junk Email and Deleted Items a listing walks to leave them out. */
+export const MAX_EXCLUDED_SUBFOLDERS = 200;
+
+/** `fn` over `items`, at most `limit` at a time, results in order. */
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>) {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+interface FolderRef {
+  id: string;
+  childFolderCount: number;
+}
+interface KnownFolder extends FolderRef {
+  name: WellKnownFolder;
+}
+
+/**
+ * The well-known folders the mailbox has, so results can be labelled and Junk /
+ * Deleted left out. Looked up per call; a folder the mailbox doesn't have (e.g.
+ * no Archive) is simply absent.
+ */
+async function wellKnownFolders(graph: GraphClient): Promise<KnownFolder[]> {
+  const found = await mapLimit(WELL_KNOWN_FOLDERS, FOLDER_LOOKUPS_AT_ONCE, async (name) => {
+    try {
+      const f = await graph.get<{ id?: string; childFolderCount?: number }>(
+        `/me/mailFolders/${name}`,
+        { query: { $select: "id,childFolderCount" } },
+      );
+      return f.id ? { id: f.id, name, childFolderCount: f.childFolderCount ?? 0 } : undefined;
+    } catch (e) {
+      if (e instanceof GraphError && e.status === 404) return undefined;
+      throw e;
+    }
+  });
+  return found.filter((f): f is KnownFolder => f !== undefined);
+}
+
+function folderLabels(known: KnownFolder[]): Map<string, WellKnownFolder> {
+  return new Map(known.map((f) => [f.id, f.name]));
+}
+
+const TOO_MANY_SUBFOLDERS =
+  "Junk Email and Deleted Items hold too many subfolders to leave them out reliably. " +
+  "Pass a folder, or includeJunkAndDeleted: true.";
+
+/** A folder's direct subfolders; none if it has gone meanwhile. */
+async function childFolders(graph: GraphClient, id: string): Promise<FolderRef[]> {
+  try {
+    const page = await graph.get<ODataPage<{ id: string; childFolderCount?: number }>>(
+      `/me/mailFolders/${encodeURIComponent(id)}/childFolders`,
+      { query: { $select: "id,childFolderCount", $top: MAX_EXCLUDED_SUBFOLDERS } },
+    );
+    if (page["@odata.nextLink"]) throw new ValidationError(TOO_MANY_SUBFOLDERS);
+    return (page.value ?? []).map((f) => ({ id: f.id, childFolderCount: f.childFolderCount ?? 0 }));
+  } catch (e) {
+    if (e instanceof GraphError && e.status === 404) return [];
+    throw e;
+  }
+}
+
+/**
+ * Junk Email and Deleted Items, and every folder beneath them: a deleted folder
+ * moves under Deleted Items with its messages still filed in it, so the two
+ * roots alone would let them through. Refuses, rather than leak, past
+ * {@link MAX_EXCLUDED_SUBFOLDERS}.
+ */
+async function excludedFolderIds(graph: GraphClient, known: KnownFolder[]): Promise<Set<string>> {
+  const roots = known.filter((f) => EXCLUDED_BY_DEFAULT.includes(f.name));
+  const ids = new Set(roots.map((f) => f.id));
+  let frontier: FolderRef[] = roots;
+  while (frontier.length > 0) {
+    const parents = frontier.filter((f) => f.childFolderCount > 0).map((f) => f.id);
+    const children = (
+      await mapLimit(parents, FOLDER_LOOKUPS_AT_ONCE, (id) => childFolders(graph, id))
+    ).flat();
+    frontier = [];
+    for (const c of children) {
+      if (ids.has(c.id)) continue;
+      ids.add(c.id);
+      if (ids.size - roots.length > MAX_EXCLUDED_SUBFOLDERS) {
+        throw new ValidationError(TOO_MANY_SUBFOLDERS);
       }
-    }),
-  );
-  return new Map(found.filter((f): f is readonly [string, WellKnownFolder] => f !== undefined));
+      frontier.push(c);
+    }
+  }
+  return ids;
 }
 
 interface GraphMessage {
@@ -236,7 +316,7 @@ export async function listMessages(
     excludeJunkAndDeleted = !input.folder && !input.includeJunkAndDeleted;
   }
 
-  const [page, folders] = await Promise.all([
+  const [page, { folders, excluded }] = await Promise.all([
     graph
       .request<ODataPage<GraphMessage>>("GET", path, {
         query,
@@ -244,15 +324,13 @@ export async function listMessages(
         headers: mode === "search" ? { consistencylevel: "eventual" } : undefined,
       })
       .then((r) => r.data),
-    wellKnownFolderIds(graph),
+    wellKnownFolders(graph).then(async (known) => ({
+      folders: folderLabels(known),
+      excluded: excludeJunkAndDeleted ? await excludedFolderIds(graph, known) : new Set<string>(),
+    })),
   ]);
 
   const inDates = (page.value ?? []).filter((m) => withinDateFilter(m, clientDateFilter));
-  const excluded = excludeJunkAndDeleted
-    ? new Set(
-        [...folders].filter(([, name]) => EXCLUDED_BY_DEFAULT.includes(name)).map(([id]) => id),
-      )
-    : new Set<string>();
   const kept = inDates.filter((m) => !(m.parentFolderId && excluded.has(m.parentFolderId)));
   const nextPageToken = encodeCursor(page["@odata.nextLink"], {
     mode,
@@ -301,7 +379,7 @@ export async function listMailFolders(graph: GraphClient): Promise<MailFolder[]>
       },
       { maxItems: MAX_MAIL_FOLDERS },
     ),
-    wellKnownFolderIds(graph),
+    wellKnownFolders(graph).then(folderLabels),
   ]);
   return raw.map((f) => ({
     id: f.id,
@@ -418,7 +496,7 @@ export async function getMessage(
         $select: "id,subject,from,receivedDateTime,webLink,body,hasAttachments,parentFolderId",
       },
     }),
-    wellKnownFolderIds(graph),
+    wellKnownFolders(graph).then(folderLabels),
   ]);
 
   const rawContent = msg.body?.content ?? "";
