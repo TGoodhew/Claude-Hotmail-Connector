@@ -112,6 +112,15 @@ describe("osLockName (Copilot review on #126)", () => {
     expect(linux.slice(1)).toMatch(/^claude-hotmail-connector-auth-[0-9a-f]{32}$/);
     expect(osLockName("/Users/a/cache", "darwin")).toBeNull();
   });
+
+  it("uses abstract sockets only on Node 20.8 or later, the lock file before", () => {
+    expect(osLockName("/home/a/cache", "linux", "20.7.0")).toBeNull();
+    expect(osLockName("/home/a/cache", "linux", "19.9.0")).toBeNull();
+    for (const v of ["20.8.0", "20.19.5", "22.0.0", "24.10.0"]) {
+      expect(osLockName("/home/a/cache", "linux", v), v).not.toBeNull();
+    }
+    expect(osLockName("C:\\cache", "win32", "20.0.0")).not.toBeNull(); // pipes: any version
+  });
 });
 
 const name = osLockName(tmpdir());
@@ -126,7 +135,7 @@ describe.skipIf(name === null)("the OS-held lock (Windows, Linux; Copilot review
       "setInterval(() => {}, 1000);";
     // The real path, as the coordinator uses (a runner's temp dir may be an
     // 8.3 short name or a symlink; Copilot review on #126).
-    const encoded = Buffer.from(osLockName(realpathSync(dir))!).toString("base64");
+    const encoded = Buffer.from(osLockName(realpathSync.native(dir))!).toString("base64");
     const child = spawn(process.execPath, ["-e", script, encoded], {
       stdio: ["ignore", "pipe", "inherit"],
     });

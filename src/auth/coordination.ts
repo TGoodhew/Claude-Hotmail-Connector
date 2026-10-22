@@ -94,11 +94,14 @@ export interface FileCoordinatorOptions {
 /**
  * The OS-held lock for the cache directory `dir`: a Windows named pipe or a
  * Linux abstract socket (not a file: the leading NUL), named after the
- * directory, so each cache has its own. Null where there is no such thing.
+ * directory, so each cache has its own. Null where there is no such thing,
+ * including Node before 20.8 on Linux, which can't listen on abstract sockets
+ * (Copilot review on #126): the lock file is used there.
  */
 export function osLockName(
   dir: string,
   platform: NodeJS.Platform = process.platform,
+  nodeVersion: string = process.versions.node,
 ): string | null {
   const path = resolve(dir);
   const id = createHash("sha256")
@@ -108,8 +111,16 @@ export function osLockName(
   const name = `claude-hotmail-connector-auth-${id}`;
   const backslash = String.fromCharCode(92);
   if (platform === "win32") return `${backslash.repeat(2)}.${backslash}pipe${backslash}${name}`;
-  if (platform === "linux") return `${String.fromCharCode(0)}${name}`;
+  if (platform === "linux" && atLeast(nodeVersion, [20, 8])) {
+    return `${String.fromCharCode(0)}${name}`;
+  }
   return null;
+}
+
+/** Whether `version` ("20.8.1") is at least `[major, minor]`. */
+function atLeast(version: string, [major, minor]: [number, number]): boolean {
+  const [ma = 0, mi = 0] = version.split(".").map(Number);
+  return ma > major || (ma === major && mi >= minor);
 }
 
 /** Listen on `name`: the server if this process now holds it, null if another does. */

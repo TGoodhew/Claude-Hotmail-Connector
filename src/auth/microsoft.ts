@@ -355,15 +355,18 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
   ) {
     return serialized(async () => {
       if (signOuts !== epoch) throw new SignedOutError();
-      await coordinator.withLock(async (current) => {
+      await coordinator.withLock(async (current, persist) => {
         observe(current);
         if (current.signOuts !== shared.signOuts) throw new SignedOutError();
         if (current.signIns !== shared.signIns) throw new SignedInElsewhereError();
+        // A sign-in's count goes up before its tokens are saved: if it can't be
+        // stored, nothing is, so a new account is never cached under the old
+        // count for a pending refresh of the old one to overwrite. (Lookups
+        // read the counters and the cache together under this lock, so none
+        // can pair the new count with the tokens being replaced.)
+        if (kind === "sign-in") await persist({ ...current, signIns: current.signIns + 1 });
         await store.save(tokens);
-        return {
-          value: undefined,
-          next: kind === "sign-in" ? { ...current, signIns: current.signIns + 1 } : undefined,
-        };
+        return { value: undefined };
       });
       onSaved?.();
     });
@@ -709,30 +712,31 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       while (pendingSignOut) await pendingSignOut.catch(() => undefined);
       ensureNotSignedOut();
       const signInsAtStart = signInsCompleted;
-      // Noted before the cache is read: a sign-out in another process after this
-      // point stops a refresh of what we read from saving it back (#95).
-      const shared = await sharedState();
+      // The counters and the cache are read together, under the cross-process
+      // lock (#95). A sign-in or sign-out elsewhere is then wholly before or
+      // after this read: it can't pair the new counters with the credentials
+      // being replaced or deleted (and wait for a sign-out's cleanup if one is
+      // running). A sign-out after this point stops a refresh of what was read
+      // from saving it back.
+      const { shared, cached } = await coordinator.withLock(async (current) => {
+        observe(current);
+        let found: TokenSet | null = null;
+        try {
+          found = await store.load();
+        } catch (e) {
+          // Corrupt cache: reset it (under the lock) and go on to authenticate.
+          log.warn("Token cache unreadable; clearing", { error: (e as Error).message });
+          await store.clear();
+        }
+        return { value: { shared: current, cached: found } };
+      });
       // A lookup that isn't part of a larger operation starts from what it first
       // sees: a sign-out elsewhere that this read is the first to notice came
       // before it. (An operation's own epoch was noted after syncSignOuts().)
       if (options.signOutEpoch === undefined && localSignOuts === localAtStart) epoch = signOuts;
       ensureNotSignedOut();
 
-      let cached: TokenSet | null = null;
-      try {
-        cached = await store.load();
-      } catch (e) {
-        ensureNotSignedOut();
-        // Corrupt cache: reset it and continue to (re)authenticate.
-        log.warn("Token cache unreadable; clearing", { error: (e as Error).message });
-        await store.clear();
-      }
-      ensureNotSignedOut();
-
       if (cached && cached.expiresAt - now() > minTtlMs) {
-        // The read may have raced a sign-out elsewhere: catch up before using it.
-        await sharedState();
-        ensureNotSignedOut();
         return cached.accessToken;
       }
 

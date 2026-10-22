@@ -756,8 +756,10 @@ describe("on-demand interactive sign-in (real loopback listener)", () => {
       () => new Error("expected the request to stop"),
       (e: unknown) => e as Error,
     );
-    await auth.signOut();
+    // The sign-out's cleanup waits for the read, which holds the lock.
+    const signedOut = auth.signOut();
     releaseLoad();
+    await signedOut;
     expect(await outcome).toBeInstanceOf(SignedOutError);
     expect(fetchImpl).not.toHaveBeenCalled(); // no refresh with the stale credentials
     expect(current).toBeNull();
@@ -1309,7 +1311,7 @@ describe("sign-in and sign-out across processes (#95)", () => {
     expect(store.current).toBeNull();
   });
 
-  it("a valid cached token read just before a sign-out elsewhere isn't used (Copilot review on #126)", async () => {
+  it("a sign-out elsewhere waits for a cache read in progress, then removes what it read (Copilot review on #126)", async () => {
     const dir = sharedDir();
     const base = memoryStore({
       accessToken: "PRE-LOGOUT",
@@ -1321,9 +1323,11 @@ describe("sign-in and sign-out across processes (#95)", () => {
     let finishRead = (): void => undefined;
     const slowRead: TokenStore = {
       async load() {
-        const read = base.current; // read before the logout…
-        reading = true;
-        await new Promise<void>((r) => (finishRead = r)); // …returned after it
+        const read = base.current;
+        if (!reading) {
+          reading = true;
+          await new Promise<void>((r) => (finishRead = r)); // the first read is slow
+        }
         return read;
       },
       save: (t) => base.save(t),
@@ -1334,11 +1338,91 @@ describe("sign-in and sign-out across processes (#95)", () => {
 
     const lookup = outcome(server.auth.getAccessToken({ interactive: false }));
     await until(() => reading);
-    await cli.auth.signOut();
+    // The read holds the lock, so the logout can't finish (or even raise the
+    // count) in the middle of it: the read is wholly before the logout.
+    let loggedOut = false;
+    const logout = cli.auth.signOut().then(() => (loggedOut = true));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(loggedOut).toBe(false);
     finishRead();
 
     const result = await lookup;
-    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(result.ok && result.value).toBe("PRE-LOGOUT");
+    await logout;
+    expect(base.current).toBeNull(); // then the logout removed it
+    const after = await outcome(server.auth.getAccessToken({ interactive: false }));
+    expect(!after.ok && after.error).toBeInstanceOf(AuthError);
+  });
+
+  it("a lookup elsewhere during a sign-out's cleanup waits for it, and doesn't save the sign-in back (Copilot review on #126)", async () => {
+    const dir = sharedDir();
+    const base = memoryStore({
+      accessToken: "OLD",
+      refreshToken: "RT",
+      expiresAt: 500, // expired: a lookup would refresh it
+      scopes: config.scopes,
+    });
+    let clearing = false;
+    let finishClear = (): void => undefined;
+    const slowClear: TokenStore = {
+      load: () => base.load(),
+      save: (t) => base.save(t),
+      async clear(o) {
+        clearing = true;
+        await new Promise<void>((r) => (finishClear = r)); // a slow cleanup
+        await base.clear(o);
+      },
+    };
+    const refresh = vi.fn(() => reply("REFRESHED")());
+    const server = processWith(base, dir, refresh);
+    const cli = processWith(slowClear, dir, reply("UNUSED"));
+
+    const logout = cli.auth.signOut();
+    await until(() => clearing); // the count is raised; the cache is not yet deleted
+    const lookup = outcome(server.auth.getAccessToken({ interactive: false }));
+    await new Promise((r) => setTimeout(r, 50));
+    finishClear();
+    await logout;
+
+    const result = await lookup;
+    expect(!result.ok && result.error).toBeInstanceOf(AuthError); // not signed in
+    expect(refresh).not.toHaveBeenCalled(); // it never read the old refresh token
+    expect(base.current).toBeNull();
+  });
+
+  it("a sign-in whose count can't be stored saves nothing (Copilot review on #126)", async () => {
+    const inner = createMemoryCoordinator();
+    const diskFull = new Error("disk full");
+    const coordinator: AuthCoordinator = {
+      snapshot: () => inner.snapshot(),
+      withLock: (fn) =>
+        inner.withLock(async (state) => {
+          const result = await fn(state, async () => {
+            throw diskFull;
+          });
+          if (result.next) throw diskFull;
+          return result;
+        }),
+    };
+    const store = memoryStore(null);
+    let url = "";
+    const auth = createMicrosoftAuth({
+      config,
+      store,
+      coordinator,
+      fetchImpl: vi.fn(async () => reply("NEW-ACCOUNT")()) as unknown as typeof fetch,
+      openBrowser: async (u) => {
+        url = u;
+      },
+      now: () => 1_000,
+    });
+    const signIn = outcome(auth.signIn());
+    await until(() => url !== "");
+    await redirectBack(url, { code: "C" });
+    const result = await signIn;
+    expect(!result.ok && result.error).toBe(diskFull);
+    // Not cached under the old count, where a pending refresh could overwrite it.
+    expect(store.current).toBeNull();
   });
 
   it("signing in again after a sign-out elsewhere doesn't join the stale browser sign-in (Copilot review on #126)", async () => {
