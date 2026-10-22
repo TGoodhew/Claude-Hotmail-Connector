@@ -530,6 +530,14 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     return inflightSignIn;
   }
 
+  // The token most recently handed out, for a `cachedOnly` lookup: the epoch
+  // it belongs to and when it expires. Cleared at sign-out.
+  let heldToken: { accessToken: string; expiresAt: number; epoch: number } | undefined;
+  function held(tokens: TokenSet): string {
+    heldToken = { accessToken: tokens.accessToken, expiresAt: tokens.expiresAt, epoch: signOuts };
+    return tokens.accessToken;
+  }
+
   async function signInOnDemand(waitMs: number | undefined, epoch: number): Promise<string> {
     // A request from before a sign-out must not start a new sign-in after it.
     if (signOuts !== epoch) throw new SignedOutError();
@@ -544,10 +552,10 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       );
     }
     const pending = signInAndSave();
-    if (waitMs === undefined) return (await pending).accessToken;
+    if (waitMs === undefined) return held(await pending);
 
     const tokens = await settleWithin(pending, waitMs);
-    if (tokens) return tokens.accessToken;
+    if (tokens) return held(tokens);
     throw new SignInRequiredError(
       joining
         ? "Still waiting for you to finish the Microsoft sign-in in your browser. " +
@@ -560,6 +568,15 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
 
   return {
     async getAccessToken(options: GetAccessTokenOptions = {}): Promise<string> {
+      if (options.cachedOnly) {
+        // From memory only: no token-cache read (whose key unwrap can take
+        // seconds), no refresh, no sign-in (Copilot review on #137).
+        if (signOuts !== (options.signOutEpoch ?? signOuts)) throw new SignedOutError();
+        if (heldToken && heldToken.epoch === signOuts && heldToken.expiresAt > now()) {
+          return heldToken.accessToken;
+        }
+        throw new NoCurrentTokenError();
+      }
       const interactive = options.interactive ?? true;
       const minTtlMs = options.minTtlMs ?? DEFAULT_MIN_TTL_MS;
       // Noted before any await (or taken from the calling operation): if the user
@@ -588,11 +605,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       ensureNotSignedOut();
 
       if (cached && cached.expiresAt - now() > minTtlMs) {
-        return cached.accessToken;
-      }
-      if (options.cachedOnly) {
-        if (cached && cached.expiresAt > now()) return cached.accessToken;
-        throw new NoCurrentTokenError();
+        return held(cached);
       }
 
       // A browser sign-in is already pending (e.g. a previous call's window):
@@ -604,7 +617,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         try {
           const refreshed = await refreshAndSave(cached, epoch);
           ensureNotSignedOut();
-          return refreshed.accessToken;
+          return held(refreshed);
         } catch (e) {
           // A sign-out mid-request ends it: no interactive fallback.
           if (e instanceof SignedOutError) throw e;
@@ -627,7 +640,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       if (latest) {
         const isNew = latest.accessToken !== cached?.accessToken;
         const threshold = isNew ? Math.min(minTtlMs, DEFAULT_MIN_TTL_MS) : minTtlMs;
-        if (latest.expiresAt - now() > threshold) return latest.accessToken;
+        if (latest.expiresAt - now() > threshold) return held(latest);
       }
       // That read may itself have been stale: if a sign-in in this process
       // completed since we started, use its tokens rather than opening another.
@@ -636,7 +649,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
         lastSignedIn &&
         lastSignedIn.expiresAt - now() > DEFAULT_MIN_TTL_MS
       ) {
-        return lastSignedIn.accessToken;
+        return held(lastSignedIn);
       }
 
       return signInOnDemand(options.interactiveWaitMs, epoch);
@@ -650,6 +663,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       // Synchronously, before any await: everything in flight is now stale.
       signOuts += 1;
       lastSignedIn = undefined;
+      heldToken = undefined;
       // Cancel and detach a pending browser sign-in, so its listener closes and
       // a fresh sign-in can start straight away instead of joining it.
       inflightAbort?.abort();

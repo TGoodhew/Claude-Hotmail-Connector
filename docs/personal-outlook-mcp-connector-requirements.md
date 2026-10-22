@@ -326,8 +326,8 @@ Approved by the owner with guards (#55).
   test *(#48, 2026-10-22)* found that Graph **ignores `If-Match` on event deletes**: a stale tag still
   deletes. So the guards above must be fresh at **every** DELETE:
   - Each DELETE is sent **once**: the Graph client's back-off retries and its 401 recovery are off for
-    it (`sendOnce`). It goes out with the access token already in hand, so no refresh or sign-in wait
-    can come after the checks. Without a current token it isn't sent, and `cancel_event` starts over: the
+    it (`sendOnce`). It goes out with the access token already in hand, held in memory, so no token-cache
+    read (whose key unwrap can take seconds), refresh or sign-in can come after the checks. Without a current token it isn't sent, and `cancel_event` starts over: the
     re-read gets a token, then the guards run again.
   - After a transient failure (throttling, a 5xx, a timeout, a 401), `cancel_event` starts over: it
     re-reads the event, re-runs every guard, then sends one DELETE. It makes at most 3 attempts. Between
