@@ -29,6 +29,8 @@ jobs:
           node-version: 24
           # No dependency cache: a release installs fresh from the lockfile, so a
           # poisoned cache can't reach a signed, provenance-attested build (#129).
+          # setup-node 5+ would otherwise cache automatically in some setups.
+          package-manager-cache: false
 
       - name: Install dependencies
         run: npm ci
