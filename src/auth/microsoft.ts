@@ -19,7 +19,13 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
-import { AuthError, LOGIN_HINT, SignedOutError, SignInRequiredError } from "../util/errors.js";
+import {
+  AuthError,
+  NoCurrentTokenError,
+  LOGIN_HINT,
+  SignedOutError,
+  SignInRequiredError,
+} from "../util/errors.js";
 import { createLogger, type Logger } from "../util/log.js";
 import type { TokenSet, TokenStore } from "./tokens.js";
 
@@ -198,6 +204,12 @@ export interface GetAccessTokenOptions {
   interactiveWaitMs?: number;
   /** Refresh if fewer than this many ms remain (default 60s). */
   minTtlMs?: number;
+  /**
+   * Only the token already saved, if it hasn't expired: no refresh, no browser
+   * sign-in, so no wait. Otherwise a {@link NoCurrentTokenError}. For a request
+   * that must go out right after its caller's checks (`cancel_event`).
+   */
+  cachedOnly?: boolean;
   /**
    * The sign-out epoch of the operation this lookup belongs to (from
    * `signOutEpoch()` when the operation began). A Graph request makes several
@@ -577,6 +589,10 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
 
       if (cached && cached.expiresAt - now() > minTtlMs) {
         return cached.accessToken;
+      }
+      if (options.cachedOnly) {
+        if (cached && cached.expiresAt > now()) return cached.accessToken;
+        throw new NoCurrentTokenError();
       }
 
       // A browser sign-in is already pending (e.g. a previous call's window):

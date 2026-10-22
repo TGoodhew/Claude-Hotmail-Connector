@@ -11,7 +11,7 @@
  */
 
 import type { MicrosoftAuth } from "../auth/microsoft.js";
-import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
+import { GraphError, NoCurrentTokenError, TimeoutError, ValidationError } from "../util/errors.js";
 import { createLogger, type Logger } from "../util/log.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -57,10 +57,11 @@ export interface GraphRequestOptions {
 
 /**
  * Whether a failed request might succeed if tried again: throttling, a 5xx,
- * an expired token (401), a timeout or a network error. Not a cancellation.
+ * an expired token (401, or none current for a send-once request), a timeout
+ * or a network error. Not a cancellation.
  */
 export function isTransientGraphFailure(e: unknown): boolean {
-  if (e instanceof TimeoutError) return true;
+  if (e instanceof TimeoutError || e instanceof NoCurrentTokenError) return true;
   if (!(e instanceof GraphError) || e.reason === "cancelled") return false;
   return e.status === undefined || [401, 429, 500, 502, 503, 504].includes(e.status);
 }
@@ -399,6 +400,9 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       const token = await withinLimits(
         deps.auth.getAccessToken({
           interactive: deps.interactiveSignIn !== undefined,
+          // A send-once request goes out with the token in hand or not at all:
+          // no refresh or sign-in wait after its caller's checks (#137).
+          ...(opts.sendOnce ? { cachedOnly: true } : {}),
           ...(deps.interactiveSignIn ? { interactiveWaitMs: deps.interactiveSignIn.waitMs } : {}),
           // Force a refresh after a 401 (token may be revoked despite our clock).
           ...(refreshed ? { minTtlMs: Number.MAX_SAFE_INTEGER } : {}),

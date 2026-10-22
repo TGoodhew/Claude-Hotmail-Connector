@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
 import { createGraphClient } from "../graph/client.js";
-import { AuthError, SignedOutError, SignInRequiredError } from "../util/errors.js";
+import {
+  AuthError,
+  NoCurrentTokenError,
+  SignedOutError,
+  SignInRequiredError,
+} from "../util/errors.js";
 import {
   buildAuthorizeUrl,
   buildCodeExchangeBody,
@@ -199,6 +204,37 @@ describe("createMicrosoftAuth.getAccessToken", () => {
     expiresAt: future,
     scopes: config.scopes,
   };
+
+  it("cachedOnly: the saved token while it lasts, else an error, never a refresh or sign-in (#137)", async () => {
+    const fetchImpl = vi.fn();
+    const openBrowser = vi.fn(async () => undefined);
+    const make = (expiresAt: number) =>
+      createMicrosoftAuth({
+        config,
+        store: memoryStore({ ...validCached, expiresAt }),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        openBrowser,
+        now: () => 1_000,
+      });
+    // 30 s left: inside the usual 60 s refresh margin, but still current.
+    expect(await make(31_000).getAccessToken({ cachedOnly: true })).toBe("CACHED-AT");
+    // Expired: no refresh, no browser, and an error saying so.
+    await expect(make(500).getAccessToken({ cachedOnly: true })).rejects.toBeInstanceOf(
+      NoCurrentTokenError,
+    );
+    const empty = createMicrosoftAuth({
+      config,
+      store: memoryStore(null),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      openBrowser,
+      now: () => 1_000,
+    });
+    await expect(empty.getAccessToken({ cachedOnly: true })).rejects.toBeInstanceOf(
+      NoCurrentTokenError,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
 
   it("returns a cached access token that is still valid", async () => {
     const fetchImpl = vi.fn();

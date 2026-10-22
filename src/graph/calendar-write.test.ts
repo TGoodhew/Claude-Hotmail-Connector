@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { clientSafeMessage, GraphError, ValidationError } from "../util/errors.js";
+import {
+  clientSafeMessage,
+  GraphError,
+  NoCurrentTokenError,
+  ValidationError,
+} from "../util/errors.js";
 import type { GraphClient } from "./client.js";
 import {
   assertWritableEventPayload,
@@ -1032,6 +1037,29 @@ describe("cancelEvent re-checks before every DELETE attempt (#137)", () => {
     const h = graph([trip, trip], [brief, undefined]);
     await cancelEvent(h.client, input);
     expect(h.pause).toHaveBeenCalledWith(1_000);
+  });
+
+  it("a DELETE refused for want of a current token starts over: the re-read refreshes, then re-checks (Copilot review on #137)", async () => {
+    // No refresh or sign-in may wait between the check and the DELETE: with no
+    // current token the DELETE isn't sent, and the next read gets one.
+    const g = graph([trip, trip], [new NoCurrentTokenError(), undefined]);
+    expect(await cancelEvent(g.client, input)).toMatchObject({ id: "evt-1" });
+    expect(g.get).toHaveBeenCalledTimes(2);
+    expect(g.del).toHaveBeenCalledTimes(2);
+    // Never sent, so nothing uncertain: a later refusal says nothing was deleted.
+    const h = graph(
+      [trip, { ...trip, attendees: [{ emailAddress: { address: "a@b.c" } }] }],
+      [new NoCurrentTokenError()],
+    );
+    await expect(cancelEvent(h.client, input)).rejects.toThrow(/Nothing was deleted/);
+  });
+
+  it("warns when a DELETE was cancelled in flight: it may have reached Graph (Copilot review on #137)", async () => {
+    const cancelled = new GraphError("Graph request was cancelled.", { reason: "cancelled" });
+    const g = graph([trip], [cancelled]);
+    const e = await cancelEvent(g.client, input).catch((x: unknown) => x);
+    expect(clientSafeMessage(e)).toMatch(/may have gone through/);
+    expect(g.del).toHaveBeenCalledTimes(1); // not retried after a cancellation
   });
 
   it("gets the 'may have gone through' warning to the MCP caller intact", async () => {

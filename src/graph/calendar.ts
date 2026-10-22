@@ -9,7 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { GraphError, ValidationError } from "../util/errors.js";
+import { GraphError, NoCurrentTokenError, ValidationError } from "../util/errors.js";
 import { htmlToText } from "../util/html.js";
 import {
   assertValidTimeZone,
@@ -961,8 +961,16 @@ export async function cancelEvent(
       // Throttling and 401s are refused before any work; any other transient
       // failure may have come after it (a 5xx, a timeout): recorded first, so
       // no exit below can drop it.
-      const refusedUnprocessed = e instanceof GraphError && (e.status === 429 || e.status === 401);
-      if (isTransientGraphFailure(e) && !refusedUnprocessed) mayBeDeleted = shapeWrite(event);
+      // So is a DELETE that never went out for want of a current token. One
+      // cancelled or timed out in flight may have reached Graph (Copilot review
+      // on #137): uncertain too.
+      const refusedUnprocessed =
+        e instanceof NoCurrentTokenError ||
+        (e instanceof GraphError && (e.status === 429 || e.status === 401));
+      const cancelledInFlight = e instanceof GraphError && e.reason === "cancelled";
+      if ((isTransientGraphFailure(e) && !refusedUnprocessed) || cancelledInFlight) {
+        mayBeDeleted = shapeWrite(event);
+      }
       // Read, checked and still there, then gone: an earlier DELETE did it.
       if (mayBeDeleted && e instanceof GraphError && e.status === 404) return mayBeDeleted;
       if (!isTransientGraphFailure(e) || attempt >= CANCEL_ATTEMPTS) {

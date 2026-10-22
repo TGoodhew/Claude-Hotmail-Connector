@@ -42,6 +42,16 @@ export class AuthError extends AppError {
 }
 
 /**
+ * A `cachedOnly` token lookup found no unexpired token. Nothing was sent;
+ * the caller can try again normally (which refreshes or signs in).
+ */
+export class NoCurrentTokenError extends AuthError {
+  constructor() {
+    super("No current Microsoft access token; it needs refreshing first.");
+  }
+}
+
+/**
  * The user must act in their browser before the call can succeed: an
  * on-demand sign-in has been started, is still pending, or just failed. Its
  * message is written for the user, contains nothing sensitive, and is returned

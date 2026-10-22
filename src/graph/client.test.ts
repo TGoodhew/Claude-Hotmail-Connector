@@ -76,6 +76,7 @@ type AuthFn = (opts?: {
   interactiveWaitMs?: number;
   minTtlMs?: number;
   signOutEpoch?: number;
+  cachedOnly?: boolean;
 }) => Promise<string>;
 
 function fetchMock(impl?: FetchFn) {
@@ -387,6 +388,10 @@ describe("createGraphClient", () => {
       expect((e as GraphError).status, `status ${status}`).toBe(status);
       expect(fetchImpl, `status ${status}`).toHaveBeenCalledTimes(1);
       expect(auth.getAccessToken, `status ${status}`).toHaveBeenCalledTimes(1);
+      // With the token already in hand: no refresh or sign-in wait.
+      expect(auth.getAccessToken.mock.calls[0]![0], `status ${status}`).toMatchObject({
+        cachedOnly: true,
+      });
     }
     expect(sleep).not.toHaveBeenCalled();
     // A timeout isn't retried either.
