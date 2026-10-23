@@ -91,8 +91,12 @@ message, but **only after you confirm each one**:
 3. Claude is told whether you sent or cancelled it.
 
 To turn it on, tick **Allow sending email** under **Settings → Extensions → Hotmail Connector**, or set
-`ALLOW_SEND_MAIL=true` when running from source. The first time, ask Claude to sign out (`sign_out`)
-and sign in again, so Microsoft can ask you to allow sending.
+`ALLOW_SEND_MAIL=true` when running from source. Then:
+
+- **Fully restart Claude Desktop** (Quit from the tray icon, then reopen it). Claude Desktop keeps
+  using its earlier list of tools in chats until it restarts, so Claude won't see the send tools yet.
+- The first time you send, Claude will say your sign-in doesn't include permission to send. Ask it to
+  sign out (`sign_out`) and try again: Microsoft will ask you to allow sending.
 
 Plain text only, to at most 10 people. Forwarding, reply-all, attachments and BCC aren't supported,
 since they're the easiest ways to leak mail. Replies go to the message's Reply-To address if it has
@@ -154,7 +158,9 @@ The connector signs in as a **public/native client**. No client secret is ever u
 
 > **Updating to a newer release:** install the new `.mcpb` the same way, over the old one. If Claude
 > Desktop asks for your client ID again, enter the same one. What changed is in the
-> [changelog](CHANGELOG.md).
+> [changelog](CHANGELOG.md). Claude Desktop only replaces an installed extension with a **newer
+> version number**: a different build with the same version (e.g. one you built yourself) is treated
+> as already installed, so uninstall first, or give the build a new version.
 >
 > **Upgrading from the v0.1.0 Windows installer:**
 >
