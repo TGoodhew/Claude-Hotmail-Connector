@@ -583,6 +583,7 @@ signed in to that tenant. Registration settings:
 | `DEFAULT_TIMEZONE` | The system's IANA zone, else `UTC` | Validated at startup (§9.5, #34). |
 | `MICROSOFT_SCOPES` | §6 default set | Narrowing only (§6). |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
+| `LOG_FILE` | `false` | Also write the logs to `connector.log` in the cache directory, capped at 2 MB (§9.4, #178). |
 | `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir | Token cache location. |
 
 `.env` is a **development** convenience, read only from the connector checkout's root, found from the
@@ -677,7 +678,12 @@ cancellation guards are covered by unit tests (#61, #55).
 - Result caps on every list (§7) and body truncation (§7.3) to protect the model's context.
 
 ### 9.4 Observability
-- Structured JSON logs to **stderr only**. stdout is reserved for MCP JSON-RPC. Level set by `LOG_LEVEL`.
+- Structured JSON logs to **stderr**. stdout is reserved for MCP JSON-RPC. Level set by `LOG_LEVEL`.
+- Optional log file (`LOG_FILE`, the extension's "Write a log file", #178), because Claude Desktop
+  doesn't keep an extension's stderr. It gets the same redacted lines, prefixed with the time and
+  process id, in `connector.log` in the cache directory. It never exceeds 2 MB: when a line would take
+  it over, the older half is cut at a line boundary. Sign-out leaves it. A write failure is reported
+  once on stderr, and logging carries on there.
 - No `/health` endpoint: the client supervises the subprocess. `/health` and request metrics belong to
   the remote mode (§15).
 
@@ -878,6 +884,10 @@ package, so Windows redirects the extension's cache to a per-package folder, apa
 checkout's. The separate sign-ins are **accepted** (option A), and the docs say where each lives.
 Moving the cache out of AppData so both share it (option B) was declined: it would need a
 migration and depends on how Claude's packaging behaves.
+
+Owner decisions (2026-10-23) on the log file (#178): it's off by default; sign-out leaves it, since it
+holds no tokens or account names; and it never exceeds 2 MB. When it would, the older half is
+discarded, rather than rotating to a second file.
 
 ---
 

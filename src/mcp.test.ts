@@ -378,7 +378,13 @@ describe("built server subprocess", () => {
       const transport = new StdioClientTransport({
         command: process.execPath,
         args: [distPath],
-        env: { ...stringEnv(), MICROSOFT_CLIENT_ID: "smoke-test-dummy-id" },
+        // Switches pinned off: a checkout's .env may turn them on (the environment wins).
+        env: {
+          ...stringEnv(),
+          MICROSOFT_CLIENT_ID: "smoke-test-dummy-id",
+          ALLOW_SEND_MAIL: "false",
+          LOG_FILE: "false",
+        },
         stderr: "ignore",
       });
       const client = new Client({ name: "smoke", version: "0.0.0" });

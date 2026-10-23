@@ -243,6 +243,7 @@ the checkout's (see [Security](#security)), so `logout` doesn't sign it out ther
 | `LOG_LEVEL`                | `info`                                     | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
 | `MICROSOFT_SCOPES`         | least-privilege set (spec §6)              | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
 | `ALLOW_SEND_MAIL`          | `false`                                    | `true` lets Claude send emails and replies, each confirmed by you in the browser (adds `Mail.Send`).                        |
+| `LOG_FILE`                 | `false`                                    | `true` also writes the logs to `connector.log` in the cache folder, capped at 2 MB (see Troubleshooting).                   |
 | `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir                         | Where the encrypted token cache lives.                                                                                      |
 
 ## Usage example
@@ -284,8 +285,10 @@ More things to ask:
   file in the same folder: Keychain/libsecret support isn't planned, but a PR adding it is welcome
   ([#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83)). Tokens are never committed,
   logged or returned to the client.
-- **Logging:** structured logs go to **stderr only** (stdout is reserved for MCP JSON-RPC) and are
-  scrubbed of tokens, `Authorization` headers, OAuth codes and secrets.
+- **Logging:** structured logs go to **stderr** (stdout is reserved for MCP JSON-RPC) and are
+  scrubbed of tokens, `Authorization` headers, OAuth codes, secrets and your account name. They never
+  include what's in your emails or events. With **Write a log file** on (`LOG_FILE`), they also go to
+  `connector.log` (see Troubleshooting).
 - **Email (and others' invites) are untrusted input:** they're written by strangers and may try to
   steer the model. Unless you turn sending on, the connector can't send mail; when it's on, every
   email waits for your click on the connector's own page, which the model can't reach. There are no
@@ -304,6 +307,15 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
 
 ## Troubleshooting
 
+- **Seeing what the connector did:** Claude Desktop doesn't keep the extension's logs, so turn on
+  **Write a log file** under **Settings → Extensions → Hotmail Connector**, then restart Claude Desktop
+  fully (Quit from the tray icon). The log is `connector.log` in
+  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector` (the
+  folder Windows gives Claude Desktop, [#176](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/176)),
+  or in `%LOCALAPPDATA%\claude-hotmail-connector` from a source checkout with `LOG_FILE=true`. Each
+  line starts with the time (UTC) and the process id. It never grows past 2 MB: when it would, the
+  older half is dropped. Signing out leaves it in place; delete it by hand if you like. Set
+  `LOG_LEVEL=debug` in a source checkout for more detail.
 - **`AADSTS50020` / "account does not exist in tenant" / personal account rejected:** the app
   registration doesn't accept personal accounts. Set its account type to **Personal Microsoft accounts
   only** (or multitenant + personal) per step 1.3.

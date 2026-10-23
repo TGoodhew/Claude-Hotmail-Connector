@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
 import { ConfigError } from "./util/errors.js";
+import { LOG_FILE_NAME } from "./util/log-file.js";
 import { isValidTimeZone } from "./util/time.js";
 
 /**
@@ -116,6 +117,8 @@ const EnvSchema = z.object({
   // The extension passes its checkbox as "true" / "false"; blank means off.
   ALLOW_SEND_MAIL: z.string().trim().optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  // The extension's "Write a log file" checkbox (#178); blank means off.
+  LOG_FILE: z.string().trim().optional(),
   CLAUDE_HOTMAIL_CACHE_DIR: z.string().trim().optional(),
 });
 
@@ -146,6 +149,8 @@ export interface AppConfig {
   tokenCacheFile: string;
   /** Log verbosity. */
   logLevel: "debug" | "info" | "warn" | "error";
+  /** The log file's path when `LOG_FILE` is on (#178), else undefined. */
+  logFile: string | undefined;
 }
 
 /** Directory for the token cache (honours `CLAUDE_HOTMAIL_CACHE_DIR`). */
@@ -173,16 +178,17 @@ function scopeLists(allowSend: boolean): { defaults: string[]; allowed: string[]
 }
 
 /**
- * `ALLOW_SEND_MAIL`: true / false (also 1/0, yes/no, on/off); unset or blank is
- * off, and so is a setting the extension host left unfilled (`${...}`): a
- * missing switch must never stop the server, nor turn sending on.
+ * A switch such as `ALLOW_SEND_MAIL` or `LOG_FILE`: true / false (also 1/0,
+ * yes/no, on/off); unset or blank is off, and so is a setting the extension
+ * host left unfilled (`${...}`): a missing switch must never stop the server,
+ * nor turn anything on.
  */
-function parseAllowSend(raw: string | undefined): boolean {
+function parseSwitch(name: string, raw: string | undefined): boolean {
   const v = (raw ?? "").toLowerCase();
   if (v.startsWith("${")) return false;
   if (["", "false", "0", "no", "off"].includes(v)) return false;
   if (["true", "1", "yes", "on"].includes(v)) return true;
-  throw new ConfigError(`ALLOW_SEND_MAIL must be true or false; got "${raw}".`);
+  throw new ConfigError(`${name} must be true or false; got "${raw}".`);
 }
 
 /** Always requested: needed for sign-in and silent refresh. */
@@ -230,7 +236,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const e = parsed.data;
   const cacheDir = resolveCacheDir(env);
-  const allowSendMail = parseAllowSend(e.ALLOW_SEND_MAIL);
+  const allowSendMail = parseSwitch("ALLOW_SEND_MAIL", e.ALLOW_SEND_MAIL);
+  const logToFile = parseSwitch("LOG_FILE", e.LOG_FILE);
   const clientId = e.MICROSOFT_CLIENT_ID;
   if (!clientId) throw new ConfigError(MISSING_CLIENT_ID_MESSAGE);
   // Checked here so a typo fails at startup, not on every calendar call.
@@ -253,6 +260,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     cacheDir,
     tokenCacheFile: join(cacheDir, "token-cache.enc"),
     logLevel: e.LOG_LEVEL,
+    logFile: logToFile ? join(cacheDir, LOG_FILE_NAME) : undefined,
   };
 }
 

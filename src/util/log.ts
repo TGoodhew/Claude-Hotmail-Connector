@@ -1,5 +1,6 @@
 /**
- * Structured logging that writes **only to stderr**.
+ * Structured logging that writes to stderr, and also to a log file when that
+ * is turned on (#178, log-file.ts).
  *
  * stdout is reserved exclusively for MCP JSON-RPC frames (see the local-hosting
  * spec, Mode A). Writing anything else to stdout would corrupt the protocol, so
@@ -127,9 +128,23 @@ export interface LoggerOptions {
   bindings?: Record<string, unknown>;
 }
 
+/** Where lines also go when the log file is on (#178); see log-file.ts. */
+let fileSink: ((line: string) => void) | undefined;
+
+/** Also send every default-sink log line to `sink` (or stop, with undefined). */
+export function setLogFileSink(sink: ((line: string) => void) | undefined): void {
+  fileSink = sink;
+}
+
+/** Write an already-formatted line to the log file only, if it's on. */
+export function writeToLogFile(line: string): void {
+  fileSink?.(line);
+}
+
 function defaultWrite(line: string): void {
   // Intentionally stderr — never stdout (reserved for MCP JSON-RPC).
   process.stderr.write(line + "\n");
+  fileSink?.(line);
 }
 
 /** Create a structured stderr logger. */

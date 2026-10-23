@@ -163,6 +163,20 @@ describe("loadConfig", () => {
   });
 });
 
+describe("LOG_FILE (#178)", () => {
+  it("is off unless turned on, and then names connector.log in the cache directory", () => {
+    expect(loadConfig(base).logFile).toBeUndefined();
+    for (const off of ["", "false", "0", "${user_config.log_file}"]) {
+      expect(loadConfig({ ...base, LOG_FILE: off }).logFile, off).toBeUndefined();
+    }
+    const cfg = loadConfig({ ...base, LOG_FILE: "true" });
+    expect(cfg.logFile).toBe(join(cfg.cacheDir, "connector.log"));
+    expect(() => loadConfig({ ...base, LOG_FILE: "maybe" })).toThrow(
+      /LOG_FILE must be true or false/,
+    );
+  });
+});
+
 describe("ALLOW_SEND_MAIL (#57)", () => {
   it("is off unless turned on, and only then requests Mail.Send", () => {
     expect(loadConfig(base)).toMatchObject({ allowSendMail: false, scopes: [...DEFAULT_SCOPES] });

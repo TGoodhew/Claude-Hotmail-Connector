@@ -102,6 +102,11 @@ Inspect a bundle with `npx mcpb info build/hotmail-connector.mcpb`, or unpack it
   extension doesn't share its sign-in with a source checkout. `node dist/index.js logout` and deleting
   the unredirected folder don't sign Claude Desktop out; `sign_out` does. The two still share the
   named-pipe sign-in lock, which is named after the path and isn't redirected (#176).
+- **Log file (#178):** Claude Desktop doesn't keep an extension's stderr, so the **Write a log file**
+  setting (`LOG_FILE`) also writes the logs to `connector.log` in the cache folder (on the MSIX build,
+  the redirected folder above). Lines are the same redacted ones as stderr, each prefixed with the
+  time and process id. The file never exceeds 2 MB: when a line would take it over, the older half is
+  cut off at a line boundary. `sign_out` leaves it in place.
 - **Key protection:** Windows uses DPAPI (#42); macOS/Linux use a plain owner-only key file. OS
   keychain support there isn't planned; PRs welcome
   ([#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83)).
