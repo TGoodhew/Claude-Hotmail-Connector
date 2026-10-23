@@ -238,6 +238,85 @@ describe("findFreeTime (#52)", () => {
     ]);
   });
 
+  it("reads an all-day event as its local days, not as UTC (#158)", async () => {
+    // As Graph returned it live: dates labelled with the requested zone (UTC).
+    const allDay = { ...ev("2026-10-23T00:00:00", "2026-10-24T00:00:00"), isAllDay: true };
+    const la = await findFreeTime(graphOf({ value: [allDay] }).graph, {
+      startDateTime: "2026-10-23",
+      endDateTime: "2026-10-25",
+      timeZone: "America/Los_Angeles",
+      minDurationMinutes: 30,
+    });
+    // Friday is busy all day, local time; Saturday is free.
+    expect(la.busy).toEqual([
+      {
+        start: "2026-10-23T00:00:00",
+        end: "2026-10-24T00:00:00",
+        startUtc: "2026-10-23T07:00:00Z",
+        endUtc: "2026-10-24T07:00:00Z",
+        showAs: "busy",
+      },
+    ]);
+    expect(local(la.freeSlots)).toEqual([
+      { start: "2026-10-24T00:00:00", end: "2026-10-25T00:00:00", minutes: 1440 },
+    ]);
+    // East of UTC too: early Friday morning in Sydney is still that all-day event.
+    const sydney = await findFreeTime(graphOf({ value: [allDay] }).graph, {
+      startDateTime: "2026-10-23T00:00:00",
+      endDateTime: "2026-10-23T09:00:00",
+      timeZone: "Australia/Sydney",
+      minDurationMinutes: 30,
+    });
+    expect(sydney.freeSlots).toEqual([]);
+  });
+
+  it("gives an all-day event on a clock-change day its real length (#158)", async () => {
+    // Los Angeles falls back on Sunday 2026-11-01: that day is 25 hours long.
+    const allDay = { ...ev("2026-11-01T00:00:00", "2026-11-02T00:00:00"), isAllDay: true };
+    const res = await findFreeTime(graphOf({ value: [allDay] }).graph, {
+      startDateTime: "2026-10-31",
+      endDateTime: "2026-11-03",
+      timeZone: "America/Los_Angeles",
+      minDurationMinutes: 30,
+    });
+    // Local midnight to local midnight: -07:00 before the change, -08:00 after.
+    expect(res.busy.map((b) => [b.startUtc, b.endUtc])).toEqual([
+      ["2026-11-01T07:00:00Z", "2026-11-02T08:00:00Z"],
+    ]);
+    expect(res.freeSlots.map((s) => [s.start, s.end])).toEqual([
+      ["2026-10-31T00:00:00", "2026-11-01T00:00:00"],
+      ["2026-11-02T00:00:00", "2026-11-03T00:00:00"],
+    ]);
+  });
+
+  it("doesn't let an event outside the range change the status inside it", async () => {
+    // Away 07:00-08:00 (outside a 09:00-17:00 lookup) touches busy 08:00-10:00.
+    const { graph } = graphOf({
+      value: [
+        ev("2026-07-20T07:00:00", "2026-07-20T08:00:00", "oof"),
+        ev("2026-07-20T08:00:00", "2026-07-20T10:00:00"),
+      ],
+    });
+    const res = await findFreeTime(graph, {
+      ...base,
+      startDateTime: "2026-07-20T09:00:00Z",
+      endDateTime: "2026-07-20T17:00:00Z",
+    });
+    expect(local(res.busy)).toEqual([
+      { start: "2026-07-20T09:00:00", end: "2026-07-20T10:00:00", showAs: "busy" },
+    ]);
+  });
+
+  it("reads a day past each end of the range, where all-day events can sit (#158)", async () => {
+    const { request, graph } = graphOf();
+    await findFreeTime(graph, base);
+    const query = request.mock.calls[0]![2]?.query;
+    expect([query?.startDateTime, query?.endDateTime]).toEqual([
+      "2026-07-19T00:00:00.000Z",
+      "2026-07-22T00:00:00.000Z",
+    ]);
+  });
+
   it("clips busy time to the range and reads every page", async () => {
     const { request, graph } = graphOf(
       { value: [ev("2026-07-19T22:00:00", "2026-07-20T02:00:00")], next: NEXT },
