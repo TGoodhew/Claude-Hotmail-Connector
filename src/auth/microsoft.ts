@@ -45,6 +45,11 @@ const AUTH_TIMEOUT_MS = 5 * 60_000;
  */
 export const SIGN_IN_RETRY_COOLDOWN_MS = 30_000;
 
+/** When there's no saved sign-in and no browser sign-in may open (e.g. `whoami`). */
+export const NOT_SIGNED_IN =
+  "Not signed in to Microsoft. Run `node dist/index.js login` from a source checkout, or ask " +
+  "Claude for something that needs your mailbox or calendar.";
+
 /** When Microsoft refuses the saved sign-in (`invalid_grant`) and no browser sign-in may open (#161). */
 export const SAVED_SIGN_IN_REFUSED =
   "Microsoft refused the saved sign-in: it has expired or been revoked, or it was made with a " +
@@ -930,7 +935,8 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       ensureNotSignedOut();
 
       if (!interactive) {
-        throw new AuthError("Not signed in. Interactive Microsoft sign-in is required.");
+        // An instruction, not a failure: the CLI prints it as it is (#97 hands-on check).
+        throw new SignInRequiredError(NOT_SIGNED_IN);
       }
 
       // A sign-in may have completed while the refresh was in flight: use it.

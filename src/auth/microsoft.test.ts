@@ -21,6 +21,7 @@ import {
   decodeIdTokenUsername,
   generatePkce,
   launcherSucceeded,
+  NOT_SIGNED_IN,
   SAVED_SIGN_IN_REFUSED,
   SIGN_IN_RETRY_COOLDOWN_MS,
   toTokenSet,
@@ -379,7 +380,11 @@ describe("createMicrosoftAuth.getAccessToken", () => {
       fetchImpl: vi.fn() as unknown as typeof fetch,
       now: () => 1_000,
     });
-    await expect(auth.getAccessToken({ interactive: false })).rejects.toBeInstanceOf(AuthError);
+    const e = (await auth.getAccessToken({ interactive: false }).catch((x: unknown) => x)) as Error;
+    // An instruction (printed by the CLI without "Fatal:"), saying how to sign in.
+    expect(e).toBeInstanceOf(SignInRequiredError);
+    expect(e.message).toBe(NOT_SIGNED_IN);
+    expect(e.message).toContain("node dist/index.js login");
   });
 
   it("forces a refresh of a still-valid token when minTtlMs is huge (the 401-recovery contract)", async () => {
