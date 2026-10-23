@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
+import { clientSafeMessage, GraphError, TimeoutError, ValidationError } from "../util/errors.js";
 import type { GraphClient } from "./client.js";
 import { createDraft, createReplyDraft, draftUrl, draftUrlCandidates } from "./drafts.js";
 
@@ -109,9 +109,14 @@ describe("createReplyDraft (#184)", () => {
     expectNothingSentOrChanged(g);
   });
 
-  it("says Graph gave no id rather than reporting a draft it can't point to", async () => {
+  it("says to check Drafts when Graph saved one but gave no id, so it isn't saved twice", async () => {
     const g = graphWith(async () => ({ subject: "x" }));
-    await expect(createReplyDraft(g, "m", "b")).rejects.toThrow(GraphError);
+    const err = await createReplyDraft(g, "m", "b").catch((x: unknown) => x);
+    // A ValidationError's message reaches the user as is (clientSafeMessage).
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(clientSafeMessage(err)).toMatch(
+      /saved the draft.*Check Drafts in Outlook before trying again/,
+    );
   });
 });
 

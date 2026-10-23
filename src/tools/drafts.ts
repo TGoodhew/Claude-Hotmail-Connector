@@ -25,6 +25,18 @@ const log = createLogger({ name: "drafts" });
 
 /** The longest the browser launch may take before the draft is reported without it. */
 export const OPEN_BROWSER_WAIT_MS = 10_000;
+/** Left before the call's deadline for the answer to get back to the client. */
+const DEADLINE_MARGIN_MS = 3_000;
+
+/**
+ * The browser wait: the usual 10 s, or less if the call's deadline is nearer.
+ * The draft is already saved, so losing the answer to a timeout could get it
+ * saved again by a retry.
+ */
+export function openBrowserWaitMs(ctx: ToolContext, now = Date.now()): number {
+  const left = (ctx.deadline ?? Number.POSITIVE_INFINITY) - now - DEADLINE_MARGIN_MS;
+  return Math.max(0, Math.min(OPEN_BROWSER_WAIT_MS, left));
+}
 
 const NEEDS_DRAFTS_PERMISSION =
   "Saving drafts is turned on, but your Microsoft sign-in doesn't include permission to save " +
@@ -48,7 +60,7 @@ async function openInBrowser(ctx: ToolContext, url: string): Promise<boolean> {
     return await Promise.race([
       ctx.openBrowser(url).then(() => true),
       new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), OPEN_BROWSER_WAIT_MS);
+        timer = setTimeout(() => resolve(false), openBrowserWaitMs(ctx));
       }),
     ]);
   } catch {

@@ -54,7 +54,13 @@ const addresses = (list?: GraphAddress[]) =>
   (list ?? []).map((r) => r.emailAddress?.address).filter((a): a is string => !!a);
 
 function saved(d: GraphDraft): SavedDraft {
-  if (!d.id) throw new GraphError("Graph saved a draft but didn't return its id.");
+  // The draft exists: say so, so it isn't saved again by a retry.
+  if (!d.id) {
+    throw new ValidationError(
+      "Microsoft saved the draft but didn't say which one it is. Check Drafts in Outlook " +
+        "before trying again.",
+    );
+  }
   return {
     id: d.id,
     subject: d.subject ?? "",

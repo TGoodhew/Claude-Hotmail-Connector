@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../config.js";
 import type { GraphClient } from "../graph/client.js";
 import { SignInRequiredError, ValidationError } from "../util/errors.js";
-import { createDraftTool, draftTools, OPEN_BROWSER_WAIT_MS } from "./drafts.js";
+import { createDraftTool, draftTools, OPEN_BROWSER_WAIT_MS, openBrowserWaitMs } from "./drafts.js";
 import { UNTRUSTED_CONTENT_NOTICE, type ToolContext } from "./types.js";
 
 type Post = (path: string, body: unknown) => Promise<unknown>;
@@ -195,6 +195,25 @@ describe("create_draft (#184)", () => {
     );
     await vi.advanceTimersByTimeAsync(OPEN_BROWSER_WAIT_MS);
     const res = await call;
+    expect(res.structuredContent).toMatchObject({ browserOpened: false, url: WEB_LINK });
+  });
+
+  it("waits less for the browser when the call's deadline is near", async () => {
+    expect(openBrowserWaitMs(ctx({ deadline: undefined }), 1_000)).toBe(OPEN_BROWSER_WAIT_MS);
+    expect(openBrowserWaitMs(ctx({ deadline: 60_000 }), 1_000)).toBe(OPEN_BROWSER_WAIT_MS);
+    expect(openBrowserWaitMs(ctx({ deadline: 9_000 }), 1_000)).toBe(5_000);
+    expect(openBrowserWaitMs(ctx({ deadline: 2_000 }), 1_000)).toBe(0);
+
+    // With no time left, a stuck launch doesn't hold up the saved draft's answer.
+    vi.useFakeTimers();
+    const stuck = vi.fn(() => new Promise<void>(() => {}));
+    const call = createDraftTool.handler(
+      { to: ["a@example.com"], body: "b" },
+      ctx({ openBrowser: stuck, deadline: Date.now() + 1_000 }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const res = await call;
+    expect(stuck).toHaveBeenCalledOnce();
     expect(res.structuredContent).toMatchObject({ browserOpened: false, url: WEB_LINK });
   });
 

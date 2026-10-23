@@ -353,12 +353,15 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
           `[live] Reply draft text: comment at ${first}, second line at ${second}, quote header ` +
             `on line ${quote}; line break kept: ${kept}.`,
         );
+        // Links first, so they're printed even if a check below fails.
+        await printLinks(g, "reply draft", reply);
         expect(first).toBeGreaterThanOrEqual(0);
         expect(second).toBeGreaterThan(first);
+        // Graph must keep the comment's line break, else replies need HTML (#184).
+        expect(kept, "the reply draft lost the comment's line break").toBe(true);
         if (quote >= 0) {
           expect(quote).toBeGreaterThan(lines.findIndex((l) => l === "Second line."));
         }
-        await printLinks(g, "reply draft", reply);
       } finally {
         if (KEEP_DRAFTS) {
           console.log(
