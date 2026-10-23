@@ -1,7 +1,8 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  // The server, and the PDF worker it starts beside it (#156).
+  entry: { index: "src/index.ts", "pdf-worker": "src/pdf-worker.ts" },
   format: ["esm"],
   target: "node20",
   platform: "node",

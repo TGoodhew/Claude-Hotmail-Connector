@@ -243,7 +243,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - **Output per folder:** `id`, `name`, `wellKnownName`, `parentFolderId`, `childFolderCount`,
   `unreadItemCount`, `totalItemCount`. Folder names are user text, so the result carries the
   untrusted-content notice (T12) *(#53)*. Read-only. `Mail.Read`.
-### 7.3b `get_attachment` — read an attachment as text *(#54)*
+### 7.3b `get_attachment` — read an attachment as text *(#54, #156)*
 - **Graph:** `GET /me/messages/{id}/attachments/{attachmentId}`, first with `$select` (no content) so
   the type and size are checked before anything is downloaded, then in full for `contentBytes`.
 - **Inputs:** `messageId`, `attachmentId` (from `get_message`), `maxChars?` / `startChar?` (as §7.3).
@@ -262,9 +262,19 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
     never guessed at. A bare date with no `VALUE` is read as a date: strictly malformed, but
     unambiguous, and booking systems send it *(#157)*. Folded lines are unfolded before decoding, so a fold inside a multi-byte character
     doesn't corrupt it.
-- **Refused, with a clear message:** PDFs (for now: #150), images and any other binary; attached items
-  and links (not files); text that turns out to hold NUL bytes; anything over **1 MB**, by Graph's
-  size before downloading and by the bytes that arrive. Arbitrary binary is never returned.
+  - **PDFs** (`application/pdf`, `.pdf`) *(#156, owner decisions 2026-10-23: unpdf; 5 MB, 30 pages)*:
+    the text of the first **30 pages**, pages after the first headed `[Page n]`, cut like a message
+    body, with `pdf: { pagesRead, totalPages }`. Read with pdf.js 6 (via unpdf), with font loading,
+    system fonts, WebAssembly decoders, canvas and image decoding, worker fetches and logging off (pdf.js
+    6 no longer uses eval). Parsing runs in a **worker thread** with a **256 MB** heap cap and a
+    **10 s** limit; past either, the worker is terminated and the PDF refused. The worker's stdout and
+    stderr are captured and discarded, never passed to the server's stdout (the MCP channel). Built as
+    its own file beside the server (`dist/pdf-worker.js`; `server/pdf-worker.cjs` in the extension).
+- **Refused, with a clear message:** password-protected PDFs; PDFs with no text layer (e.g. scans; no
+  OCR); PDFs too broken, slow or memory-hungry to read; images and any other binary; attached items and
+  links (not files); text that turns out to hold NUL bytes; PDFs over **5 MB** and other files over
+  **1 MB**, by Graph's size before downloading and by the bytes that arrive. Arbitrary binary is never
+  returned.
 - Text is decoded by the declared charset, else UTF-8, else Windows-1252.
 - Refusals are fixed wording: they never repeat the attachment's name or type, which the sender
   controls, because an error isn't marked untrusted the way a result is (T12).

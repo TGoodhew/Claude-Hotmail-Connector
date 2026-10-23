@@ -32,21 +32,21 @@ phase ([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58)).
 
 ## Tools
 
-| Tool                | Purpose                                             | Graph permission      |
-| ------------------- | --------------------------------------------------- | --------------------- |
-| `whoami`            | Confirm the connected account                       | `User.Read`           |
-| `list_messages`     | Search/list mail (find booking confirmations)       | `Mail.Read`           |
-| `get_message`       | Read one email as text                              | `Mail.Read`           |
-| `get_attachment`    | Read a text, HTML or calendar (.ics) attachment     | `Mail.Read`           |
-| `list_mail_folders` | List mail folders                                   | `Mail.Read`           |
-| `list_calendars`    | List your calendars (own and shared)                | `Calendars.Read`      |
-| `list_events`       | Read the calendar over a date range                 | `Calendars.Read`      |
-| `get_event`         | Read one event in full (notes, attendees, pattern)  | `Calendars.Read`      |
-| `find_free_time`    | Find free slots in a date range                     | `Calendars.Read`      |
-| `create_event`      | Add a calendar event (timezone-correct, idempotent) | `Calendars.ReadWrite` |
-| `update_event`      | Edit a calendar event (destructive: overwrites)     | `Calendars.ReadWrite` |
-| `cancel_event`      | Delete an event, guarded (see below)                | `Calendars.ReadWrite` |
-| `sign_out`          | Remove the saved sign-in from this computer         | (none)                |
+| Tool                | Purpose                                              | Graph permission      |
+| ------------------- | ---------------------------------------------------- | --------------------- |
+| `whoami`            | Confirm the connected account                        | `User.Read`           |
+| `list_messages`     | Search/list mail (find booking confirmations)        | `Mail.Read`           |
+| `get_message`       | Read one email as text                               | `Mail.Read`           |
+| `get_attachment`    | Read a text, HTML, PDF or calendar (.ics) attachment | `Mail.Read`           |
+| `list_mail_folders` | List mail folders                                    | `Mail.Read`           |
+| `list_calendars`    | List your calendars (own and shared)                 | `Calendars.Read`      |
+| `list_events`       | Read the calendar over a date range                  | `Calendars.Read`      |
+| `get_event`         | Read one event in full (notes, attendees, pattern)   | `Calendars.Read`      |
+| `find_free_time`    | Find free slots in a date range                      | `Calendars.Read`      |
+| `create_event`      | Add a calendar event (timezone-correct, idempotent)  | `Calendars.ReadWrite` |
+| `update_event`      | Edit a calendar event (destructive: overwrites)      | `Calendars.ReadWrite` |
+| `cancel_event`      | Delete an event, guarded (see below)                 | `Calendars.ReadWrite` |
+| `sign_out`          | Remove the saved sign-in from this computer          | (none)                |
 
 Mail is **read-only** (no `Mail.Send`), and calendar writes never add attendees or send invitations.
 There is **no hard-delete**. `cancel_event` moves an event to Outlook's Deleted Items, and only after
@@ -63,9 +63,11 @@ A few behaviours worth knowing:
 - **Junk and Deleted are left out.** Across all folders, `list_messages` leaves out Junk Email and
   Deleted Items, and the folders beneath them, unless you ask for them. Mail in Junk is flagged as
   such, so phishing can't pass for a real booking.
-- **PDFs aren't read yet.** `get_attachment` refuses PDFs and other binary files, as well as anything
-  over 1 MB ([#156](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/156) tracks PDFs).
-  Open those from the message in Outlook.
+- **Attachments:** `get_attachment` reads text, HTML, calendar (`.ics`) and **PDF** attachments. For a
+  PDF it reads the text of the first 30 pages, in an isolated worker with time and memory limits.
+  Password-protected and scanned PDFs (no text layer) can't be read, nor can images or other binary
+  files. Size limits: 5 MB for PDFs, 1 MB for other files. Open anything refused from the message in
+  Outlook.
 - **Times use your time zone.** `find_free_time` and the other calendar tools work in your computer's
   time zone unless you name another, with daylight saving applied. All-day events count as whole
   days in that zone.
@@ -220,6 +222,8 @@ More things to ask:
 
 - "Read the calendar invite attached to my hotel booking email." The connector uses `get_attachment`
   to read the `.ics` file's events.
+- "What's the booking reference in the PDF attached to my flight confirmation?" `get_attachment`
+  reads the PDF's text.
 - "Find me a free hour on Thursday between 9 and 5 Berlin time." This uses `find_free_time` in
   `Europe/Berlin`, with your events converted across time zones and daylight saving.
 - "What's in my Junk folder from this week?" This is `list_messages` with `folder: junkemail`; Claude

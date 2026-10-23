@@ -1,8 +1,8 @@
 /**
  * Reading an email attachment's content (#54, Mail.Read). Only what can be
- * returned as text: plain text and HTML (converted to text), and calendar
- * files (parsed into events). PDFs and any other binary are refused, never
- * returned raw.
+ * returned as text: plain text and HTML (converted to text), calendar files
+ * (parsed into events), and PDFs (their text, read in an isolated worker,
+ * #156). Images and any other binary are refused, never returned raw.
  */
 
 import { htmlToText } from "../util/html.js";
@@ -10,9 +10,12 @@ import { parseIcs, type IcsCalendar } from "../util/ics.js";
 import { ValidationError } from "../util/errors.js";
 import type { GraphClient } from "./client.js";
 import { sliceBody, type MessageBody } from "./mail.js";
+import { readPdfText, type PdfResult } from "./pdf.js";
 
-/** Largest attachment read, in bytes; booking texts and invitations are far smaller. */
+/** Largest text, HTML or calendar attachment read, in bytes; booking texts and invitations are far smaller. */
 export const MAX_ATTACHMENT_BYTES = 1_048_576;
+/** Largest PDF read: booking PDFs with a logo or a map often run to a few MB (#156). */
+export const MAX_PDF_BYTES = 5 * 1_048_576;
 
 export interface GetAttachmentInput {
   messageId: string;
@@ -22,7 +25,7 @@ export interface GetAttachmentInput {
   startChar?: number;
 }
 
-export type AttachmentKind = "text" | "html" | "calendar";
+export type AttachmentKind = "text" | "html" | "calendar" | "pdf";
 
 export interface AttachmentContent {
   id: string;
@@ -30,8 +33,10 @@ export interface AttachmentContent {
   contentType: string | null;
   size: number | null;
   kind: AttachmentKind;
-  /** Text and HTML: the text (HTML converted), cut at maxChars like a message body. */
+  /** Text, HTML and PDF: the text (HTML converted), cut at maxChars like a message body. */
   text?: MessageBody;
+  /** PDFs: the first `pagesRead` of `totalPages` pages were read. */
+  pdf?: { pagesRead: number; totalPages: number };
   /** Calendar files: the events in them. */
   calendar?: IcsCalendar;
 }
@@ -71,10 +76,12 @@ export function attachmentKind(contentType?: string, name?: string): AttachmentK
   if (type === "" || type === "application/octet-stream") {
     const ext = extension(name);
     if (ext === "ics") return "calendar";
+    if (ext === "pdf") return "pdf";
     if (ext === "html" || ext === "htm") return "html";
     return TEXT_EXTENSIONS.has(ext) ? "text" : null;
   }
   if (type === "text/calendar" || type === "application/ics") return "calendar";
+  if (type === "application/pdf") return "pdf";
   if (type === "text/html") return "html";
   return type.startsWith("text/") || TEXT_TYPES.has(type) ? "text" : null;
 }
@@ -83,22 +90,18 @@ export function attachmentKind(contentType?: string, name?: string): AttachmentK
 // text, and an error isn't marked untrusted the way a result is (T12).
 const OPEN_IN_OUTLOOK = "Open it from the message in Outlook (the message's webLink).";
 const NOT_A_FILE = `This attachment is an attached item or a link, not a file. ${OPEN_IN_OUTLOOK}`;
-const TOO_LARGE =
-  `This attachment is too large to read here (over ${MAX_ATTACHMENT_BYTES / 1_048_576} MB). ` +
-  OPEN_IN_OUTLOOK;
+const tooLarge = (limit: number) =>
+  `This attachment is too large to read here (over ${limit / 1_048_576} MB). ${OPEN_IN_OUTLOOK}`;
 const NOT_TEXT =
-  "This attachment can't be read as text: only text, HTML and calendar (.ics) attachments can. " +
-  OPEN_IN_OUTLOOK;
-
-function refusal(a: GraphAttachment): string {
-  const type = mediaType(a.contentType);
-  const pdf =
-    type === "application/pdf" ||
-    ((type === "" || type === "application/octet-stream") && extension(a.name) === "pdf");
-  return pdf
-    ? `This attachment is a PDF, which can't be read here yet. ${OPEN_IN_OUTLOOK}`
-    : NOT_TEXT;
-}
+  "This attachment can't be read as text: only text, HTML, calendar (.ics) and PDF attachments " +
+  `can. ${OPEN_IN_OUTLOOK}`;
+const PDF_REFUSALS: Record<Exclude<PdfResult["status"], "ok">, string> = {
+  encrypted: `This PDF is password-protected, so it can't be read here. ${OPEN_IN_OUTLOOK}`,
+  "no-text": `This PDF has no text to read; it may be a scanned image. ${OPEN_IN_OUTLOOK}`,
+  unreadable: `This PDF couldn't be read; it may be damaged. ${OPEN_IN_OUTLOOK}`,
+  "too-slow": `This PDF is too complex to read here in reasonable time. ${OPEN_IN_OUTLOOK}`,
+  "too-complex": `This PDF is too complex to read here safely. ${OPEN_IN_OUTLOOK}`,
+};
 
 /** Remove iCalendar line folds (CRLF or LF, then a space or tab) at the byte level. */
 export function unfoldBytes(bytes: Buffer): Buffer {
@@ -147,6 +150,8 @@ function decodeText(bytes: Buffer, contentType: string | undefined): string {
 export async function getAttachment(
   graph: GraphClient,
   input: GetAttachmentInput,
+  // The PDF reader, replaceable in tests.
+  deps: { readPdf?: (data: Uint8Array) => Promise<PdfResult> } = {},
 ): Promise<AttachmentContent> {
   const path =
     `/me/messages/${encodeURIComponent(input.messageId)}` +
@@ -161,20 +166,15 @@ export async function getAttachment(
   };
   assertFile(meta);
   const kind = attachmentKind(meta.contentType, meta.name);
-  if (!kind) throw new ValidationError(refusal(meta));
-  if ((meta.size ?? 0) > MAX_ATTACHMENT_BYTES) throw new ValidationError(TOO_LARGE);
+  if (!kind) throw new ValidationError(NOT_TEXT);
+  const limit = kind === "pdf" ? MAX_PDF_BYTES : MAX_ATTACHMENT_BYTES;
+  if ((meta.size ?? 0) > limit) throw new ValidationError(tooLarge(limit));
 
   const full = await graph.get<GraphAttachment>(path);
   assertFile(full);
   const bytes = Buffer.from(full.contentBytes ?? "", "base64");
   // The size above is Graph's figure; check what actually arrived too.
-  if (bytes.length > MAX_ATTACHMENT_BYTES) throw new ValidationError(TOO_LARGE);
-  // A calendar line can be folded between the bytes of one character, so
-  // unfold before decoding (the size was checked on the bytes as they came).
-  const text = decodeText(
-    kind === "calendar" ? unfoldBytes(bytes) : bytes,
-    full.contentType ?? meta.contentType,
-  );
+  if (bytes.length > limit) throw new ValidationError(tooLarge(limit));
 
   const base = {
     id: meta.id ?? input.attachmentId,
@@ -183,6 +183,21 @@ export async function getAttachment(
     size: meta.size ?? null,
     kind,
   };
+  if (kind === "pdf") {
+    const read = await (deps.readPdf ?? readPdfText)(bytes);
+    if (read.status !== "ok") throw new ValidationError(PDF_REFUSALS[read.status]);
+    return {
+      ...base,
+      text: sliceBody(read.text, "text", input.maxChars, input.startChar),
+      pdf: { pagesRead: read.pagesRead, totalPages: read.totalPages },
+    };
+  }
+  // A calendar line can be folded between the bytes of one character, so
+  // unfold before decoding (the size was checked on the bytes as they came).
+  const text = decodeText(
+    kind === "calendar" ? unfoldBytes(bytes) : bytes,
+    full.contentType ?? meta.contentType,
+  );
   if (kind === "calendar") return { ...base, calendar: parseIcs(text) };
   const content = kind === "html" ? htmlToText(text) : text;
   return { ...base, text: sliceBody(content, "text", input.maxChars, input.startChar) };

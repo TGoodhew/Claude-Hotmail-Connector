@@ -9,14 +9,23 @@
  *
  * Steps:
  *   1. Bundle the app (incl. dependencies) into one CJS file with esbuild, so
- *      the bundle needs no node_modules.
+ *      the bundle needs no node_modules; likewise the PDF worker (#156). List
+ *      every bundled package, with its license, in THIRD_PARTY_NOTICES.txt.
  *   2. Write manifest.json (version from package.json).
  *   3. Validate and pack with the pinned official CLI (@anthropic-ai/mcpb).
  *
  * Run:  npm run build:mcpb   ->  build/hotmail-connector.mcpb
  */
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 const root = process.cwd();
@@ -41,16 +50,71 @@ function run(cmd, args) {
 rmSync(stageDir, { recursive: true, force: true });
 mkdirSync(join(stageDir, "server"), { recursive: true });
 
-// 1. Single-file server bundle.
-run("npx", [
-  "esbuild",
-  "src/index.ts",
-  "--bundle",
-  "--platform=node",
-  "--format=cjs",
-  `--target=node${nodeMajor}`,
-  "--outfile=build/mcpb/server/index.cjs",
-]);
+// 1. Single-file server bundle, and the PDF worker it starts beside it (#156).
+// The server picks the worker's path by format: as CommonJS it has __dirname, so
+// the ESM-only import.meta branch is never reached here, hence the silenced warning.
+const bundled = new Set();
+for (const [entry, out] of [
+  ["src/index.ts", "index.cjs"],
+  ["src/pdf-worker.ts", "pdf-worker.cjs"],
+]) {
+  const metafile = join(root, "build", `${out}.meta.json`);
+  run("npx", [
+    "esbuild",
+    entry,
+    "--bundle",
+    "--platform=node",
+    "--format=cjs",
+    `--target=node${nodeMajor}`,
+    "--log-override:empty-import-meta=silent",
+    `--metafile=${metafile}`,
+    `--outfile=build/mcpb/server/${out}`,
+  ]);
+  // The package directory of every bundled input under node_modules.
+  for (const input of Object.keys(JSON.parse(readFileSync(metafile, "utf8")).inputs)) {
+    const at = input.lastIndexOf("node_modules/");
+    if (at < 0) continue;
+    const parts = input.slice(at + "node_modules/".length).split("/");
+    const name = parts[0].startsWith("@") ? `${parts[0]}/${parts[1]}` : parts[0];
+    bundled.add(input.slice(0, at) + "node_modules/" + name);
+  }
+  rmSync(metafile);
+}
+
+// Licenses of what's bundled: the MIT and Apache licenses ask for their notices
+// to travel with the code. pdf.js comes inside unpdf, without its own license
+// file, so that one is kept in licenses/.
+const notices = [
+  "Third-party software bundled in the Hotmail Connector extension.",
+  "The connector itself is MIT-licensed: see LICENSE.",
+  "",
+];
+for (const dir of [...bundled].sort()) {
+  const pkgJson = JSON.parse(readFileSync(join(root, dir, "package.json"), "utf8"));
+  const licenseFile = readdirSync(join(root, dir)).find((f) => /^(licen[cs]e|copying)/i.test(f));
+  notices.push(
+    "=".repeat(78),
+    `${pkgJson.name} ${pkgJson.version} (${pkgJson.license ?? "see below"})`,
+    "=".repeat(78),
+    licenseFile
+      ? readFileSync(join(root, dir, licenseFile), "utf8").trim()
+      : "(no license file in the package)",
+    "",
+  );
+  if (pkgJson.name === "unpdf") {
+    const pdfjs = join(root, "licenses", "pdf.js-LICENSE.txt");
+    if (!existsSync(pdfjs)) throw new Error("licenses/pdf.js-LICENSE.txt is missing");
+    notices.push(
+      "=".repeat(78),
+      "pdf.js (bundled inside unpdf), Copyright Mozilla Foundation (Apache-2.0)",
+      "=".repeat(78),
+      readFileSync(pdfjs, "utf8").trim(),
+      "",
+    );
+  }
+}
+writeFileSync(join(stageDir, "THIRD_PARTY_NOTICES.txt"), notices.join("\n"));
+console.log(`Listed ${bundled.size} bundled packages in THIRD_PARTY_NOTICES.txt`);
 copyFileSync(join(root, "LICENSE"), join(stageDir, "LICENSE"));
 
 // 2. Manifest (MCPB manifest spec 0.3).
@@ -98,7 +162,7 @@ const manifest = {
     { name: "whoami", description: "Show the connected personal Microsoft account." },
     { name: "list_messages", description: "Search or list email (read-only)." },
     { name: "get_message", description: "Read one email as text (read-only)." },
-    { name: "get_attachment", description: "Read a text, HTML or .ics email attachment." },
+    { name: "get_attachment", description: "Read a text, HTML, PDF or .ics email attachment." },
     { name: "list_mail_folders", description: "List your mail folders (read-only)." },
     { name: "list_calendars", description: "List your calendars (own and shared)." },
     { name: "list_events", description: "List calendar events in a date range." },
