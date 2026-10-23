@@ -77,12 +77,15 @@ npm run build:mcpb   # -> build/hotmail-connector.mcpb
 
 [`scripts/build-mcpb.mjs`](../scripts/build-mcpb.mjs) does three things:
 1. Bundles the server and its dependencies into one file (`server/index.cjs`, via esbuild), so the
-   bundle needs no `node_modules`.
-2. Writes `manifest.json` (MCPB manifest spec 0.3). The version comes from `package.json`, and a
-   required `client_id` setting is mapped to `MICROSOFT_CLIENT_ID`.
+   bundle needs no `node_modules`, and the PDF worker likewise (`server/pdf-worker.cjs`). It lists
+   every bundled package and its license in `THIRD_PARTY_NOTICES.txt`, and copies in `LICENSE` and
+   the icon.
+2. Writes `manifest.json` (MCPB manifest spec 0.3). The version comes from `package.json`. The
+   settings map to environment variables: `client_id` (required) to `MICROSOFT_CLIENT_ID`,
+   **Allow sending email** to `ALLOW_SEND_MAIL`, and **Write a log file** to `LOG_FILE`.
 3. Validates and packs it with the official CLI, `@anthropic-ai/mcpb` (pinned in `devDependencies`).
 
-The result is about 220 kB. CI builds it on every PR, and [`release.yml`](../.github/workflows/release.yml)
+The result is about 1 MB, mostly pdf.js. CI builds it on every PR, and [`release.yml`](../.github/workflows/release.yml)
 publishes it with a checksum when a `v*` tag matching `package.json` is pushed.
 
 Inspect a bundle with `npx mcpb info build/hotmail-connector.mcpb`, or unpack it with `npx mcpb unpack …`.

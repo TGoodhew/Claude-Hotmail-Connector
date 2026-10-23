@@ -19,7 +19,7 @@ body:
     id: version
     attributes:
       label: Connector version
-      placeholder: e.g. v0.2.0, or a commit SHA if built from source
+      placeholder: e.g. v1.0.0, or a commit SHA if built from source
     validations:
       required: true
   - type: dropdown
@@ -52,5 +52,5 @@ body:
     id: logs
     attributes:
       label: Logs (redacted)
-      description: Run with `LOG_LEVEL=debug` and paste the relevant stderr lines. Redact personal data first.
+      description: In Claude Desktop, turn on "Write a log file" in the extension's settings and paste the relevant lines of connector.log (see the README's Troubleshooting). From source, run with `LOG_LEVEL=debug` and paste the stderr lines. Check for personal data first.
       render: text

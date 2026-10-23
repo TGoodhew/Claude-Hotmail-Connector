@@ -8,7 +8,7 @@ no hosted service behind it.
 
 - The connector runs **locally** on your PC; nothing is hosted for you.
 - You sign in through **your own** Microsoft Entra app registration
-  ([README step 1](README.md#1-register-a-microsoft-entra-application)). You own and are responsible for
+  ([README step 1](README.md#step-1-register-your-own-microsoft-entra-application)). You own and are responsible for
   that registration, your tenant, and the access you grant to it. The maintainer has no access to your
   account, mail, calendar or tokens, and can't recover or reset them.
 
@@ -18,11 +18,14 @@ no hosted service behind it.
    [`docs/packaging.md`](docs/packaging.md) (the Claude Desktop extension).
 2. Search [existing issues](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues?q=is%3Aissue).
 3. If it's a bug, open an issue with the **Bug report** template. Include the version, your OS, the
-   client (Claude Desktop / Claude Code), and a `LOG_LEVEL=debug` stderr excerpt. **Redact** email
-   addresses, message content and anything that looks like a token first.
+   client (Claude Desktop / Claude Code), and a log excerpt. In Claude Desktop, turn on **Write a log
+   file** and copy from `connector.log` (see the README's
+   [Troubleshooting](README.md#troubleshooting)); from a source checkout, use `LOG_LEVEL=debug` and
+   stderr. The logs already leave out tokens and email addresses, but **check** for message content
+   and anything personal before posting.
 
-Feature ideas are welcome via the **Feature request** template. The roadmap lives in the
-[Spec v2 epic (#66)](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66).
+Feature ideas are welcome via the **Feature request** template. Planned work is in the
+[open issues](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues).
 
 ## Security issues
 

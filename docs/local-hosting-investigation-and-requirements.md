@@ -1,9 +1,13 @@
 # Local Hosting — Investigation & Requirements (Personal Outlook.com MCP Connector)
 
-> **⚠️ Superseded (2026-10-21).** This investigation's recommendation (Mode A, local stdio) was adopted and
-> folded into [the v2 spec](personal-outlook-mcp-connector-requirements.md): architecture §4, sign-in §8,
-> packaging §11. Mode B (tunnel) and the hosted option now live in its §15 "Future phase: remote mode"
-> (#58). This document is kept unchanged below as the record of the investigation.
+> **⚠️ Superseded (2026-10-21); historical record only.** This investigation's recommendation (Mode A,
+> local stdio) was adopted and folded into [the v2 spec](personal-outlook-mcp-connector-requirements.md):
+> architecture §4, sign-in §8, packaging §11. Mode B (tunnel) and the hosted option are in its §15,
+> deferred (#58, closed as not planned). Details below are as of 2026-07 and no longer current: v1.0.0
+> needs Node 22.12+ (not 20), defaults to the `consumers` authority (not `common`), protects the token
+> key with DPAPI on Windows only (no Keychain or libsecret), defaults to the computer's time zone (not
+> Australia/Brisbane), and ships as a Claude Desktop extension (`.mcpb`). This document is otherwise
+> kept unchanged.
 
 **Companion to:** `personal-outlook-mcp-connector-requirements.md` (the "main spec")
 **Document type:** Investigation + requirements

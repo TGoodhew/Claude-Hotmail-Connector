@@ -5,8 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Check the roadmap first: the Spec v2 epic (#66) and the open issues may already cover it.
-        Features that broaden access (e.g. sending mail, deleting data) need a clear safety story; see the spec's threat model.
+        Check the open issues first: one may already cover it.
+        Features that broaden access (e.g. forwarding mail, hard deletes, inviting attendees) need a clear safety story; see the spec's threat model.
   - type: textarea
     id: problem
     attributes:

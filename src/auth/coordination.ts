@@ -117,8 +117,8 @@ export function osLockName(
  * Refuse a runtime that can't hold the OS lock: Node before 20.8 can't listen
  * on Linux abstract sockets. Falling back to the lock file there would let it
  * and a newer process sharing the cache take different locks and overlap, so
- * it stops with an error instead, and `engines` requires 20.8 (Copilot review
- * on #126).
+ * it stops with an error instead (Copilot review on #126). `engines` now
+ * requires 22.12 anyway (#148); the check stays for anyone running below it.
  */
 export function assertOsLockSupported(
   platform: NodeJS.Platform = process.platform,

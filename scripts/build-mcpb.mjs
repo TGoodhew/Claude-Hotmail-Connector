@@ -129,12 +129,13 @@ const manifest = {
   version: pkg.version,
   description:
     "Read email and read/write calendar events in your personal Microsoft account " +
-    "(Outlook.com / Hotmail / Live) via Microsoft Graph.",
+    "(Outlook.com / Hotmail / Live) via Microsoft Graph, and optionally send email you confirm.",
   long_description:
     "A local MCP server for personal Microsoft accounts, which Claude's official Microsoft 365 " +
-    "connector doesn't support. Mail is read-only; calendar writes are timezone-correct and " +
-    "confirmation-gated, never add attendees, and deletion is a guarded soft delete. You need " +
-    "your own Microsoft Entra app registration: see the README.",
+    "connector doesn't support. Mail is read-only unless you turn on sending, and then every " +
+    "email is shown to you in your browser and sent only when you click Send. Calendar writes " +
+    "are timezone-correct and confirmation-gated, never add attendees, and deletion is a guarded " +
+    "soft delete. You need your own Microsoft Entra app registration: see the README.",
   author: { name: "Tony Goodhew" },
   repository: { type: "git", url: `${repo}.git` },
   homepage: repo,

@@ -2,7 +2,8 @@
 
 A **local** [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets Claude
 **read email** and **read/write calendar events** in a **personal** Microsoft account
-(`@hotmail.com` / `@outlook.com` / `@live.com`) via the Microsoft Graph API.
+(`@hotmail.com` / `@outlook.com` / `@live.com`) via the Microsoft Graph API. If you turn it on, Claude
+can also **send email**, but only after you confirm each one in your browser.
 
 Claude's official Microsoft 365 connector only supports work/school (Microsoft Entra) accounts and
 rejects personal Microsoft accounts. This project fills that gap as a **personal, single-user tool**
@@ -28,8 +29,8 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 ```
 
 Because it runs locally, it works in **Claude Desktop** and **Claude Code / VS Code** on the same PC. It
-does **not** work in claude.ai on the web or mobile; that would need a remote mode, which is a future
-phase ([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58)).
+does **not** work in claude.ai on the web or mobile; that would need a remote mode, which isn't planned
+([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58), deferred).
 
 ## Tools
 
@@ -240,11 +241,11 @@ the checkout's (see [Security](#security)), so `logout` doesn't sign it out ther
 | `MICROSOFT_CLIENT_ID`      | — (required)                               | Your Entra app's Application (client) ID. The extension sets it from its settings.                                          |
 | `MICROSOFT_TENANT`         | `consumers`                                | Personal accounts only. `common` also allows work/school accounts (needs a multitenant registration).                       |
 | `DEFAULT_TIMEZONE`         | This computer's time zone (UTC if unknown) | IANA zone used when a call doesn't specify one. An invalid name stops the server at startup.                                |
-| `LOG_LEVEL`                | `info`                                     | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
+| `LOG_LEVEL`                | `info`                                     | `debug` / `info` / `warn` / `error` (logs go to stderr, and to the log file if `LOG_FILE` is on).                           |
 | `MICROSOFT_SCOPES`         | least-privilege set (spec §6)              | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
 | `ALLOW_SEND_MAIL`          | `false`                                    | `true` lets Claude send emails and replies, each confirmed by you in the browser (adds `Mail.Send`).                        |
 | `LOG_FILE`                 | `false`                                    | `true` also writes the logs to `connector.log` in the cache folder, capped at 2 MB (see Troubleshooting).                   |
-| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir                         | Where the encrypted token cache lives.                                                                                      |
+| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir                         | Where the encrypted token cache (and the log file, if on) lives.                                                            |
 
 ## Usage example
 
@@ -286,8 +287,8 @@ More things to ask:
   ([#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83)). Tokens are never committed,
   logged or returned to the client.
 - **Logging:** structured logs go to **stderr** (stdout is reserved for MCP JSON-RPC) and are
-  scrubbed of tokens, `Authorization` headers, OAuth codes, secrets and your account name. They never
-  include what's in your emails or events. With **Write a log file** on (`LOG_FILE`), they also go to
+  scrubbed of tokens, `Authorization` headers, OAuth codes, secrets, your account name and any email
+  address. They never include what's in your emails or events. With **Write a log file** on (`LOG_FILE`), they also go to
   `connector.log` (see Troubleshooting).
 - **Email (and others' invites) are untrusted input:** they're written by strangers and may try to
   steer the model. Unless you turn sending on, the connector can't send mail; when it's on, every
@@ -375,15 +376,19 @@ npm run build:mcpb      # Claude Desktop extension -> build/hotmail-connector.mc
 
 Layout (tests are colocated as `src/**/*.test.ts`):
 
-- `src/index.ts`: CLI and stdio entry (`login`, `logout`, `whoami`; default = server).
-  `src/mcp.ts`: server assembly.
+- `src/index.ts`: CLI and stdio entry (`login`, `logout`, `whoami`; default = server), with
+  `src/cli.ts` (argument parsing). `src/mcp.ts`: server assembly. `src/pdf-worker.ts`: the isolated
+  PDF text extractor.
 - `src/auth`: Microsoft OAuth (PKCE + loopback, on-demand sign-in) and the encrypted token cache
   (DPAPI-protected key on Windows).
 - `src/graph`: Graph client (auth, retries, paging) plus the mail, attachments, calendar, free/busy
   and user modules.
 - `src/tools`: zod schemas and thin tool handlers.
-- `src/util`: time zones, HTML-to-text, iCalendar parsing, file retries, logging, errors.
+- `src/send`: the browser confirmation page that every email waits on when sending is on.
+- `src/util`: time zones, HTML-to-text, iCalendar parsing, file retries, logging and the log file,
+  errors.
 - `scripts/`: `build-mcpb.mjs` (extension), `check-text.mjs`, `test-live.mjs`, `register-app.ps1`.
+- `assets/`: the extension icon (SVG source and the PNG the bundle uses).
 
 ## Requirements, design & roadmap
 
@@ -395,9 +400,12 @@ Layout (tests are colocated as `src/**/*.test.ts`):
 - [`docs/local-hosting-investigation-and-requirements.md`](docs/local-hosting-investigation-and-requirements.md):
   the original local-hosting investigation (superseded by spec v2; kept for the record).
 - [`CHANGELOG.md`](CHANGELOG.md): what changed in each release.
-- **Roadmap:** the [Spec v2 epic (#66)](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66)
-  is done apart from hands-on checks. Future work, such as PDF attachments and a remote mode for claude.ai, is collected in
-  [#150](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/150).
+- **Roadmap:** everything planned is done as of v1.0. The
+  [Spec v2 epic (#66)](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66) and the
+  follow-up list ([#150](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/150)) are closed,
+  and a remote mode for claude.ai is deferred
+  ([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58)). Anything new is in the
+  [open issues](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues).
 
 ## Platforms
 
