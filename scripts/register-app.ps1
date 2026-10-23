@@ -55,7 +55,9 @@ $rra = @(
   }
 )
 $rraFile = New-TemporaryFile
-$rra | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $rraFile -Encoding utf8
+# -InputObject, not a pipe: piping a one-element array unwraps it, and az then
+# silently ignores the object it gets instead of an array (no permissions set).
+ConvertTo-Json -InputObject $rra -Depth 6 | Set-Content -LiteralPath $rraFile -Encoding utf8
 
 Write-Host "Creating public-client app registration '$DisplayName' ($Audience accounts)..." -ForegroundColor Cyan
 # Personal-account apps require v2 access tokens; harmless for multitenant ones.
@@ -67,7 +69,18 @@ $app = az ad app create `
   --public-client-redirect-uris "http://localhost" `
   --required-resource-accesses "@$rraFile" | ConvertFrom-Json
 
+$created = $LASTEXITCODE
 Remove-Item -LiteralPath $rraFile -Force -ErrorAction SilentlyContinue
+if ($created -ne 0 -or -not $app.appId) {
+  throw "az ad app create failed (exit code $created); see the error above."
+}
+# Check the Graph permissions landed: az doesn't fail when it ignores them.
+$granted = @($app.requiredResourceAccess | Where-Object { $_.resourceAppId -eq $graphAppId } |
+  ForEach-Object { $_.resourceAccess })
+if ($granted.Count -ne $scopes.Count) {
+  throw "The app '$($app.appId)' was created without its $($scopes.Count) Microsoft Graph " +
+    "permissions. Add them under API permissions, or delete the app and run this script again."
+}
 
 Write-Host ""
 Write-Host "Done. Application (client) id:" -ForegroundColor Green
