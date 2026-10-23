@@ -106,8 +106,21 @@ Inspect a bundle with `npx mcpb info build/hotmail-connector.mcpb`, or unpack it
   keychain support there isn't planned; PRs welcome
   ([#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83)).
 - **Contents:** `server/index.cjs` (the server), `server/pdf-worker.cjs` (the PDF text extractor,
-  started as a worker thread, #156), `manifest.json`, `LICENSE`, and `THIRD_PARTY_NOTICES.txt`. The
+  started as a worker thread, #156), `manifest.json`, `icon.png`, `LICENSE`, and `THIRD_PARTY_NOTICES.txt`. The
   notices list every bundled package with its license; they're generated at build time from what
   esbuild actually bundled, plus pdf.js's Apache-2.0 license (`licenses/`), since unpdf bundles pdf.js
   without it.
+- **Icon:** `assets/icon.svg` is the source, and `assets/icon.png` is the 512×512 PNG the bundle uses
+  (the size MCPB recommends). The design is generic, with no Microsoft or Anthropic marks (#179).
+  After changing the SVG, render the PNG again with Edge from a page that shows just the SVG at
+  512×512, then commit both files:
+
+  ```powershell
+  & "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe" --headless=new --hide-scrollbars `
+    --force-device-scale-factor=1 --default-background-color=00000000 --window-size=512,512 `
+    --screenshot=assets\icon.png "file:///C:/path/to/icon.html"
+  ```
+
+  Here `icon.html` is `<body style="margin:0">` plus the SVG inline, with `svg{display:block}`.
+
 - **Signing:** bundles are currently unsigned (`mcpb sign` is available if that changes).

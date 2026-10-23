@@ -116,6 +116,9 @@ for (const dir of [...bundled].sort()) {
 writeFileSync(join(stageDir, "THIRD_PARTY_NOTICES.txt"), notices.join("\n"));
 console.log(`Listed ${bundled.size} bundled packages in THIRD_PARTY_NOTICES.txt`);
 copyFileSync(join(root, "LICENSE"), join(stageDir, "LICENSE"));
+// The icon Claude Desktop shows for the extension (#179): a 512×512 PNG rendered
+// from assets/icon.svg (see docs/packaging.md).
+copyFileSync(join(root, "assets", "icon.png"), join(stageDir, "icon.png"));
 
 // 2. Manifest (MCPB manifest spec 0.3).
 const repo = "https://github.com/TGoodhew/Claude-Hotmail-Connector";
@@ -138,6 +141,7 @@ const manifest = {
   documentation: `${repo}#readme`,
   support: `${repo}/blob/main/SUPPORT.md`,
   license: "MIT",
+  icon: "icon.png",
   keywords: ["outlook", "hotmail", "calendar", "email", "microsoft-graph"],
   server: {
     type: "node",
