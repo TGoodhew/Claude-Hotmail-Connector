@@ -2,7 +2,7 @@
   register-app.ps1 — create YOUR OWN Microsoft Entra app registration for the connector.
 
   Each user brings their own registration (spec v2 section 8.1); the connector does not ship a shared
-  one. This turns the README's portal walkthrough ("Register a Microsoft Entra application")
+  one. This turns the README's portal walkthrough ("Step 1: register your own Microsoft Entra application")
   into one command. The app is a PUBLIC / native client: it authenticates with PKCE and NO
   client secret, so the resulting "Application (client) ID" is not a secret.
 
