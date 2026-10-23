@@ -151,7 +151,8 @@ The connector signs in as a **public/native client**. No client secret is ever u
    chat.)
 3. Enter your **Application (client) ID** from step 1. You can change it later under **Settings →
    Extensions → Hotmail Connector**. Make sure the extension is switched on there. If you also run
-   the connector from source (step 2b), use the same client ID: the two share one saved sign-in.
+   the connector from source (step 2b), use the same client ID. On Windows each keeps its own saved
+   sign-in, because Claude Desktop is an MSIX app (see [Security](#security)).
 4. Ask Claude something that needs your mailbox or calendar. The first time, a Microsoft sign-in opens
    in your browser. Finish it within about 45 seconds and that request carries on; otherwise ask
    again once you've signed in.
@@ -229,6 +230,9 @@ node dist/index.js whoami    # prints your name and account, e.g. Jane Doe <jane
 node dist/index.js logout    # removes the saved sign-in (token cache and key)
 ```
 
+On Windows, Claude Desktop (a Microsoft Store/MSIX app) keeps the extension's sign-in separate from
+the checkout's (see [Security](#security)), so `logout` doesn't sign it out there.
+
 ### Configuration
 
 | Variable                   | Default                                    | Notes                                                                                                                       |
@@ -269,6 +273,12 @@ More things to ask:
 - **Token storage:** the refresh token is encrypted with AES-256-GCM in your user profile
   (`%LOCALAPPDATA%\claude-hotmail-connector` on Windows; elsewhere
   `$XDG_STATE_HOME/claude-hotmail-connector` if that's set, else `~/.claude-hotmail-connector`).
+  Claude for Windows is a Microsoft Store (MSIX) app, so Windows keeps the extension's copy in a
+  private folder for Claude:
+  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector`. The
+  extension and a source checkout therefore sign in separately, and `logout` doesn't sign Claude
+  Desktop out; ask Claude to sign out (`sign_out`) for that
+  ([#176](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/176)).
   On **Windows** the encryption key is protected with **DPAPI**, so only your Windows account on this
   PC can unlock it; copying the folder elsewhere isn't enough. On macOS/Linux the key is an owner-only
   file in the same folder: Keychain/libsecret support isn't planned, but a PR adding it is welcome
@@ -316,9 +326,9 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
   browser is set; from a source checkout you can also run `node dist/index.js login`. After a cancelled
   sign-in, the connector waits 30 seconds before opening another window.
 - **"Microsoft refused the saved sign-in":** the saved sign-in expired or was revoked, or it was made
-  with a different client ID. A common cause is giving Claude Desktop and a source checkout different
-  client IDs: they share one saved sign-in, so use the same ID in both. Then sign in again: ask
-  Claude, or run `node dist/index.js login`.
+  with a different client ID. Outside Windows, a common cause is giving Claude Desktop and a source
+  checkout different client IDs while they share one saved sign-in, so use the same ID in both. Then
+  sign in again: ask Claude, or run `node dist/index.js login`.
 - **"Sending email is turned on, but your Microsoft sign-in doesn't include permission to send":**
   ask Claude to sign out (`sign_out`), then try again. Microsoft will ask you to allow sending.
 - **No confirmation page appears when sending:** check that a default web browser is set. Nothing is

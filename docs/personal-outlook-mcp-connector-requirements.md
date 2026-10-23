@@ -566,7 +566,11 @@ signed in to that tenant. Registration settings:
   - **macOS / Linux:** plain owner-only key file. Keychain/libsecret support is not planned (owner
     decision 2026-10-23: the maintainer supports Windows only); PRs welcome *(#83)*.
 - Cache location: `%LOCALAPPDATA%\claude-hotmail-connector` (Windows) or `~/.claude-hotmail-connector`,
-  overridable with `CLAUDE_HOTMAIL_CACHE_DIR`.
+  overridable with `CLAUDE_HOTMAIL_CACHE_DIR`. Claude for Windows is an MSIX package, so Windows
+  redirects the extension's copy to
+  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector`. The
+  extension and a source checkout keep separate sign-ins, and each signs out on its own: `sign_out`
+  in Claude Desktop, `logout` from the checkout (§16, #176).
 - Tokens are never logged, returned to the client, or committed. Users MUST have a way to sign out and
   clear the cache. Removing the extension runs no cleanup, so `sign_out` (§7.1a) removes the cache and
   key (`logout` from a source checkout does the same).
@@ -868,6 +872,12 @@ and the DELETE is still deleted.
   retries of the DELETE (throttling, 5xx, 401, timeouts) skipped the guards and could stretch the
   window to the call's 55 s deadline. So the DELETE is now sent once, and each retry re-reads and
   re-runs the guards (§7.8). The window stays milliseconds per attempt.
+
+Owner decision (2026-10-23) on the cache location under Claude for Windows (#176). It is an MSIX
+package, so Windows redirects the extension's cache to a per-package folder, apart from a source
+checkout's. The separate sign-ins are **accepted** (option A), and the docs say where each lives.
+Moving the cache out of AppData so both share it (option B) was declined: it would need a
+migration and depends on how Claude's packaging behaves.
 
 ---
 
