@@ -143,6 +143,32 @@ describe("send confirmation page (#57)", () => {
     expect(await outcome).toEqual({ status: "sent" });
   });
 
+  it("accepts the page's own click when the browser sends Origin: null (live test, #57)", async () => {
+    // What Edge sent from the real page: an opaque origin, marked same-origin.
+    const { confirmer, urls } = setup();
+    const send = vi.fn(async () => undefined);
+    const outcome = confirmer.confirm(EMAIL, send, 10_000);
+    const url = await opened(urls);
+    // A null origin alone could come from anywhere (a sandboxed frame, a file).
+    expect((await post(url, "send", { origin: "null" })).status).toBe(403);
+    expect(
+      (await post(url, "send", { origin: "null", "sec-fetch-site": "cross-site" })).status,
+    ).toBe(403);
+    expect(send).not.toHaveBeenCalled();
+    const res = await post(url, "send", { origin: "null", "sec-fetch-site": "same-origin" });
+    expect(res.status).toBe(200);
+    expect(await outcome).toEqual({ status: "sent" });
+  });
+
+  it("keeps the page's URL from other sites, without blanking its own origin", async () => {
+    const { confirmer, urls } = setup();
+    const outcome = confirmer.confirm(EMAIL, async () => undefined, 10_000);
+    const url = await opened(urls);
+    expect((await fetch(url)).headers.get("referrer-policy")).toBe("same-origin");
+    await post(url, "cancel");
+    await outcome;
+  });
+
   it("ignores anything but a clear Send or Don't send, and unknown pages", async () => {
     const { confirmer, urls } = setup();
     const send = vi.fn(async () => undefined);

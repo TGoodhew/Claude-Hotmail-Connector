@@ -80,7 +80,9 @@ const SECURITY_HEADERS: Record<string, string> = {
     "base-uri 'none'",
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
-  "referrer-policy": "no-referrer",
+  // Not no-referrer: under it, browsers send `Origin: null` on the page's own
+  // form post. same-origin still keeps the one-time URL from other sites.
+  "referrer-policy": "same-origin",
   "cache-control": "no-store",
 };
 
@@ -171,14 +173,24 @@ export function createSendConfirmer(deps: SendConfirmerDeps): SendConfirmer {
       return;
     }
     // Only this page may decide: refuse a post from another site, even though
-    // it couldn't know the URL.
+    // it couldn't know the URL. A browser can still send `Origin: null` for
+    // the page's own post (under some referrer policies); that's accepted only
+    // when the browser itself marks the request same-origin, which another
+    // site can't make it do.
     const origin = req.headers.origin;
     const fetchSite = req.headers["sec-fetch-site"];
     const ownOrigin = `http://${host}:${await port()}`;
+    const sameOrigin = fetchSite === "same-origin";
     if (
-      (origin && origin !== ownOrigin) ||
+      (origin && origin !== ownOrigin && !(origin === "null" && sameOrigin)) ||
       (fetchSite && !["same-origin", "none"].includes(String(fetchSite)))
     ) {
+      // What the browser sent (no addresses or content) helps tell a real
+      // cross-site post from a browser quirk.
+      log.warn("Refused a confirmation post that didn't come from the page", {
+        origin: String(origin ?? ""),
+        fetchSite: String(fetchSite ?? ""),
+      });
       res.writeHead(403, SECURITY_HEADERS);
       res.end(page("Not allowed", "<p>This request didn't come from the confirmation page.</p>"));
       return;
