@@ -307,7 +307,8 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - **Graph:** `calendarView` over the range, read in UTC (`Prefer: outlook.timezone="UTC"`) so instants are
   exact. **All-day events are dates, not instants:** Graph returns them as midnight to midnight labelled
   with whatever zone was requested (verified live, 2026-10-23), so they're read as whole local days in
-  the requested zone. Graph also matches them to the query by those UTC-labelled dates, so events are
+  the requested zone (by default the computer's zone), midnight to midnight with daylight saving applied, so a
+  day when the clocks change lasts 23 or 25 hours. Graph also matches them to the query by those UTC-labelled dates, so events are
   read from a day before the range to a day after it, then clipped *(#158)*. `getSchedule` isn't used: personal accounts can't rely on it.
 - **Inputs:** `startDateTime`, `endDateTime` (as §7.4; at most 62 days), `timeZone?`, `minDurationMinutes?`
   (5–1440, default 30), `withinHours?` (`{start, end}` local `HH:mm`, e.g. working hours),

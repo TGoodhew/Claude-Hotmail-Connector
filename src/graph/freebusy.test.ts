@@ -270,6 +270,25 @@ describe("findFreeTime (#52)", () => {
     expect(sydney.freeSlots).toEqual([]);
   });
 
+  it("gives an all-day event on a clock-change day its real length (#158)", async () => {
+    // Los Angeles falls back on Sunday 2026-11-01: that day is 25 hours long.
+    const allDay = { ...ev("2026-11-01T00:00:00", "2026-11-02T00:00:00"), isAllDay: true };
+    const res = await findFreeTime(graphOf({ value: [allDay] }).graph, {
+      startDateTime: "2026-10-31",
+      endDateTime: "2026-11-03",
+      timeZone: "America/Los_Angeles",
+      minDurationMinutes: 30,
+    });
+    // Local midnight to local midnight: -07:00 before the change, -08:00 after.
+    expect(res.busy.map((b) => [b.startUtc, b.endUtc])).toEqual([
+      ["2026-11-01T07:00:00Z", "2026-11-02T08:00:00Z"],
+    ]);
+    expect(res.freeSlots.map((s) => [s.start, s.end])).toEqual([
+      ["2026-10-31T00:00:00", "2026-11-01T00:00:00"],
+      ["2026-11-02T00:00:00", "2026-11-03T00:00:00"],
+    ]);
+  });
+
   it("reads a day past each end of the range, where all-day events can sit (#158)", async () => {
     const { request, graph } = graphOf();
     await findFreeTime(graph, base);
