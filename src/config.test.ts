@@ -8,6 +8,7 @@ import {
   FALLBACK_TIMEZONE,
   loadConfig,
   MISSING_CLIENT_ID_MESSAGE,
+  SEND_SCOPE,
   systemTimeZone,
 } from "./config.js";
 import { ConfigError } from "./util/errors.js";
@@ -159,5 +160,35 @@ describe("loadConfig", () => {
 
   it("rejects an invalid LOG_LEVEL", () => {
     expect(() => loadConfig({ ...base, LOG_LEVEL: "verbose" })).toThrow(ConfigError);
+  });
+});
+
+describe("ALLOW_SEND_MAIL (#57)", () => {
+  it("is off unless turned on, and only then requests Mail.Send", () => {
+    expect(loadConfig(base)).toMatchObject({ allowSendMail: false, scopes: [...DEFAULT_SCOPES] });
+    for (const off of ["", "false", "0", "no", "OFF", "${user_config.allow_send}"]) {
+      expect(loadConfig({ ...base, ALLOW_SEND_MAIL: off }).allowSendMail, off).toBe(false);
+    }
+    for (const on of ["true", "1", "yes", "On"]) {
+      const cfg = loadConfig({ ...base, ALLOW_SEND_MAIL: on });
+      expect(cfg.allowSendMail, on).toBe(true);
+      expect(cfg.scopes).toEqual([...DEFAULT_SCOPES, SEND_SCOPE]);
+    }
+    expect(() => loadConfig({ ...base, ALLOW_SEND_MAIL: "maybe" })).toThrow(ConfigError);
+  });
+
+  it("can't be granted through MICROSOFT_SCOPES, which only narrows", () => {
+    expect(() => loadConfig({ ...base, MICROSOFT_SCOPES: "Mail.Read Mail.Send" })).toThrow(
+      /not allowed: Mail.Send.*set ALLOW_SEND_MAIL=true instead/,
+    );
+    // With sending on, narrowing may keep it, or drop it.
+    const keep = loadConfig({
+      ...base,
+      ALLOW_SEND_MAIL: "true",
+      MICROSOFT_SCOPES: "Mail.Read mail.send",
+    });
+    expect(keep.scopes).toEqual(["openid", "offline_access", "Mail.Read", SEND_SCOPE]);
+    const drop = loadConfig({ ...base, ALLOW_SEND_MAIL: "true", MICROSOFT_SCOPES: "Mail.Read" });
+    expect(drop.scopes).not.toContain(SEND_SCOPE);
   });
 });

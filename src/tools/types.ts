@@ -13,6 +13,7 @@ import { z, type ZodRawShape } from "zod";
 import type { AppConfig } from "../config.js";
 import type { MicrosoftAuth } from "../auth/microsoft.js";
 import type { GraphClient } from "../graph/client.js";
+import type { SendConfirmer } from "../send/confirm.js";
 
 export interface ToolContext {
   graph: GraphClient;
@@ -22,7 +23,15 @@ export interface ToolContext {
    * lets the server bind each tool call's Graph requests to one sign-out epoch.
    */
   auth?: Pick<MicrosoftAuth, "signOut"> &
-    Partial<Pick<MicrosoftAuth, "signOutEpoch" | "syncSignOuts">>;
+    Partial<Pick<MicrosoftAuth, "signOutEpoch" | "syncSignOuts" | "grantedScopes">>;
+  /**
+   * The connector's own Graph client, not bound to this tool call: for work
+   * that can finish after the call returns, such as an email sent when the
+   * user confirms it later (#57).
+   */
+  unscopedGraph?: GraphClient;
+  /** Shows an email to the user for confirmation before it's sent (#57). */
+  sendConfirmer?: SendConfirmer;
 }
 
 /** MCP behaviour hints surfaced to the client/model. */

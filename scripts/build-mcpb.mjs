@@ -145,7 +145,10 @@ const manifest = {
     mcp_config: {
       command: "node",
       args: ["${__dirname}/server/index.cjs"],
-      env: { MICROSOFT_CLIENT_ID: "${user_config.client_id}" },
+      env: {
+        MICROSOFT_CLIENT_ID: "${user_config.client_id}",
+        ALLOW_SEND_MAIL: "${user_config.allow_send}",
+      },
     },
   },
   user_config: {
@@ -157,11 +160,30 @@ const manifest = {
         "or scripts/register-app.ps1). Not a secret.",
       required: true,
     },
+    // Sending mail (#57): off unless the user turns it on.
+    allow_send: {
+      type: "boolean",
+      title: "Allow sending email",
+      description:
+        "Let Claude send emails and replies from your account. Each one is shown to you in your " +
+        "browser first, and sent only if you click Send there. Turning this on asks you to sign " +
+        "in to Microsoft once more, to allow sending.",
+      default: false,
+      required: false,
+    },
   },
   tools: [
     { name: "whoami", description: "Show the connected personal Microsoft account." },
     { name: "list_messages", description: "Search or list email (read-only)." },
     { name: "get_message", description: "Read one email as text (read-only)." },
+    {
+      name: "send_email",
+      description: "Send an email, after you confirm it in your browser (if sending is on).",
+    },
+    {
+      name: "reply_to_email",
+      description: "Reply to an email's sender, after you confirm it (if sending is on).",
+    },
     { name: "get_attachment", description: "Read a text, HTML, PDF or .ics email attachment." },
     { name: "list_mail_folders", description: "List your mail folders (read-only)." },
     { name: "list_calendars", description: "List your calendars (own and shared)." },

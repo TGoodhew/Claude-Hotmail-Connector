@@ -56,6 +56,12 @@ export const DEFAULT_SCOPES = [
 ] as const;
 
 /**
+ * Sending mail (#57): requested only when the user turns sending on
+ * (`ALLOW_SEND_MAIL`). `Mail.Send` can only send, not read, move or delete.
+ */
+export const SEND_SCOPE = "Mail.Send";
+
+/**
  * Personal Microsoft accounts only (spec v2 §8.1, #62): this connector exists
  * for hotmail/outlook/live accounts. Work/school accounts use Claude's official
  * M365 connector. Set `MICROSOFT_TENANT=common` with a multitenant registration
@@ -106,6 +112,8 @@ const EnvSchema = z.object({
     .optional()
     .transform((v) => (v && v.length > 0 ? v : undefined)),
   MICROSOFT_SCOPES: z.string().trim().optional(),
+  // The extension passes its checkbox as "true" / "false"; blank means off.
+  ALLOW_SEND_MAIL: z.string().trim().optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   CLAUDE_HOTMAIL_CACHE_DIR: z.string().trim().optional(),
 });
@@ -121,6 +129,12 @@ export interface AppConfig {
   defaultTimeZone: string;
   /** Delegated Graph scopes. */
   scopes: string[];
+  /**
+   * Whether sending mail is turned on (`ALLOW_SEND_MAIL`, #57). Off by default;
+   * when on, `Mail.Send` is requested and the send tools are offered, each send
+   * still needing the user's click in the browser.
+   */
+  allowSendMail: boolean;
   /** Microsoft Graph v1.0 base URL. */
   graphBaseUrl: string;
   /** Loopback host for the OAuth redirect listener. */
@@ -148,32 +162,55 @@ function resolveCacheDir(env: NodeJS.ProcessEnv): string {
  * Scopes `MICROSOFT_SCOPES` may choose from: the least-privilege default plus
  * `Calendars.Read`, the read-only narrowing of `Calendars.ReadWrite`. The
  * override can only narrow access, never broaden it (spec v2 §6, decision D11).
+ * `Mail.Send` joins both lists only when sending is turned on (#57).
  */
 export const ALLOWED_SCOPES = [...DEFAULT_SCOPES, "Calendars.Read"] as const;
+
+function scopeLists(allowSend: boolean): { defaults: string[]; allowed: string[] } {
+  const extra = allowSend ? [SEND_SCOPE] : [];
+  return { defaults: [...DEFAULT_SCOPES, ...extra], allowed: [...ALLOWED_SCOPES, ...extra] };
+}
+
+/**
+ * `ALLOW_SEND_MAIL`: true / false (also 1/0, yes/no, on/off); unset or blank is
+ * off, and so is a setting the extension host left unfilled (`${...}`): a
+ * missing switch must never stop the server, nor turn sending on.
+ */
+function parseAllowSend(raw: string | undefined): boolean {
+  const v = (raw ?? "").toLowerCase();
+  if (v.startsWith("${")) return false;
+  if (["", "false", "0", "no", "off"].includes(v)) return false;
+  if (["true", "1", "yes", "on"].includes(v)) return true;
+  throw new ConfigError(`ALLOW_SEND_MAIL must be true or false; got "${raw}".`);
+}
 
 /** Always requested: needed for sign-in and silent refresh. */
 export const REQUIRED_SCOPES = ["openid", "offline_access"] as const;
 
-function parseScopes(raw: string | undefined): string[] {
-  if (!raw) return [...DEFAULT_SCOPES];
+function parseScopes(raw: string | undefined, allowSend: boolean): string[] {
+  const { defaults, allowed } = scopeLists(allowSend);
+  if (!raw) return defaults;
   const requested = raw
     .split(/[\s,]+/)
     .map((s) => s.trim())
     .filter(Boolean);
-  if (requested.length === 0) return [...DEFAULT_SCOPES];
+  if (requested.length === 0) return defaults;
 
   // Graph scope names are case-insensitive; normalise to the canonical spelling.
-  const canonical = new Map<string, string>(ALLOWED_SCOPES.map((s) => [s.toLowerCase(), s]));
+  const canonical = new Map<string, string>(allowed.map((s) => [s.toLowerCase(), s]));
   const rejected = requested.filter((s) => !canonical.has(s.toLowerCase()));
   if (rejected.length > 0) {
+    const sendHint = rejected.some((s) => s.toLowerCase() === SEND_SCOPE.toLowerCase())
+      ? " To send mail, set ALLOW_SEND_MAIL=true instead."
+      : "";
     throw new ConfigError(
       `MICROSOFT_SCOPES may only narrow the default scopes; not allowed: ${rejected.join(", ")}. ` +
-        `Allowed: ${ALLOWED_SCOPES.join(" ")}.`,
+        `Allowed: ${allowed.join(" ")}.${sendHint}`,
     );
   }
   const chosen = new Set(requested.map((s) => canonical.get(s.toLowerCase())!));
   for (const s of REQUIRED_SCOPES) chosen.add(s);
-  return ALLOWED_SCOPES.filter((s) => chosen.has(s));
+  return allowed.filter((s) => chosen.has(s));
 }
 
 /**
@@ -192,6 +229,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const e = parsed.data;
   const cacheDir = resolveCacheDir(env);
+  const allowSendMail = parseAllowSend(e.ALLOW_SEND_MAIL);
   const clientId = e.MICROSOFT_CLIENT_ID;
   if (!clientId) throw new ConfigError(MISSING_CLIENT_ID_MESSAGE);
   // Checked here so a typo fails at startup, not on every calendar call.
@@ -207,7 +245,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     microsoftTenant: e.MICROSOFT_TENANT,
     authority: `https://login.microsoftonline.com/${e.MICROSOFT_TENANT}`,
     defaultTimeZone: e.DEFAULT_TIMEZONE ?? systemTimeZone(),
-    scopes: parseScopes(e.MICROSOFT_SCOPES),
+    scopes: parseScopes(e.MICROSOFT_SCOPES, allowSendMail),
+    allowSendMail,
     graphBaseUrl: GRAPH_BASE_URL,
     loopbackHost: LOOPBACK_HOST,
     cacheDir,

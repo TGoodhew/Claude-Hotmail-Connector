@@ -21,10 +21,26 @@ describe("toolsForScopes", () => {
       .map((t) => t.name)
       .sort();
 
-  it("keeps every tool for the default scopes", () => {
-    expect(toolsForScopes(loadConfig({ MICROSOFT_CLIENT_ID: "c" }).scopes)).toHaveLength(
-      allTools().length,
+  it("keeps every tool but the send tools for the default scopes", () => {
+    const send = ["reply_to_email", "send_email"];
+    expect(names(loadConfig({ MICROSOFT_CLIENT_ID: "c" }).scopes)).toEqual(
+      allTools()
+        .map((t) => t.name)
+        .filter((n) => !send.includes(n))
+        .sort(),
     );
+  });
+
+  it("adds the send tools only when sending is turned on (#57)", () => {
+    const on = loadConfig({ MICROSOFT_CLIENT_ID: "c", ALLOW_SEND_MAIL: "true" }).scopes;
+    expect(toolsForScopes(on)).toHaveLength(allTools().length);
+    // Narrowed away again, they go too.
+    const narrowed = loadConfig({
+      MICROSOFT_CLIENT_ID: "c",
+      ALLOW_SEND_MAIL: "true",
+      MICROSOFT_SCOPES: "User.Read Mail.Read",
+    }).scopes;
+    expect(names(narrowed)).not.toContain("send_email");
   });
 
   it("drops the calendar write tools when narrowed to Calendars.Read", () => {
@@ -79,10 +95,15 @@ const EXPECTED_TOOLS = [
   "list_events",
   "list_mail_folders",
   "list_messages",
+  "reply_to_email",
+  "send_email",
   "sign_out",
   "update_event",
   "whoami",
 ];
+
+/** Offered by default: all but the send tools, which need ALLOW_SEND_MAIL (#57). */
+const DEFAULT_TOOLS = EXPECTED_TOOLS.filter((n) => n !== "send_email" && n !== "reply_to_email");
 
 const config = loadConfig({ MICROSOFT_CLIENT_ID: "test-client" });
 
@@ -243,7 +264,7 @@ describe("tool calls are bound to one sign-out epoch", () => {
 });
 
 describe("createMcpServer (in-memory transport)", () => {
-  it("advertises all thirteen tools with input schemas", async () => {
+  it("advertises the thirteen default tools with input schemas", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createMcpServer(testCtx());
     await server.connect(serverTransport);
@@ -252,7 +273,7 @@ describe("createMcpServer (in-memory transport)", () => {
     await client.connect(clientTransport);
 
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(EXPECTED_TOOLS);
+    expect(tools.map((t) => t.name).sort()).toEqual(DEFAULT_TOOLS);
     for (const t of tools) {
       expect(t.description).toBeTruthy();
       expect(t.inputSchema).toBeTruthy();
@@ -341,7 +362,7 @@ function stringEnv(): Record<string, string> {
 
 describe("built server subprocess", () => {
   it.runIf(existsSync(distPath))(
-    "lists all thirteen tools over a real stdio handshake",
+    "lists the thirteen default tools over a real stdio handshake",
     async () => {
       const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
       const transport = new StdioClientTransport({
@@ -354,7 +375,7 @@ describe("built server subprocess", () => {
       await client.connect(transport);
       try {
         const { tools } = await client.listTools();
-        expect(tools.map((t) => t.name).sort()).toEqual(EXPECTED_TOOLS);
+        expect(tools.map((t) => t.name).sort()).toEqual(DEFAULT_TOOLS);
       } finally {
         await client.close();
       }

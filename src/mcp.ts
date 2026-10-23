@@ -13,6 +13,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { scopeToOperation, withinLimits } from "./graph/client.js";
 import { calendarTools } from "./tools/calendar.js";
 import { mailTools } from "./tools/mail.js";
+import { sendTools } from "./tools/send.js";
 import type { RegisteredTool, ToolContext } from "./tools/types.js";
 import { userTools } from "./tools/user.js";
 import { clientSafeMessage } from "./util/errors.js";
@@ -39,7 +40,7 @@ export const TOOL_CALL_DEADLINE_MS = 55_000;
 
 /** All tools exposed by the connector. */
 export function allTools(): RegisteredTool[] {
-  return [...userTools, ...mailTools, ...calendarTools];
+  return [...userTools, ...mailTools, ...sendTools, ...calendarTools];
 }
 
 /**
@@ -93,7 +94,11 @@ export function createMcpServer(
             signal: extra?.signal,
             deadline,
           });
-          const result = await tool.handler(args ?? {}, { ...ctx, graph });
+          const result = await tool.handler(args ?? {}, {
+            ...ctx,
+            graph,
+            unscopedGraph: ctx.unscopedGraph ?? ctx.graph,
+          });
           return result as CallToolResult;
         } catch (err) {
           log.error("Tool handler failed", {
