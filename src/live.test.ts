@@ -359,9 +359,10 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
         expect(second).toBeGreaterThan(first);
         // Graph must keep the comment's line break, else replies need HTML (#184).
         expect(kept, "the reply draft lost the comment's line break").toBe(true);
-        if (quote >= 0) {
-          expect(quote).toBeGreaterThan(lines.findIndex((l) => l === "Second line."));
-        }
+        // The quoted original must be kept, below the comment: its header line
+        // ("From:", or "De:"/"Von:" in other languages) is how it's found.
+        expect(quote, "the reply draft has no quoted original").toBeGreaterThanOrEqual(0);
+        expect(quote).toBeGreaterThan(lines.findIndex((l) => l === "Second line."));
       } finally {
         if (KEEP_DRAFTS) {
           console.log(
