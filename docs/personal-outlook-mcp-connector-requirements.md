@@ -255,8 +255,11 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
     (e.g. `REQUEST`, `CANCEL`). Times stay as the file gives them, each with its zone: `UTC`, the
     file's `TZID`, or null for a date or a floating time. At most 50 events, text fields cut at 4,000
     characters. The parser is strict: lines it doesn't understand, impossible dates (e.g. 30 February),
-    durations outside RFC 5545's grammar, stray `END` lines and events nested inside events are skipped,
-    never guessed at. Folded lines are unfolded before decoding, so a fold inside a multi-byte character
+    durations outside RFC 5545's grammar, contradictory or unsupported `VALUE` types, statuses other than
+    `TENTATIVE` / `CONFIRMED` / `CANCELLED`, identifiers (METHOD, STATUS, TZID, DURATION) over 100
+    characters and RRULEs over 1,000 (dropped, never cut, since a cut one means something else), stray `END` lines and events nested inside events are skipped,
+    never guessed at. A bare date with no `VALUE` is read as a date: strictly malformed, but
+    unambiguous, and booking systems send it *(#157)*. Folded lines are unfolded before decoding, so a fold inside a multi-byte character
     doesn't corrupt it.
 - **Refused, with a clear message:** PDFs (for now: #150), images and any other binary; attached items
   and links (not files); text that turns out to hold NUL bytes; anything over **1 MB**, by Graph's

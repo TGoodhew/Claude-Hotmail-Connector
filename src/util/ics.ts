@@ -43,6 +43,24 @@ export interface IcsCalendar {
 export const MAX_ICS_EVENTS = 50;
 /** Longest description kept per event; longer ones are cut. */
 export const MAX_ICS_TEXT_CHARS = 4_000;
+/**
+ * Longest identifier-like value kept (METHOD, STATUS, TZID, DURATION). These are
+ * never cut, since a cut one would mean something else: longer ones are dropped.
+ */
+export const MAX_ICS_TOKEN_CHARS = 100;
+/** Longest RRULE kept, likewise never cut. */
+export const MAX_ICS_RRULE_CHARS = 1_000;
+
+/** The statuses a VEVENT may have (RFC 5545, 3.8.1.11). */
+const EVENT_STATUSES = new Set(["TENTATIVE", "CONFIRMED", "CANCELLED"]);
+/** An iana-token, as METHOD values are. */
+const TOKEN_RE = /^[A-Za-z0-9-]+$/;
+
+/** `value` trimmed, or null when it's empty or longer than `max`. */
+function bounded(value: string, max = MAX_ICS_TOKEN_CHARS): string | null {
+  const v = value.trim();
+  return v && v.length <= max ? v : null;
+}
 
 interface ContentLine {
   name: string;
@@ -131,20 +149,28 @@ function realDate(y: string, mo: string, d: string): boolean {
 
 function parseTime(line: ContentLine): IcsTime | null {
   const value = line.value.trim();
+  // A declared value type must be one this reader handles, and match the value.
+  const type = line.params.get("VALUE")?.trim().toUpperCase();
+  if (type !== undefined && type !== "DATE" && type !== "DATE-TIME") return null;
   const d = DATE_RE.exec(value);
-  if (d && (line.params.get("VALUE") ?? "DATE").toUpperCase() === "DATE") {
+  // A bare date with no VALUE is strictly malformed (the default type is
+  // DATE-TIME), but it's unambiguous and booking systems do send it, so it's
+  // read as the date it plainly is.
+  if (d && type !== "DATE-TIME") {
     if (!realDate(d[1]!, d[2]!, d[3]!)) return null;
     return { dateTime: `${d[1]}-${d[2]}-${d[3]}`, timeZone: null, allDay: true };
   }
   const t = DATE_TIME_RE.exec(value);
-  if (!t) return null;
+  if (!t || type === "DATE") return null;
   const [, y, mo, da, h, mi, s, z] = t;
   if (!realDate(y!, mo!, da!)) return null;
   if (Number(h) > 23 || Number(mi) > 59 || Number(s) > 60) return null;
-  const tzid = line.params.get("TZID")?.trim();
+  const tzid = line.params.get("TZID");
+  // An oversized zone name isn't one: the time is then of no known zone.
+  if (tzid !== undefined && !bounded(tzid)) return null;
   return {
     dateTime: `${y}-${mo}-${da}T${h}:${mi}:${s === "60" ? "59" : s}`,
-    timeZone: z ? "UTC" : tzid || null,
+    timeZone: z ? "UTC" : (tzid?.trim() ?? null),
     allDay: false,
   };
 }
@@ -196,7 +222,8 @@ export function parseIcs(text: string): IcsCalendar {
     }
     const inside = stack[stack.length - 1];
     if (inside === "VCALENDAR" && stack.length === 1 && line.name === "METHOD") {
-      method = value.trim().toUpperCase() || null;
+      const m = bounded(value);
+      method = m && TOKEN_RE.test(m) ? m.toUpperCase() : null;
     }
     if (!event || stack.length !== 2 || inside !== "VEVENT") continue;
     switch (line.name) {
@@ -216,13 +243,15 @@ export function parseIcs(text: string): IcsCalendar {
         event.end = parseTime(line);
         break;
       case "DURATION":
-        event.duration = DURATION_RE.test(value.trim()) ? value.trim() : null;
+        event.duration = ((d) => (d && DURATION_RE.test(d) ? d : null))(bounded(value));
         break;
       case "STATUS":
-        event.status = value.trim().toUpperCase() || null;
+        event.status = ((st) => (st && EVENT_STATUSES.has(st) ? st : null))(
+          bounded(value)?.toUpperCase(),
+        );
         break;
       case "RRULE":
-        event.recurrence = capped(value.trim()) || null;
+        event.recurrence = bounded(value, MAX_ICS_RRULE_CHARS);
         break;
     }
   }
