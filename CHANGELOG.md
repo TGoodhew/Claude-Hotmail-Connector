@@ -83,7 +83,9 @@ app registration. It also adds new mail and calendar tools and tightens security
 - **No approval prompts.** Claude Desktop 3.1623.4 doesn't show approval prompts for extension
   tools, even when they're set to "Needs approval"
   ([#138](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/138); reported to Anthropic).
-  `cancel_event` and `update_event` still require the guards above.
+  The connector's own checks still apply: `cancel_event` keeps all the guards above. `update_event`
+  refuses events with attendees and changes only the version it checked, but it doesn't ask you to
+  confirm the title, so check what Claude plans to change before it does.
 - **macOS and Linux are untested.** The extension is built for both but has only been tested by hand
   on Windows ([#98](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/98)).
 
