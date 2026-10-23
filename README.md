@@ -229,8 +229,8 @@ node dist/index.js whoami    # prints your name and account, e.g. Jane Doe <jane
 node dist/index.js logout    # removes the saved sign-in (token cache and key)
 ```
 
-These use the checkout's own sign-in. Claude Desktop's extension keeps a separate one (see
-[Security](#security)), so `logout` doesn't sign it out.
+On Windows, Claude Desktop (a Microsoft Store/MSIX app) keeps the extension's sign-in separate from
+the checkout's (see [Security](#security)), so `logout` doesn't sign it out there.
 
 ### Configuration
 

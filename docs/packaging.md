@@ -43,7 +43,9 @@ The connector signs in to Microsoft through an Entra app registration that **you
    Windows, the MSIX build, registers no file association for `.mcpb`.)
 3. Enter your **Application (client) ID** when asked. You can change it later under **Settings →
    Extensions → Hotmail Connector**. Make sure the extension is switched on there. If you also run a
-   source checkout, give it the same client ID: the two share one saved sign-in.
+   source checkout, give it the same client ID. On Windows each keeps its own saved sign-in, because
+   Claude Desktop is an MSIX app (see **Cache location** below); elsewhere they share one when they
+   use the same cache folder.
 4. Ask Claude something that needs your mailbox or calendar. The first time, a Microsoft sign-in opens
    in your browser. Finish it and that request carries on, or ask again if it took longer than about
    45 seconds.
