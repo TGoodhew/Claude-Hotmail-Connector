@@ -187,6 +187,47 @@ describe("parseIcs (#54)", () => {
     });
   });
 
+  it("ignores a VEVENT nested in another, keeping the outer one whole", () => {
+    const cal = parseIcs(
+      ics(
+        "BEGIN:VCALENDAR",
+        "BEGIN:VEVENT",
+        "SUMMARY:Outer",
+        "BEGIN:VEVENT",
+        "SUMMARY:Nested",
+        "LOCATION:Nowhere",
+        "END:VEVENT",
+        "LOCATION:Outer place",
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ),
+    );
+    expect(cal.events).toHaveLength(1);
+    expect(cal.events[0]).toMatchObject({ summary: "Outer", location: "Outer place" });
+  });
+
+  it("accepts only RFC 5545 durations", () => {
+    const duration = (v: string) =>
+      parseIcs(
+        ics("BEGIN:VCALENDAR", "BEGIN:VEVENT", `DURATION:${v}`, "END:VEVENT", "END:VCALENDAR"),
+      ).events[0]!.duration;
+    for (const ok of [
+      "P2W",
+      "P1D",
+      "P1DT2H",
+      "PT1H30M",
+      "PT45M",
+      "PT30S",
+      "-PT15M",
+      "+P1DT1H2M3S",
+    ]) {
+      expect(duration(ok), ok).toBe(ok);
+    }
+    for (const bad of ["PT", "P1", "P1M", "P1D2H", "P1Y", "PT1S2M", "P1W2D", "P", "1H"]) {
+      expect(duration(bad), bad).toBeNull();
+    }
+  });
+
   it("caps the events and the text it returns", () => {
     const one = [
       "BEGIN:VEVENT",

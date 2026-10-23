@@ -254,8 +254,10 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
     location, description, status, the RRULE as written (not expanded), and the calendar's `METHOD`
     (e.g. `REQUEST`, `CANCEL`). Times stay as the file gives them, each with its zone: `UTC`, the
     file's `TZID`, or null for a date or a floating time. At most 50 events, text fields cut at 4,000
-    characters. The parser is strict: lines it doesn't understand, impossible dates (e.g. 30 February)
-    and stray `END` lines are skipped, never guessed at.
+    characters. The parser is strict: lines it doesn't understand, impossible dates (e.g. 30 February),
+    durations outside RFC 5545's grammar, stray `END` lines and events nested inside events are skipped,
+    never guessed at. Folded lines are unfolded before decoding, so a fold inside a multi-byte character
+    doesn't corrupt it.
 - **Refused, with a clear message:** PDFs (for now: #150), images and any other binary; attached items
   and links (not files); text that turns out to hold NUL bytes; anything over **1 MB**, by Graph's
   size before downloading and by the bytes that arrive. Arbitrary binary is never returned.

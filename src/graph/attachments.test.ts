@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../util/errors.js";
-import { attachmentKind, getAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
+import { attachmentKind, getAttachment, MAX_ATTACHMENT_BYTES, unfoldBytes } from "./attachments.js";
 import type { GraphClient } from "./client.js";
 
 type GetMock = (path: string, opts?: { query?: Record<string, unknown> }) => Promise<unknown>;
@@ -113,6 +113,22 @@ describe("getAttachment (#54)", () => {
       start: { dateTime: "2026-07-20", allDay: true },
       end: { dateTime: "2026-07-23", allDay: true },
     });
+  });
+
+  it("unfolds a calendar line folded inside a character before decoding it", async () => {
+    // "Café" with the fold (CRLF + space) between the two bytes of "é" (C3 A9).
+    const folded = Buffer.concat([
+      Buffer.from("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Caf", "latin1"),
+      Buffer.from([0xc3, 0x0d, 0x0a, 0x20, 0xa9]),
+      Buffer.from("\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", "latin1"),
+    ]);
+    for (const contentType of ["text/calendar", "text/calendar; charset=utf-8"]) {
+      const { graph } = attachment({ name: "a.ics", contentType }, folded);
+      expect((await read(graph)).calendar?.events[0]?.summary, contentType).toBe("Café");
+    }
+    // LF-only folds too.
+    const lf = Buffer.from("SUMMARY:a\n b\n\tc", "latin1");
+    expect(unfoldBytes(lf).toString("latin1")).toBe("SUMMARY:abc");
   });
 
   it("decodes by the declared charset, else UTF-8, else Windows-1252", async () => {

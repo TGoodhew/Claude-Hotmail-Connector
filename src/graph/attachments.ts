@@ -100,6 +100,23 @@ function refusal(a: GraphAttachment): string {
     : NOT_TEXT;
 }
 
+/** Remove iCalendar line folds (CRLF or LF, then a space or tab) at the byte level. */
+export function unfoldBytes(bytes: Buffer): Buffer {
+  const out = Buffer.alloc(bytes.length);
+  let n = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    const crlf = bytes[i] === 0x0d && bytes[i + 1] === 0x0a ? 2 : 0;
+    const eol = crlf || (bytes[i] === 0x0a ? 1 : 0);
+    const next = bytes[i + eol];
+    if (eol && (next === 0x20 || next === 0x09)) {
+      i += eol; // skip the line end and the one whitespace after it
+      continue;
+    }
+    out[n++] = bytes[i]!;
+  }
+  return out.subarray(0, n);
+}
+
 /**
  * Decode text bytes: by the declared charset when there is one, else UTF-8,
  * falling back to Windows-1252 (which every byte decodes as) for older files.
@@ -152,7 +169,12 @@ export async function getAttachment(
   const bytes = Buffer.from(full.contentBytes ?? "", "base64");
   // The size above is Graph's figure; check what actually arrived too.
   if (bytes.length > MAX_ATTACHMENT_BYTES) throw new ValidationError(TOO_LARGE);
-  const text = decodeText(bytes, full.contentType ?? meta.contentType);
+  // A calendar line can be folded between the bytes of one character, so
+  // unfold before decoding (the size was checked on the bytes as they came).
+  const text = decodeText(
+    kind === "calendar" ? unfoldBytes(bytes) : bytes,
+    full.contentType ?? meta.contentType,
+  );
 
   const base = {
     id: meta.id ?? input.attachmentId,

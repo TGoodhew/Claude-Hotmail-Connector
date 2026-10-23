@@ -111,6 +111,10 @@ function capped(s: string): string {
   return s.length > MAX_ICS_TEXT_CHARS ? `${s.slice(0, MAX_ICS_TEXT_CHARS)}…` : s;
 }
 
+// RFC 5545 dur-value: weeks, or days and/or a time part (hours, minutes,
+// seconds in order, each only after the one before it). No months or years.
+const DUR_TIME = String.raw`T(?:\d+H(?:\d+M(?:\d+S)?)?|\d+M(?:\d+S)?|\d+S)`;
+const DURATION_RE = new RegExp(String.raw`^[+-]?P(?:\d+W|\d+D(?:${DUR_TIME})?|${DUR_TIME})$`);
 const DATE_RE = /^(\d{4})(\d{2})(\d{2})$/;
 const DATE_TIME_RE = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z?)$/;
 
@@ -181,7 +185,9 @@ export function parseIcs(text: string): IcsCalendar {
       // so nothing after it is credited to the wrong component.
       if (value.trim().toUpperCase() !== stack[stack.length - 1]) continue;
       const component = stack.pop();
-      if (component === "VEVENT" && event) {
+      // Only a VEVENT directly inside the VCALENDAR is an event; one nested
+      // deeper (malformed) neither fills nor closes it.
+      if (component === "VEVENT" && event && stack.length === 1) {
         if (events.length < MAX_ICS_EVENTS) events.push(event);
         else truncated = true;
         event = null;
@@ -192,7 +198,7 @@ export function parseIcs(text: string): IcsCalendar {
     if (inside === "VCALENDAR" && stack.length === 1 && line.name === "METHOD") {
       method = value.trim().toUpperCase() || null;
     }
-    if (!event || inside !== "VEVENT") continue;
+    if (!event || stack.length !== 2 || inside !== "VEVENT") continue;
     switch (line.name) {
       case "SUMMARY":
         event.summary = capped(unescapeText(value));
@@ -210,7 +216,7 @@ export function parseIcs(text: string): IcsCalendar {
         event.end = parseTime(line);
         break;
       case "DURATION":
-        event.duration = /^[+-]?P[0-9WDTHMS]+$/.test(value.trim()) ? value.trim() : null;
+        event.duration = DURATION_RE.test(value.trim()) ? value.trim() : null;
         break;
       case "STATUS":
         event.status = value.trim().toUpperCase() || null;
