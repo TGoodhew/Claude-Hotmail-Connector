@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **PDF attachments** ([#156](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/156)).
+  `get_attachment` now reads the text of PDF attachments, such as booking confirmations and tickets,
+  from the first 30 pages of PDFs up to 5 MB.
+  - Reading runs in a separate worker with time and memory limits, so a malicious PDF can't stall
+    the connector.
+  - Password-protected PDFs and scanned PDFs (no text layer) are refused with a clear message.
+  - The extension now includes `THIRD_PARTY_NOTICES.txt`, listing the bundled open-source packages
+    and their licenses, including pdf.js. It grows from about 0.3 MB to about 0.9 MB.
+
 ### Changed
 
 - **Node.js 22.12 or later is now required**

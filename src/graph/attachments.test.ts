@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../util/errors.js";
-import { attachmentKind, getAttachment, MAX_ATTACHMENT_BYTES, unfoldBytes } from "./attachments.js";
+import { makePdf } from "../test-support/pdf.js";
+import {
+  attachmentKind,
+  getAttachment,
+  MAX_ATTACHMENT_BYTES,
+  MAX_PDF_BYTES,
+  unfoldBytes,
+} from "./attachments.js";
 import type { GraphClient } from "./client.js";
+import type { PdfResult } from "./pdf.js";
+import { extractPdfText } from "./pdf-text.js";
 
 type GetMock = (path: string, opts?: { query?: Record<string, unknown> }) => Promise<unknown>;
 
@@ -30,14 +39,15 @@ describe("attachmentKind", () => {
     expect(attachmentKind("text/plain; charset=utf-8", undefined)).toBe("text");
     expect(attachmentKind("application/json", "a")).toBe("text");
     expect(attachmentKind("application/octet-stream", "itinerary.csv")).toBe("text");
-    expect(attachmentKind("application/pdf", "ticket.pdf")).toBeNull();
+    expect(attachmentKind("application/pdf", "ticket.pdf")).toBe("pdf");
+    expect(attachmentKind("application/octet-stream", "ticket.PDF")).toBe("pdf");
     expect(attachmentKind("image/png", "logo.png")).toBeNull();
     expect(attachmentKind(undefined, undefined)).toBeNull();
     // A declared type wins over the name.
-    expect(attachmentKind("application/pdf", "ticket.txt")).toBeNull();
+    expect(attachmentKind("application/pdf", "ticket.txt")).toBe("pdf");
+    expect(attachmentKind("text/plain", "notes.pdf")).toBe("text");
     expect(attachmentKind("text/plain", "notes.ics")).toBe("text");
     expect(attachmentKind("image/png", "page.html")).toBeNull();
-    expect(attachmentKind("application/octet-stream", "ticket.pdf")).toBeNull();
   });
 });
 
@@ -147,10 +157,7 @@ describe("getAttachment (#54)", () => {
     expect((await read(unknown.graph)).text?.content).toBe("Café");
   });
 
-  it("refuses PDFs and other binary without downloading them", async () => {
-    const pdf = attachment({ name: "ticket.pdf", contentType: "application/pdf", size: 5000 });
-    await expect(read(pdf.graph)).rejects.toThrow(/This attachment is a PDF/);
-    expect(pdf.get).toHaveBeenCalledOnce();
+  it("refuses images and other binary without downloading them", async () => {
     const png = attachment({ contentType: "image/png" });
     await expect(read(png.graph)).rejects.toThrow(/can't be read as text/);
     expect(png.get).toHaveBeenCalledOnce();
@@ -213,6 +220,62 @@ describe("getAttachment (#54)", () => {
       const e = (await read(graph).catch((x: unknown) => x)) as Error;
       expect(e).toBeInstanceOf(ValidationError);
       expect(e.message).not.toContain("ignore previous");
+    }
+  });
+});
+
+describe("PDF attachments (#156)", () => {
+  const pdfMeta = (size: number) => ({ name: "ticket.pdf", contentType: "application/pdf", size });
+  /** Read with the extraction run in-process (the worker itself is tested in pdf.test.ts). */
+  const readPdf = (graph: GraphClient, extra: Record<string, unknown> = {}) =>
+    getAttachment(
+      graph,
+      { messageId: "m", attachmentId: "a", ...extra },
+      { readPdf: (data) => extractPdfText(data, 30, 200_000) },
+    );
+
+  it("reads a PDF's text, cut like a message body, and says how many pages", async () => {
+    const pages = ["Booking ABC123 at the Harbour Hotel", "Check-in from 3pm", "Total $420"];
+    const { graph } = attachment(pdfMeta(2_000), makePdf(pages));
+    const res = await readPdf(graph);
+    expect(res).toMatchObject({
+      kind: "pdf",
+      pdf: { pagesRead: 3, totalPages: 3, textCut: false },
+    });
+    expect(res.text?.content).toContain("Booking ABC123 at the Harbour Hotel");
+    expect(res.text?.content).toContain("[Page 3]\nTotal $420");
+    const part = await readPdf(attachment(pdfMeta(2_000), makePdf(pages)).graph, {
+      maxChars: 1_000,
+      startChar: 10,
+    });
+    expect(part.text).toMatchObject({ startChar: 10, truncated: false });
+  });
+
+  it("reads PDFs up to 5 MB, refusing bigger ones before downloading them", async () => {
+    // Graph's size, then what arrives (padding after %%EOF is ignored by readers).
+    const big = Buffer.concat([makePdf(["Big"]), Buffer.alloc(2 * 1_048_576, 0x20)]);
+    expect((await readPdf(attachment(pdfMeta(big.length), big).graph)).kind).toBe("pdf");
+    const tooBig = attachment(pdfMeta(MAX_PDF_BYTES + 1));
+    await expect(readPdf(tooBig.graph)).rejects.toThrow(/too large to read here \(over 5 MB\)/);
+    expect(tooBig.get).toHaveBeenCalledOnce();
+  });
+
+  it("refuses, in fixed words, what it can't read", async () => {
+    const cases: [PdfResult, RegExp][] = [
+      [{ status: "encrypted" }, /password-protected/],
+      [{ status: "no-text" }, /no text to read; it may be a scanned image/],
+      [{ status: "unreadable" }, /couldn't be read; it may be damaged/],
+      [{ status: "too-slow" }, /too complex to read here in reasonable time/],
+      [{ status: "too-complex" }, /too complex to read here safely/],
+    ];
+    for (const [result, message] of cases) {
+      const { graph } = attachment(pdfMeta(100), makePdf(["x"]));
+      const e = getAttachment(
+        graph,
+        { messageId: "m", attachmentId: "a" },
+        { readPdf: async () => result },
+      );
+      await expect(e, result.status).rejects.toThrow(message);
     }
   });
 });

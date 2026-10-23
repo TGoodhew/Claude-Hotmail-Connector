@@ -42,12 +42,15 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Before the tests, which run the PDF worker it ships (#156).
+      - name: Build Claude Desktop extension (.mcpb)
+        run: npm run build:mcpb
+
       # Fails if coverage drops below the thresholds in vitest.config.ts (#47).
       - name: Test (with coverage)
         run: npm run test:coverage
-
-      - name: Build Claude Desktop extension (.mcpb)
-        run: npm run build:mcpb
+        env:
+          REQUIRE_BUILT_PDF_WORKERS: "1"
 
   # The .mcpb declares package.json engines.node (Node 22.12+) as its minimum,
   # and source checkouts need it too. Keep that claim true: build and test on
@@ -70,8 +73,13 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Build Claude Desktop extension (.mcpb)
+        run: npm run build:mcpb
+
       - name: Test
         run: npm test
+        env:
+          REQUIRE_BUILT_PDF_WORKERS: "1"
 
   # Windows is the primary target, and the real DPAPI key-protection tests only
   # run there (#46).
@@ -92,5 +100,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Build Claude Desktop extension (.mcpb)
+        run: npm run build:mcpb
+
       - name: Test
         run: npm test
+        env:
+          REQUIRE_BUILT_PDF_WORKERS: "1"

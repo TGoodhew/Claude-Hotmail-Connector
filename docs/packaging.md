@@ -97,4 +97,9 @@ Inspect a bundle with `npx mcpb info build/hotmail-connector.mcpb`, or unpack it
 - **Key protection:** Windows uses DPAPI (#42); macOS/Linux use a plain owner-only key file. OS
   keychain support there isn't planned; PRs welcome
   ([#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83)).
+- **Contents:** `server/index.cjs` (the server), `server/pdf-worker.cjs` (the PDF text extractor,
+  started as a worker thread, #156), `manifest.json`, `LICENSE`, and `THIRD_PARTY_NOTICES.txt`. The
+  notices list every bundled package with its license; they're generated at build time from what
+  esbuild actually bundled, plus pdf.js's Apache-2.0 license (`licenses/`), since unpdf bundles pdf.js
+  without it.
 - **Signing:** bundles are currently unsigned (`mcpb sign` is available if that changes).

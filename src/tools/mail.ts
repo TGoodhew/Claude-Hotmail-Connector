@@ -4,7 +4,13 @@
  */
 
 import { z } from "zod";
-import { getAttachment, MAX_ATTACHMENT_BYTES } from "../graph/attachments.js";
+import {
+  getAttachment,
+  MAX_ATTACHMENT_BYTES,
+  MAX_PDF_BYTES,
+  type AttachmentContent,
+} from "../graph/attachments.js";
+import { PDF_LIMITS } from "../graph/pdf.js";
 import {
   DEFAULT_MAX_BODY_CHARS,
   getMessage,
@@ -177,6 +183,39 @@ const getAttachmentShape = {
   ),
 };
 
+/**
+ * get_attachment's summary line. As with get_message, it carries none of the
+ * file's own text: that's all in the (untrusted) data.
+ */
+export function attachmentSummary(a: AttachmentContent): string {
+  if (a.calendar) {
+    const n = a.calendar.events.length;
+    return (
+      `Read the calendar attachment: ${n} event(s)` +
+      (a.calendar.truncated ? " (more were left out)" : "") +
+      ". Times are as the file gives them, each with its zone (null: a date, or no zone)."
+    );
+  }
+  const t = a.text!;
+  const what =
+    a.kind === "html" ? "HTML (converted to text)" : a.kind === "pdf" ? "PDF's text" : "text";
+  const pages = !a.pdf
+    ? ""
+    : a.pdf.textCut
+      ? ` Its text was cut at ${PDF_LIMITS.maxChars.toLocaleString("en-US")} characters, ` +
+        `partway through page ${a.pdf.pagesRead} of ${a.pdf.totalPages}.`
+      : a.pdf.pagesRead < a.pdf.totalPages
+        ? ` Only the first ${a.pdf.pagesRead} of its ${a.pdf.totalPages} pages were read.`
+        : "";
+  return (
+    `Read the ${what} attachment.${pages}` +
+    (t.truncated
+      ? ` It is long: this is characters ${t.startChar ?? 0}-${t.nextStartChar} of ` +
+        `${t.totalChars}; call again with startChar=${t.nextStartChar} for more.`
+      : "")
+  );
+}
+
 export const getAttachmentTool: ToolDefinition<typeof getAttachmentShape> = defineTool({
   name: "get_attachment",
   title: "Read an email attachment",
@@ -185,32 +224,17 @@ export const getAttachmentTool: ToolDefinition<typeof getAttachmentShape> = defi
     "message id and the attachment id from get_message. Text and HTML files come back as text " +
     "(cut at maxChars like a message body); calendar files (.ics, e.g. a booking or an " +
     "invitation) come back as their events: summary, start, end, location, description, status. " +
-    "PDFs and other binary files can't be read and are refused; so are files over " +
-    `${MAX_ATTACHMENT_BYTES / 1_048_576} MB. Read-only. ` +
+    `PDFs come back as their text, from the first ${PDF_LIMITS.maxPages} pages (password-protected ` +
+    "and scanned PDFs can't be read). Images and other binary files are refused, as are PDFs over " +
+    `${MAX_PDF_BYTES / 1_048_576} MB and other files over ${MAX_ATTACHMENT_BYTES / 1_048_576} MB. ` +
+    "Read-only. " +
     UNTRUSTED_CONTENT_DESCRIPTION,
   inputShape: getAttachmentShape,
   annotations: { readOnlyHint: true, openWorldHint: true },
   scopesAnyOf: ["Mail.Read"],
   async handler(input, ctx) {
     const a = await getAttachment(ctx.graph, input);
-    // As with get_message, the summary carries none of the file's own text.
-    let summary: string;
-    if (a.calendar) {
-      const n = a.calendar.events.length;
-      summary =
-        `Read the calendar attachment: ${n} event(s)` +
-        (a.calendar.truncated ? " (more were left out)" : "") +
-        ". Times are as the file gives them, each with its zone (null: a date, or no zone).";
-    } else {
-      const t = a.text!;
-      summary =
-        `Read the ${a.kind === "html" ? "HTML (converted to text)" : "text"} attachment.` +
-        (t.truncated
-          ? ` It is long: this is characters ${t.startChar ?? 0}-${t.nextStartChar} of ` +
-            `${t.totalChars}; call again with startChar=${t.nextStartChar} for more.`
-          : "");
-    }
-    return untrustedResult(summary, a);
+    return untrustedResult(attachmentSummary(a), a);
   },
 });
 
