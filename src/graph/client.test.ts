@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
+import {
+  GraphError,
+  PreSendCheckTimeoutError,
+  SignedOutError,
+  TimeoutError,
+  ValidationError,
+} from "../util/errors.js";
+import { cancelEvent } from "./calendar.js";
 import {
   buildUrl,
   createGraphClient,
@@ -454,6 +461,102 @@ describe("createGraphClient", () => {
     const e = await pending;
     expect((e as GraphError).reason).toBe("cancelled");
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("catches up with sign-outs elsewhere just before a send-once request (#143)", async () => {
+    // An auth whose memory knows only this process's sign-outs, until it syncs.
+    let epoch = 0;
+    let signedOutElsewhere = false;
+    const auth = {
+      signOutEpoch: () => epoch,
+      syncSignOuts: vi.fn(async () => {
+        if (signedOutElsewhere) epoch += 1; // what observe() does on a remote sign-out
+        return epoch;
+      }),
+      getAccessToken: vi.fn<AuthFn>(async (o) => {
+        if (o?.signOutEpoch !== undefined && o.signOutEpoch !== epoch) {
+          throw new SignedOutError();
+        }
+        return "AT";
+      }),
+    };
+    const fetchImpl = fetchMock(async () => new Response(null, { status: 204 }));
+    const client = createGraphClient({ auth, baseUrl: BASE, fetchImpl: fetchImpl as never });
+    const op = scopeToOperation(client, { signOutEpoch: 0 }); // as a tool call scopes it
+    // Nothing changed elsewhere: the DELETE goes.
+    await op.delete("/me/events/e1", { sendOnce: true });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    // A sign-out elsewhere during the guard read: no DELETE is sent.
+    signedOutElsewhere = true;
+    await expect(op.delete("/me/events/e1", { sendOnce: true })).rejects.toBeInstanceOf(
+      SignedOutError,
+    );
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    // Ordinary requests don't pay for the extra read.
+    auth.syncSignOuts.mockClear();
+    epoch = 0;
+    signedOutElsewhere = false;
+    await op.get("/me");
+    expect(auth.syncSignOuts).not.toHaveBeenCalled();
+  });
+
+  it("doesn't send after a slow last check; cancel_event checks again (#143)", async () => {
+    // The shared-state read stalls past its budget with nothing changed, and an
+    // attendee is added to the meeting meanwhile: the stale checks mustn't let
+    // the DELETE through.
+    let reads = 0;
+    const auth = {
+      signOutEpoch: () => 0,
+      syncSignOuts: vi.fn(async () => {
+        if (++reads === 1) await new Promise((r) => setTimeout(r, 200));
+        return 0;
+      }),
+      getAccessToken: vi.fn<AuthFn>(async () => "AT"),
+    };
+    let gets = 0;
+    const fetchImpl = fetchMock(async (_url, init) => {
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      gets += 1;
+      return json({
+        id: "e1",
+        subject: "Dinner",
+        start: { dateTime: "2026-07-20T19:00:00.0000000", timeZone: "UTC" },
+        end: { dateTime: "2026-07-20T21:00:00.0000000", timeZone: "UTC" },
+        // Added while the first DELETE's check was stalled.
+        attendees: gets === 1 ? [] : [{ emailAddress: { address: "guest@example.com" } }],
+        type: "singleInstance",
+        "@odata.etag": 'W/"1"',
+      });
+    });
+    const graph = scopeToOperation(
+      createGraphClient({
+        auth,
+        baseUrl: BASE,
+        fetchImpl: fetchImpl as never,
+        sleep: async () => undefined,
+        preSendCheckMs: 20,
+      }),
+      { signOutEpoch: 0 },
+    );
+    const e = await cancelEvent(graph, {
+      id: "e1",
+      confirmSubject: "Dinner",
+      timeZone: "UTC",
+    }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ValidationError); // refused: it has attendees now
+    expect(String(e)).toMatch(/attendees/);
+    expect(fetchImpl.mock.calls.filter(([, i]) => i?.method === "DELETE")).toHaveLength(0);
+    expect(gets).toBe(2); // started over with a fresh read
+    // On its own, a slow check gives up unsent, as "never sent".
+    const slow = createGraphClient({
+      auth: { ...auth, syncSignOuts: () => new Promise<number>(() => undefined) },
+      baseUrl: BASE,
+      fetchImpl: fetchImpl as never,
+      preSendCheckMs: 10,
+    });
+    await expect(
+      scopeToOperation(slow, { signOutEpoch: 0 }).delete("/me/events/e1", { sendOnce: true }),
+    ).rejects.toBeInstanceOf(PreSendCheckTimeoutError);
   });
 
   it("keeps Graph's Retry-After on the error, for a caller that retries itself (#137)", async () => {

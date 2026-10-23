@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
-import { createGraphClient } from "../graph/client.js";
+import { cancelEvent } from "../graph/calendar.js";
+import { createGraphClient, scopeToOperation } from "../graph/client.js";
 import {
   AuthError,
   NoCurrentTokenError,
@@ -1217,6 +1218,49 @@ describe("sign-in and sign-out across processes (#95)", () => {
     await redirectBack(server.authorizeUrl(), { code: "CODE2" });
     expect((await again).ok).toBe(true);
     expect(store.current?.accessToken).toBe("SERVER-AT");
+  });
+
+  it("a sign-out in another process during cancel_event's guard read stops the DELETE (#143)", async () => {
+    const dir = sharedDir();
+    const store = memoryStore({
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 10_000_000, // valid at now = 1000
+      scopes: config.scopes,
+    });
+    const server = processWith(store, dir, reply("UNUSED"));
+    const cli = processWith(store, dir, reply("UNUSED"));
+    const deletes: string[] = [];
+    const graphFetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        deletes.push(url);
+        return new Response(null, { status: 204 });
+      }
+      await cli.auth.signOut(); // `logout` elsewhere while the guard read is in flight
+      return jsonResponse({
+        id: "e1",
+        subject: "Dinner",
+        start: { dateTime: "2026-07-20T19:00:00.0000000", timeZone: "UTC" },
+        end: { dateTime: "2026-07-20T21:00:00.0000000", timeZone: "UTC" },
+        attendees: [],
+        type: "singleInstance",
+        "@odata.etag": 'W/"1"',
+      });
+    });
+    const graph = scopeToOperation(
+      createGraphClient({
+        auth: server.auth,
+        baseUrl: "https://graph.microsoft.com/v1.0",
+        fetchImpl: graphFetch as unknown as typeof fetch,
+      }),
+      { signOutEpoch: await server.auth.syncSignOuts() },
+    );
+    const result = await outcome(
+      cancelEvent(graph, { id: "e1", confirmSubject: "Dinner", timeZone: "UTC" }),
+    );
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toBeInstanceOf(SignedOutError);
+    expect(deletes).toEqual([]); // nothing was deleted after the sign-out
   });
 
   it("a sign-out in another process wins over a refresh already in flight", async () => {

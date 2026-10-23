@@ -46,8 +46,19 @@ export class AuthError extends AppError {
  * the caller can try again normally (which refreshes or signs in).
  */
 export class NoCurrentTokenError extends AuthError {
+  constructor(message = "No current Microsoft access token; it needs refreshing first.") {
+    super(message);
+  }
+}
+
+/**
+ * A send-once request wasn't sent because the check just before it (for a
+ * sign-out elsewhere) took too long: the caller's own checks may be stale.
+ * Nothing was sent; like {@link NoCurrentTokenError}, start over (#143).
+ */
+export class PreSendCheckTimeoutError extends NoCurrentTokenError {
   constructor() {
-    super("No current Microsoft access token; it needs refreshing first.");
+    super("The last check before sending took too long, so the request wasn't sent.");
   }
 }
 
