@@ -412,6 +412,8 @@ describe("built server subprocess", () => {
             MICROSOFT_CLIENT_ID: "smoke-test-dummy-id",
             DEFAULT_TIMEZONE: "Not/AZone",
             LOG_FILE: "true",
+            LOG_LEVEL: "info", // the "Starting." line is info: pin it against a local .env
+
             CLAUDE_HOTMAIL_CACHE_DIR: dir,
           },
           encoding: "utf8",

@@ -96,6 +96,41 @@ describe("createLogFileSink (#178)", () => {
     expect(readFileSync(path, "utf8")).toBe("old line\n".repeat(20)); // nothing appended
   });
 
+  it("doesn't break a stale lock while another process is breaking it", () => {
+    const path = join(dir, "connector.log");
+    writeFileSync(`${path}.lock`, "crashed-process");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${path}.lock`, old, old);
+    writeFileSync(`${path}.lock.break`, "other-breaker"); // fresh: that breaker has the turn
+    createLogFileSink(path, { now: at })("dropped");
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(`${path}.lock`, "utf8")).toBe("crashed-process");
+    expect(readFileSync(`${path}.lock.break`, "utf8")).toBe("other-breaker");
+  });
+
+  it("recovers when a breaker stopped mid-break too", () => {
+    const path = join(dir, "connector.log");
+    const old = new Date(Date.now() - 60_000);
+    for (const f of [`${path}.lock`, `${path}.lock.break`]) {
+      writeFileSync(f, "crashed-process");
+      utimesSync(f, old, old);
+    }
+    createLogFileSink(path, { now: at })("written");
+    expect(lines(path)[0]).toMatch(/ written$/);
+    expect(existsSync(`${path}.lock`)).toBe(false);
+    expect(existsSync(`${path}.lock.break`)).toBe(false);
+  });
+
+  it("warns once and stops on a lasting error taking the lock, rather than treat it as busy", () => {
+    const path = join(dir, "gone", "connector.log");
+    const warn = vi.fn();
+    const sink = createLogFileSink(path, { warn });
+    rmSync(join(dir, "gone"), { recursive: true }); // the lock can't be created: ENOENT
+    for (let i = 0; i < 60; i++) sink(`line ${i}`);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/can't write the log file/);
+  });
+
   it("drops a line while another process holds the lock, and leaves its lock alone", () => {
     const path = join(dir, "connector.log");
     writeFileSync(`${path}.lock`, "");

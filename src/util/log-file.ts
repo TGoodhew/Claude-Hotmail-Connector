@@ -11,19 +11,20 @@
  *
  * Processes sharing the cache directory (a source checkout's CLI and Claude
  * Code, say) share the file, so each write (size check, cut, append) runs
- * under a lock file beside it. A line that can't get the lock within a few
- * milliseconds is dropped rather than wait or pass the cap.
+ * under a lock file beside it, holding its owner's token so that no one
+ * else's lock is ever removed. A line that can't get the lock within a few
+ * milliseconds is dropped rather than wait or pass the cap. A lock left by a
+ * process that stopped mid-write is broken after 5 s, one breaker at a time.
  *
  * Writes are synchronous, so a line is on disk before the process can exit.
  * If the file can't be written, the sink says so once on stderr and stops,
  * rather than failing the request that logged.
  */
 
+import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
-  closeSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   statSync,
@@ -68,6 +69,9 @@ export function createLogFileSink(
   const now = options.now ?? (() => new Date());
   const warn = options.warn ?? ((m: string) => process.stderr.write(m + "\n"));
   const lockPath = `${path}.lock`;
+  const breakPath = `${lockPath}.break`;
+  // What this sink writes in the lock, so it only ever removes its own.
+  const token = `${process.pid}-${randomBytes(8).toString("hex")}`;
   let failed = false;
   let transientFailures = 0;
 
@@ -87,36 +91,84 @@ export function createLogFileSink(
     );
   }
 
-  /** Take the lock file, breaking a stale one; false if another process holds it. */
-  function lock(): boolean {
-    for (let attempt = 1; attempt <= LOCK_TRIES; attempt++) {
-      try {
-        closeSync(openSync(lockPath, "wx", 0o600));
-        return true;
-      } catch (e) {
-        if (!isErrno(e, "EEXIST") && !isTransientFsError(e)) throw e;
-        if (isErrno(e, "EEXIST")) {
-          try {
-            if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-              unlinkSync(lockPath);
-              continue;
-            }
-          } catch {
-            // Released meanwhile: try again.
-          }
-        }
-        pause(1);
-      }
+  function isStale(file: string): boolean {
+    try {
+      return Date.now() - statSync(file).mtimeMs > LOCK_STALE_MS;
+    } catch {
+      return false;
     }
-    return false;
   }
 
-  function unlock(): void {
+  /** Create `file` holding this sink's token, only if it doesn't exist. */
+  function claim(file: string): void {
+    writeFileSync(file, token, { flag: "wx", mode: 0o600 });
+  }
+
+  /** Delete `file` only if it still holds this sink's token. */
+  function release(file: string): void {
     try {
-      unlinkSync(lockPath);
+      if (readFileSync(file, "utf8") === token) unlinkSync(file);
     } catch {
-      // Already gone (broken as stale): nothing to release.
+      // Already gone.
     }
+  }
+
+  /**
+   * Remove the lock if it's stale. Breakers take turns (the `.break` file), and
+   * each checks again once it has its turn: one that saw the old lock can't
+   * then remove a fresh one another process took after breaking it.
+   */
+  function breakIfStale(): void {
+    if (!isStale(lockPath)) return;
+    try {
+      claim(breakPath);
+    } catch (e) {
+      if (!isErrno(e, "EEXIST")) throw e;
+      // Another breaker is at it; or stopped mid-break, leaving this behind.
+      if (isStale(breakPath)) {
+        try {
+          unlinkSync(breakPath);
+        } catch {
+          // Removed meanwhile.
+        }
+      }
+      return;
+    }
+    try {
+      if (isStale(lockPath)) unlinkSync(lockPath);
+    } catch {
+      // Released meanwhile.
+    } finally {
+      release(breakPath);
+    }
+  }
+
+  /**
+   * Take the lock, breaking a stale one; false if another process holds it.
+   * Only an existing lock means "busy": any other error is thrown, so the
+   * caller's failure handling (retry a sharing error, else warn and stop)
+   * sees it, and a sharing error that lasts every try is thrown too.
+   */
+  function lock(): boolean {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= LOCK_TRIES; attempt++) {
+      try {
+        claim(lockPath);
+        return true;
+      } catch (e) {
+        if (isErrno(e, "EEXIST")) {
+          lastError = undefined;
+          breakIfStale();
+        } else if (isTransientFsError(e)) {
+          lastError = e;
+        } else {
+          throw e;
+        }
+      }
+      pause(1);
+    }
+    if (lastError !== undefined) throw lastError;
+    return false;
   }
 
   /** Keep only the newer half of the file, starting at a whole line. */
@@ -164,7 +216,7 @@ export function createLogFileSink(
       try {
         append(entry, bytes);
       } finally {
-        unlock();
+        release(lockPath);
       }
       transientFailures = 0;
     } catch (e) {
