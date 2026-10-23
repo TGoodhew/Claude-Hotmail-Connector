@@ -93,7 +93,8 @@ export const LOOPBACK_HOST = "127.0.0.1";
  */
 export const MISSING_CLIENT_ID_MESSAGE =
   "No Microsoft app registration is configured. Create your own Entra app registration " +
-  '(see "Register a Microsoft Entra application" in the README, or run scripts/register-app.ps1), ' +
+  '(see "Step 1: register your own Microsoft Entra application" in the README, or run ' +
+  "scripts/register-app.ps1), " +
   "then enter its Application (client) ID in the extension's settings in Claude Desktop " +
   "(Settings > Extensions > Hotmail Connector), or set MICROSOFT_CLIENT_ID.";
 
