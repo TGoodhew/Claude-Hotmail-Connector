@@ -682,8 +682,12 @@ cancellation guards are covered by unit tests (#61, #55).
 - Optional log file (`LOG_FILE`, the extension's "Write a log file", #178), because Claude Desktop
   doesn't keep an extension's stderr. It gets the same redacted lines, prefixed with the time and
   process id, in `connector.log` in the cache directory. It never exceeds 2 MB: when a line would take
-  it over, the older half is cut at a line boundary. Sign-out leaves it. A write failure is reported
-  once on stderr, and logging carries on there.
+  it over, the older half is cut at a line boundary. Sign-out leaves it. Processes sharing the cache
+  directory write under a lock file beside it; a line that can't get the lock within a few
+  milliseconds is dropped, never written past the cap. It's set up before the rest of the
+  configuration is checked, so configuration errors reach it. A write failure is reported once on
+  stderr, and logging carries on there. Email addresses are scrubbed from free text too, since
+  Graph's error messages can contain them.
 - No `/health` endpoint: the client supervises the subprocess. `/health` and request metrics belong to
   the remote mode (§15).
 
