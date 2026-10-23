@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.2.1 — 2026-10-23
+
+A bug-fix release. If you're on v0.2.0, install this over it the same way. If Claude Desktop asks for
+your Application (client) ID again, enter the same one.
+
+### Fixed
+
+- **`find_free_time` and all-day events**
+  ([#158](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/158)).
+  - **The bug:** an all-day **Busy** event was shifted by your time zone's offset, so part of that day
+    showed as free. In Pacific time it covered midnight to 5 PM, leaving 5 PM to midnight "free".
+  - **The fix:** all-day events are now read as whole days in the time zone you ask in (by default your
+    computer's), with daylight saving applied. Asking for free time "on Thursday in Berlin" treats an
+    all-day busy event as all of Thursday in Berlin.
+  - Events just outside the range can no longer change the status reported inside it.
+- **`scripts/register-app.ps1`**
+  ([#160](https://github.com/TGoodhew/Claude-Hotmail-Connector/pull/160)).
+  - **The bug:** it created app registrations without their Microsoft Graph permissions listed. Sign-in
+    still worked, because personal accounts approve permissions at sign-in.
+  - **The fix:** the permissions are now set, and the script stops with an error if they're missing.
+    If you made your registration with the v0.2.0 script, you can add them under **API permissions**
+    in the Entra portal: `openid`, `profile`, `email`, `offline_access`, `User.Read`, `Mail.Read` and
+    `Calendars.ReadWrite`. Doing so is optional.
+
 ## v0.2.0 — 2026-10-23
 
 v0.2.0 is a rebuild against [spec v2](https://github.com/TGoodhew/Claude-Hotmail-Connector/blob/main/docs/personal-outlook-mcp-connector-requirements.md). The
