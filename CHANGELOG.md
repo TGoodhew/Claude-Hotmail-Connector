@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-10-23
+
+Two new abilities: Claude can **send email** (only if you turn it on, and only after you confirm each
+one), and it can **read PDF attachments**. There are also several fixes.
+
+**Updating from v0.2.x.** Install the new `hotmail-connector.mcpb` the same way: **Settings →
+Extensions → Advanced settings → Install Extension…**. Your client ID and sign-in carry over.
+
+**To use sending:**
+
+1. Turn on **Allow sending email** in the extension's settings.
+2. **Fully restart Claude Desktop** (Quit from the tray icon), so chats see the new tools.
+3. When Claude first says it needs permission to send, ask it to sign out and try again.
 
 ### Added
 
@@ -24,6 +36,10 @@
 
 ### Changed
 
+- **Windows only.** The connector is supported and tested on **Windows** only. The extension still
+  builds for macOS and Linux, but nothing there is tested by hand, and no macOS/Linux work is planned.
+  PRs are welcome (see the README's
+  [Platforms](https://github.com/TGoodhew/Claude-Hotmail-Connector#platforms) section).
 - **Node.js 22.12 or later is now required**
   ([#148](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/148)). Node 20 reached
   end-of-life in April 2026. This only affects running from source: the Claude Desktop extension runs
