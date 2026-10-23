@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.1.0 — unreleased
+
+Adds **drafts**: Claude can save an email or a reply to your Drafts folder and open it in Outlook,
+where you review, edit and send it yourself. It's off by default, and it never sends.
+
+**Updating from v1.0.0.** Install the new `hotmail-connector.mcpb` the same way: **Settings →
+Extensions → Advanced settings → Install Extension…**. Your client ID, settings and sign-in carry over.
+Fully restart Claude Desktop (Quit from the tray icon) to see the new **Allow saving email drafts**
+setting.
+
+### Added
+
+- **`create_draft`, if you turn it on**
+  ([#184](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/184)). Asking for a reply "so I
+  can review and send" had no matching tool, since the send tools can only send, and a chat refused.
+  - Turn on **Allow saving email drafts** in the extension's settings (`ALLOW_MAIL_DRAFTS` from
+    source). The first draft asks you to sign in again, to allow it.
+  - A new draft goes to the addresses Claude gives. A reply draft goes to the message's sender (or its
+    Reply-To), in the same conversation, with your text above the quoted original.
+  - The draft opens in Outlook on the web. If the browser can't be opened, Claude gets the link, and
+    the draft is in **Drafts** anyway.
+  - It needs `Mail.ReadWrite`, which also allows changing and deleting mail: Microsoft has no
+    drafts-only permission. The connector uses it only to create drafts. The spec's least-privilege
+    rule now allows it only behind this setting (spec §6, §7.10, threat T13).
+  - The opt-in live test (`npm run test:live`) checks drafts too, and prints the ways to open them.
+
 ## v1.0.0 — 2026-10-23
 
 The first stable release. Everything planned for the connector is done and has been checked by hand

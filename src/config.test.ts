@@ -10,6 +10,7 @@ import {
   logFilePath,
   MISSING_CLIENT_ID_MESSAGE,
   SEND_SCOPE,
+  DRAFTS_SCOPE,
   systemTimeZone,
 } from "./config.js";
 import { ConfigError } from "./util/errors.js";
@@ -215,5 +216,42 @@ describe("ALLOW_SEND_MAIL (#57)", () => {
     expect(keep.scopes).toEqual(["openid", "offline_access", "Mail.Read", SEND_SCOPE]);
     const drop = loadConfig({ ...base, ALLOW_SEND_MAIL: "true", MICROSOFT_SCOPES: "Mail.Read" });
     expect(drop.scopes).not.toContain(SEND_SCOPE);
+  });
+});
+
+describe("ALLOW_MAIL_DRAFTS (#184)", () => {
+  it("is off unless turned on, and only then requests Mail.ReadWrite", () => {
+    expect(loadConfig(base)).toMatchObject({ allowMailDrafts: false, scopes: [...DEFAULT_SCOPES] });
+    for (const off of ["", "false", "0", "no", "OFF", "${user_config.allow_drafts}"]) {
+      expect(loadConfig({ ...base, ALLOW_MAIL_DRAFTS: off }).allowMailDrafts, off).toBe(false);
+    }
+    for (const on of ["true", "1", "yes", "On"]) {
+      const cfg = loadConfig({ ...base, ALLOW_MAIL_DRAFTS: on });
+      expect(cfg.allowMailDrafts, on).toBe(true);
+      expect(cfg.allowSendMail, on).toBe(false);
+      expect(cfg.scopes).toEqual([...DEFAULT_SCOPES, DRAFTS_SCOPE]);
+    }
+    expect(() => loadConfig({ ...base, ALLOW_MAIL_DRAFTS: "maybe" })).toThrow(ConfigError);
+  });
+
+  it("is independent of sending: both on requests both scopes", () => {
+    const cfg = loadConfig({ ...base, ALLOW_SEND_MAIL: "true", ALLOW_MAIL_DRAFTS: "true" });
+    expect(cfg.scopes).toEqual([...DEFAULT_SCOPES, SEND_SCOPE, DRAFTS_SCOPE]);
+  });
+
+  it("can't be granted through MICROSOFT_SCOPES, which only narrows", () => {
+    expect(() => loadConfig({ ...base, MICROSOFT_SCOPES: "Mail.Read Mail.ReadWrite" })).toThrow(
+      /not allowed: Mail.ReadWrite.*set ALLOW_MAIL_DRAFTS=true instead/,
+    );
+    // Sending on doesn't let it in either.
+    expect(() =>
+      loadConfig({ ...base, ALLOW_SEND_MAIL: "true", MICROSOFT_SCOPES: "mail.readwrite" }),
+    ).toThrow(/not allowed: mail.readwrite/);
+    const keep = loadConfig({
+      ...base,
+      ALLOW_MAIL_DRAFTS: "true",
+      MICROSOFT_SCOPES: "Mail.Read mail.readwrite",
+    });
+    expect(keep.scopes).toEqual(["openid", "offline_access", "Mail.Read", DRAFTS_SCOPE]);
   });
 });

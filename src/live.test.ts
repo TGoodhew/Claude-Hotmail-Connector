@@ -14,6 +14,14 @@
  * refused. Test events are cancelled (moved to Deleted Items) whatever
  * happens. It never opens a browser: with no cached sign-in it fails and asks
  * you to run `login`.
+ *
+ * With ALLOW_MAIL_DRAFTS=true (and a sign-in that granted Mail.ReadWrite), it
+ * also saves two drafts (#184): a new one to yourself, and a reply to your
+ * newest Inbox message. It checks they're unsent drafts in Drafts, that the
+ * reply keeps its thread with your text above the quote, and prints the ways
+ * to open each in Outlook on the web. They're deleted (moved to Deleted Items)
+ * afterwards, unless HOTMAIL_LIVE_KEEP_DRAFTS=1 keeps them so you can try the
+ * links by hand; then discard them in Outlook. Nothing is ever sent.
  */
 
 import { randomUUID } from "node:crypto";
@@ -24,11 +32,23 @@ import { createFileTokenStore } from "./auth/tokens.js";
 import { getConfig } from "./config.js";
 import { cancelEvent, createEvent, listEvents, updateEvent } from "./graph/calendar.js";
 import { createGraphClient, scopeToOperation, type GraphClient } from "./graph/client.js";
+import {
+  createDraft,
+  createReplyDraft,
+  draftUrlCandidates,
+  type SavedDraft,
+} from "./graph/drafts.js";
 import { getMessage, listMessages } from "./graph/mail.js";
 import { whoami } from "./graph/user.js";
 import { GraphError } from "./util/errors.js";
 
 const LIVE = process.env.HOTMAIL_LIVE_TESTS === "1";
+/** Leave the test drafts in Drafts, to try their links by hand (#184). */
+const KEEP_DRAFTS = process.env.HOTMAIL_LIVE_KEEP_DRAFTS === "1";
+/** Built from a char code, so no escape sequence can be mangled in editing. */
+const NEWLINE = String.fromCharCode(10);
+/** Two lines, to check a reply draft keeps the line break. */
+const TEST_DRAFT_BODY = ["Hotmail Connector live test: don't send.", "Second line."].join(NEWLINE);
 /** Deadlines for the write test's main steps and for removing what it created. */
 const MAIN_MS = 70_000;
 const CLEANUP_MS = 35_000;
@@ -104,6 +124,32 @@ async function outcomeOf(write: () => Promise<unknown>): Promise<string> {
     if (e instanceof GraphError && e.status !== undefined) return String(e.status);
     return `failed: ${e instanceof Error ? e.message : String(e)}`;
   }
+}
+
+/**
+ * Print the ways to open a draft in Outlook on the web (#184), including the
+ * draft's EWS id form, which Outlook's own URLs may expect. Try each by hand
+ * with HOTMAIL_LIVE_KEEP_DRAFTS=1 to see which opens the draft for editing.
+ */
+async function printLinks(g: GraphClient, label: string, draft: SavedDraft): Promise<void> {
+  const links: Record<string, string | undefined> = { ...draftUrlCandidates(draft) };
+  try {
+    const t = await g.post<{ value?: { targetId?: string }[] }>("/me/translateExchangeIds", {
+      inputIds: [draft.id],
+      sourceIdType: "restId",
+      targetIdType: "ewsId",
+    });
+    const ews = t.value?.[0]?.targetId;
+    const ewsDraft = ews ? draftUrlCandidates({ id: ews, webLink: draft.webLink }) : {};
+    links.composeDeeplinkEwsId = ewsDraft.composeDeeplink;
+    links.draftsFolderEwsId = ewsDraft.draftsFolder;
+  } catch (e) {
+    console.log(
+      `[live] translateExchangeIds failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  console.log(`[live] Links for the ${label}:`);
+  for (const [name, url] of Object.entries(links)) if (url) console.log(`  ${name}: ${url}`);
 }
 
 describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
@@ -234,6 +280,108 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
         expect(await outcomeOf(() => g.get(path, { query: { $select: "id" } }))).toBe("404");
       } finally {
         await removeTestEvents(base, created, subject, timeZone);
+      }
+    },
+  );
+  it.runIf(LIVE && getConfig().allowMailDrafts)(
+    "saves a new draft and a reply draft without sending, and prints their Outlook links (#184)",
+    { timeout: MAIN_MS + CLEANUP_MS + 15_000 },
+    async () => {
+      const base = graph();
+      const g = scopeToOperation(base, { deadline: Date.now() + MAIN_MS });
+      const { subject } = uniqueSubject();
+      const saved: SavedDraft[] = [];
+      try {
+        const me = await whoami(g);
+        const self = me.mail ?? me.userPrincipalName;
+        expect(self).toBeTruthy();
+        const drafts = await g.get<{ id: string }>("/me/mailFolders/drafts", {
+          query: { $select: "id" },
+        });
+        type Saved = {
+          isDraft?: boolean;
+          parentFolderId?: string;
+          conversationId?: string;
+          body?: { content?: string };
+        };
+        const read = (id: string) =>
+          g.get<Saved>(`/me/messages/${encodeURIComponent(id)}`, {
+            query: { $select: "isDraft,parentFolderId,conversationId,body" },
+            headers: { prefer: 'outlook.body-content-type="text"' },
+          });
+
+        // A new draft, to yourself.
+        const fresh = await createDraft(g, {
+          to: [self!],
+          cc: [],
+          subject,
+          body: TEST_DRAFT_BODY,
+        });
+        saved.push(fresh);
+        const freshRead = await read(fresh.id);
+        expect(freshRead.isDraft).toBe(true);
+        expect(freshRead.parentFolderId).toBe(drafts.id);
+        await printLinks(g, "new draft", fresh);
+
+        // A reply draft to the newest Inbox message.
+        const inbox = await g.get<{ value?: { id: string; conversationId?: string }[] }>(
+          "/me/mailFolders/inbox/messages",
+          { query: { $top: 1, $orderby: "receivedDateTime desc", $select: "id,conversationId" } },
+        );
+        const original = inbox.value?.[0];
+        if (!original) {
+          console.warn("[live] The Inbox is empty, so no reply draft was tried.");
+          return;
+        }
+        const reply = await createReplyDraft(g, original.id, TEST_DRAFT_BODY);
+        saved.push(reply);
+        const replyRead = await read(reply.id);
+        expect(replyRead.isDraft).toBe(true);
+        expect(replyRead.parentFolderId).toBe(drafts.id);
+        expect(replyRead.conversationId).toBe(original.conversationId);
+        const text = replyRead.body?.content ?? "";
+        const first = text.indexOf("Hotmail Connector live test");
+        const second = text.indexOf("Second line.");
+        // Lines, trimmed (Graph's text may use CRLF), to find the quote's header
+        // and whether the comment's line break survived.
+        const lines = text.split(NEWLINE).map((l) => l.trim());
+        const quote = lines.findIndex((l) => /^(From|De|Von):/.test(l));
+        const kept = lines.some(
+          (l, i) => l.endsWith("don't send.") && lines[i + 1] === "Second line.",
+        );
+        console.log(
+          `[live] Reply draft text: comment at ${first}, second line at ${second}, quote header ` +
+            `on line ${quote}; line break kept: ${kept}.`,
+        );
+        // Links first, so they're printed even if a check below fails.
+        await printLinks(g, "reply draft", reply);
+        expect(first).toBeGreaterThanOrEqual(0);
+        expect(second).toBeGreaterThan(first);
+        // Graph must keep the comment's line break, else replies need HTML (#184).
+        expect(kept, "the reply draft lost the comment's line break").toBe(true);
+        // The quoted original must be kept, below the comment: its header line
+        // ("From:", or "De:"/"Von:" in other languages) is how it's found.
+        expect(quote, "the reply draft has no quoted original").toBeGreaterThanOrEqual(0);
+        expect(quote).toBeGreaterThan(lines.findIndex((l) => l === "Second line."));
+      } finally {
+        if (KEEP_DRAFTS) {
+          console.log(
+            `[live] Kept ${saved.length} test draft(s) in Drafts (HOTMAIL_LIVE_KEEP_DRAFTS=1). ` +
+              "Try the links above, then discard them in Outlook. Don't send them.",
+          );
+        } else {
+          const cleanup = scopeToOperation(base, { deadline: Date.now() + CLEANUP_MS });
+          for (const d of saved) {
+            await cleanup
+              .delete(`/me/messages/${encodeURIComponent(d.id)}`)
+              .catch((e: unknown) =>
+                console.warn(
+                  `[live] Couldn't remove test draft "${d.subject}"; discard it by hand.`,
+                  e,
+                ),
+              );
+          }
+        }
       }
     },
   );

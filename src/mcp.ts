@@ -12,6 +12,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { scopeToOperation, withinLimits } from "./graph/client.js";
 import { calendarTools } from "./tools/calendar.js";
+import { draftTools } from "./tools/drafts.js";
 import { mailTools } from "./tools/mail.js";
 import { sendTools } from "./tools/send.js";
 import type { RegisteredTool, ToolContext } from "./tools/types.js";
@@ -22,7 +23,7 @@ import { createLogger, type Logger } from "./util/log.js";
 export const SERVER_NAME = "claude-hotmail-connector";
 export const SERVER_TITLE = "Personal Outlook.com / Hotmail";
 /** Must equal package.json's version (a test checks; the release tag must too). */
-export const SERVER_VERSION = "1.0.0";
+export const SERVER_VERSION = "1.1.0";
 
 /** Sent once at initialization; tool descriptions and results repeat the rule (T12). */
 export const SERVER_INSTRUCTIONS =
@@ -40,7 +41,7 @@ export const TOOL_CALL_DEADLINE_MS = 55_000;
 
 /** All tools exposed by the connector. */
 export function allTools(): RegisteredTool[] {
-  return [...userTools, ...mailTools, ...sendTools, ...calendarTools];
+  return [...userTools, ...mailTools, ...sendTools, ...draftTools, ...calendarTools];
 }
 
 /**
