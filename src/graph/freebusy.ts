@@ -61,6 +61,12 @@ export const MAX_RANGE_DAYS = 62;
 const MAX_PAGES = 10;
 const PAGE_SIZE = 100;
 const MINUTE_MS = 60_000;
+/**
+ * How far past each end of the range events are read. All-day events are
+ * matched by Graph on their dates as if those were UTC, so one on a local day
+ * can sit up to 14 hours away from it; a day covers every zone (#158).
+ */
+const ALL_DAY_MARGIN_MS = 24 * 60 * MINUTE_MS;
 
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
@@ -240,8 +246,8 @@ export async function findFreeTime(
   let pageToken: string | undefined;
   for (let page = 0; ; page++) {
     const result = await listEvents(graph, {
-      startDateTime: new Date(range.start).toISOString(),
-      endDateTime: new Date(range.end).toISOString(),
+      startDateTime: new Date(range.start - ALL_DAY_MARGIN_MS).toISOString(),
+      endDateTime: new Date(range.end + ALL_DAY_MARGIN_MS).toISOString(),
       timeZone: "UTC",
       limit: PAGE_SIZE,
       calendarId: input.calendarId,
@@ -249,8 +255,20 @@ export async function findFreeTime(
     });
     for (const e of result.events) {
       if (e.isCancelled || !takesTime(e.showAs, input.tentativeIsBusy ?? true)) continue;
-      const start = Date.parse(`${e.start?.dateTime}Z`);
-      const end = Date.parse(`${e.end?.dateTime}Z`);
+      // Timed events come back in UTC. An all-day event's are dates, not
+      // instants: Graph gives midnight to midnight in whatever zone was asked
+      // for, so read them as local days in the requested zone (#158).
+      const instant = (t: { dateTime: string | null } | null) => {
+        if (!t?.dateTime) return NaN;
+        if (!e.isAllDay) return Date.parse(`${t.dateTime}Z`);
+        try {
+          return Date.parse(zonedWallClockToUtcIso(t.dateTime.slice(0, 10), timeZone));
+        } catch {
+          return NaN;
+        }
+      };
+      const start = instant(e.start);
+      const end = instant(e.end);
       // An event that takes time but whose times can't be read may cover any
       // part of the range: don't call the range free on a guess.
       if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
