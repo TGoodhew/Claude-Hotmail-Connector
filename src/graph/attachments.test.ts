@@ -231,14 +231,17 @@ describe("PDF attachments (#156)", () => {
     getAttachment(
       graph,
       { messageId: "m", attachmentId: "a", ...extra },
-      { readPdf: (data) => extractPdfText(data, 30) },
+      { readPdf: (data) => extractPdfText(data, 30, 200_000) },
     );
 
   it("reads a PDF's text, cut like a message body, and says how many pages", async () => {
     const pages = ["Booking ABC123 at the Harbour Hotel", "Check-in from 3pm", "Total $420"];
     const { graph } = attachment(pdfMeta(2_000), makePdf(pages));
     const res = await readPdf(graph);
-    expect(res).toMatchObject({ kind: "pdf", pdf: { pagesRead: 3, totalPages: 3 } });
+    expect(res).toMatchObject({
+      kind: "pdf",
+      pdf: { pagesRead: 3, totalPages: 3, textCut: false },
+    });
     expect(res.text?.content).toContain("Booking ABC123 at the Harbour Hotel");
     expect(res.text?.content).toContain("[Page 3]\nTotal $420");
     const part = await readPdf(attachment(pdfMeta(2_000), makePdf(pages)).graph, {

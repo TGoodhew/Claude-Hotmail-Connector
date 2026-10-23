@@ -18,14 +18,11 @@ describe("readPdfText (#156)", () => {
   it("passes on what the worker found, with the data and the page limit", async () => {
     const echo = worker(
       "echo",
-      `parentPort.postMessage({ status: "ok", text: String(workerData.data.length), pagesRead: workerData.maxPages, totalPages: 9 });`,
+      `parentPort.postMessage({ status: "ok", text: String(workerData.data.length), pagesRead: workerData.maxPages, totalPages: workerData.maxChars, textCut: false });`,
     );
-    expect(await readPdfText(new Uint8Array(7), { workerFile: echo, maxPages: 3 })).toEqual({
-      status: "ok",
-      text: "7",
-      pagesRead: 3,
-      totalPages: 9,
-    });
+    expect(
+      await readPdfText(new Uint8Array(7), { workerFile: echo, maxPages: 3, maxChars: 9 }),
+    ).toEqual({ status: "ok", text: "7", pagesRead: 3, totalPages: 9, textCut: false });
   });
 
   it("stops a worker that runs too long", async () => {
@@ -43,6 +40,21 @@ describe("readPdfText (#156)", () => {
     const res = await readPdfText(new Uint8Array(1), {
       workerFile: hog,
       maxHeapMb: 16,
+      timeoutMs: 20_000,
+    });
+    expect(res).toEqual({ status: "too-complex" });
+  });
+
+  it("stops a worker whose buffers grow too far, which the heap cap doesn't cover", async () => {
+    // pdf.js decodes compressed streams into typed arrays, outside the JS heap
+    // (Copilot review on #171).
+    const buffers = worker(
+      "buffers",
+      "const keep = []; setInterval(() => keep.push(Buffer.alloc(16 * 1048576, 1)), 5);",
+    );
+    const res = await readPdfText(new Uint8Array(1), {
+      workerFile: buffers,
+      maxGrowthMb: 64,
       timeoutMs: 20_000,
     });
     expect(res).toEqual({ status: "too-complex" });
@@ -77,12 +89,16 @@ describe("readPdfText (#156)", () => {
   });
 });
 
-// The real workers, once built (CI builds before testing).
+// The real workers, once built. CI builds both before testing and sets
+// REQUIRE_BUILT_PDF_WORKERS, so a missing worker fails there instead of being
+// skipped (Copilot review on #171).
+const required = process.env.REQUIRE_BUILT_PDF_WORKERS === "1";
 describe.each([
   ["dist/pdf-worker.js", "source checkout"],
   ["build/mcpb/server/pdf-worker.cjs", "Claude Desktop extension"],
 ])("built PDF worker %s (%s)", (file) => {
-  it.runIf(existsSync(file))("reads a PDF's text", async () => {
+  it.runIf(required || existsSync(file))("reads a PDF's text", async () => {
+    expect(existsSync(file), `${file} should be built`).toBe(true);
     const res = await readPdfText(makePdf(["Your booking: ABC123", "Total $42"]), {
       workerFile: join(process.cwd(), file),
     });
@@ -91,6 +107,7 @@ describe.each([
       text: "Your booking: ABC123\n\n[Page 2]\nTotal $42",
       pagesRead: 2,
       totalPages: 2,
+      textCut: false,
     });
   });
 });

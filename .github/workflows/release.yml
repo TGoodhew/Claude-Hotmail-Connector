@@ -51,13 +51,17 @@ jobs:
           npm run format:check
           npm run check:text
 
-      - name: Build and test
+      # The extension is built before the tests, which run the PDF worker it
+      # ships (#156).
+      - name: Build
         run: |
           npm run build
-          npm test
+          npm run build:mcpb
 
-      - name: Build Claude Desktop extension (.mcpb)
-        run: npm run build:mcpb
+      - name: Test
+        run: npm test
+        env:
+          REQUIRE_BUILT_PDF_WORKERS: "1"
 
       - name: Checksums
         run: |

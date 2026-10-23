@@ -199,10 +199,14 @@ export function attachmentSummary(a: AttachmentContent): string {
   const t = a.text!;
   const what =
     a.kind === "html" ? "HTML (converted to text)" : a.kind === "pdf" ? "PDF's text" : "text";
-  const pages =
-    a.pdf && a.pdf.pagesRead < a.pdf.totalPages
-      ? ` Only the first ${a.pdf.pagesRead} of its ${a.pdf.totalPages} pages were read.`
-      : "";
+  const pages = !a.pdf
+    ? ""
+    : a.pdf.textCut
+      ? ` Its text was cut at ${PDF_LIMITS.maxChars.toLocaleString("en-US")} characters, ` +
+        `partway through page ${a.pdf.pagesRead} of ${a.pdf.totalPages}.`
+      : a.pdf.pagesRead < a.pdf.totalPages
+        ? ` Only the first ${a.pdf.pagesRead} of its ${a.pdf.totalPages} pages were read.`
+        : "";
   return (
     `Read the ${what} attachment.${pages}` +
     (t.truncated

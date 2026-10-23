@@ -19,6 +19,8 @@ export type PdfExtract =
       /** Pages read: the first `pagesRead` of `totalPages`. */
       pagesRead: number;
       totalPages: number;
+      /** True when the text reached the character budget and was cut there. */
+      textCut: boolean;
     }
   /** Password-protected. */
   | { status: "encrypted" }
@@ -27,8 +29,17 @@ export type PdfExtract =
   /** Not a PDF, or too broken to read. */
   | { status: "unreadable" };
 
-/** The text of the first `maxPages` pages of `data`. Never throws. */
-export async function extractPdfText(data: Uint8Array, maxPages: number): Promise<PdfExtract> {
+/**
+ * The text of the first `maxPages` pages of `data`, at most `maxChars` of it.
+ * The budget is kept while reading, not after: a small compressed PDF can
+ * expand to far more text than is ever returned, and none of the excess should
+ * be built up or sent back to the server. Never throws.
+ */
+export async function extractPdfText(
+  data: Uint8Array,
+  maxPages: number,
+  maxChars: number,
+): Promise<PdfExtract> {
   let pdf: Awaited<ReturnType<typeof getDocumentProxy>>;
   try {
     // A plain copy: pdf.js refuses Node Buffers, and may detach what it's given.
@@ -48,16 +59,24 @@ export async function extractPdfText(data: Uint8Array, maxPages: number): Promis
   }
   try {
     const totalPages = pdf.numPages;
-    const pagesRead = Math.min(totalPages, maxPages);
     const pages: string[] = [];
-    for (let n = 1; n <= pagesRead; n++) {
+    let budget = maxChars;
+    let textCut = false;
+    for (let n = 1; n <= Math.min(totalPages, maxPages) && !textCut; n++) {
       const page = await pdf.getPage(n);
       const content = await page.getTextContent();
       const lines: string[] = [];
       let line = "";
       for (const item of content.items) {
         if (!("str" in item)) continue;
-        line += item.str;
+        // Counted as it's taken: nothing past the budget is kept.
+        const take = item.str.length <= budget ? item.str : item.str.slice(0, budget);
+        line += take;
+        budget -= take.length;
+        if (take.length < item.str.length) {
+          textCut = true;
+          break;
+        }
         if (item.hasEOL) {
           lines.push(line.trimEnd());
           line = "";
@@ -69,7 +88,7 @@ export async function extractPdfText(data: Uint8Array, maxPages: number): Promis
     }
     if (pages.every((p) => p === "")) return { status: "no-text" };
     const text = pages.map((p, i) => (i === 0 ? p : `[Page ${i + 1}]\n${p}`)).join("\n\n");
-    return { status: "ok", text, pagesRead, totalPages };
+    return { status: "ok", text, pagesRead: pages.length, totalPages, textCut };
   } catch {
     return { status: "unreadable" };
   } finally {

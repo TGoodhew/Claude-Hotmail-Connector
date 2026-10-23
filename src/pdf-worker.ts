@@ -9,8 +9,12 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { extractPdfText } from "./graph/pdf-text.js";
 
-const { data, maxPages } = workerData as { data: Uint8Array; maxPages: number };
-extractPdfText(data, maxPages).then(
+const { data, maxPages, maxChars } = workerData as {
+  data: Uint8Array;
+  maxPages: number;
+  maxChars: number;
+};
+extractPdfText(data, maxPages, maxChars).then(
   (result) => parentPort?.postMessage(result),
   () => parentPort?.postMessage({ status: "unreadable" }),
 );

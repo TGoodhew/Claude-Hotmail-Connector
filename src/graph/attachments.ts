@@ -35,8 +35,11 @@ export interface AttachmentContent {
   kind: AttachmentKind;
   /** Text, HTML and PDF: the text (HTML converted), cut at maxChars like a message body. */
   text?: MessageBody;
-  /** PDFs: the first `pagesRead` of `totalPages` pages were read. */
-  pdf?: { pagesRead: number; totalPages: number };
+  /**
+   * PDFs: the first `pagesRead` of `totalPages` pages were read; `textCut` when
+   * the text reached its character budget and was cut there.
+   */
+  pdf?: { pagesRead: number; totalPages: number; textCut: boolean };
   /** Calendar files: the events in them. */
   calendar?: IcsCalendar;
 }
@@ -189,7 +192,7 @@ export async function getAttachment(
     return {
       ...base,
       text: sliceBody(read.text, "text", input.maxChars, input.startChar),
-      pdf: { pagesRead: read.pagesRead, totalPages: read.totalPages },
+      pdf: { pagesRead: read.pagesRead, totalPages: read.totalPages, textCut: read.textCut },
     };
   }
   // A calendar line can be folded between the bytes of one character, so

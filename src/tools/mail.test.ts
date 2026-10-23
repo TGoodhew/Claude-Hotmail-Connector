@@ -321,17 +321,32 @@ describe("get_attachment summary (#156)", () => {
 
   it("says a PDF was read, and when only its first pages were", () => {
     expect(
-      attachmentSummary({ ...base, kind: "pdf", text, pdf: { pagesRead: 4, totalPages: 4 } }),
+      attachmentSummary({
+        ...base,
+        kind: "pdf",
+        text,
+        pdf: { pagesRead: 4, totalPages: 4, textCut: false },
+      }),
     ).toBe("Read the PDF's text attachment.");
     const cut = attachmentSummary({
       ...base,
       kind: "pdf",
       text,
-      pdf: { pagesRead: 30, totalPages: 120 },
+      pdf: { pagesRead: 30, totalPages: 120, textCut: false },
     });
     expect(cut).toBe(
       "Read the PDF's text attachment. Only the first 30 of its 120 pages were read.",
     );
     expect(cut).not.toContain("IGNORE");
+    expect(
+      attachmentSummary({
+        ...base,
+        kind: "pdf",
+        text,
+        pdf: { pagesRead: 7, totalPages: 9, textCut: true },
+      }),
+    ).toBe(
+      "Read the PDF's text attachment. Its text was cut at 200,000 characters, partway through page 7 of 9.",
+    );
   });
 });

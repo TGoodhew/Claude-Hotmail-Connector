@@ -267,7 +267,11 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
     body, with `pdf: { pagesRead, totalPages }`. Read with pdf.js 6 (via unpdf), with font loading,
     system fonts, WebAssembly decoders, canvas and image decoding, worker fetches and logging off (pdf.js
     6 no longer uses eval). Parsing runs in a **worker thread** with a **256 MB** heap cap and a
-    **10 s** limit; past either, the worker is terminated and the PDF refused. The worker's stdout and
+    **10 s** limit, and the process's resident memory is watched while it runs: buffers (where pdf.js
+    decodes compressed streams) live outside the heap cap, so growth over **512 MB** also stops it. Past
+    any of these the worker is terminated and the PDF refused. The text is held to **200,000
+    characters** while it's read, so a small PDF that expands enormously never builds up, or sends back,
+    more than that; the result's `pdf.textCut` says when it was cut. The worker's stdout and
     stderr are captured and discarded, never passed to the server's stdout (the MCP channel). Built as
     its own file beside the server (`dist/pdf-worker.js`; `server/pdf-worker.cjs` in the extension).
 - **Refused, with a clear message:** password-protected PDFs; PDFs with no text layer (e.g. scans; no
