@@ -2,14 +2,14 @@
 
 **Document type:** Build specification / requirements
 **Audience:** Claude Code (building the connector) and the repository owner (reviewing it)
-**Version:** 2.0 · **Date:** 2026-10-21 · **Owner:** Tony Goodhew
+**Version:** 2.0 · **Date:** 2026-10-21, last updated 2026-10-23 for release v1.0.0 · **Owner:** Tony Goodhew
 **Supersedes:** v1.0 (2026-07-19) and `local-hosting-investigation-and-requirements.md` v1.0
-**Tracking:** epic [#66](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66) · decisions [#59](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/59)
+**Tracking:** epic [#66](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66) (closed 2026-10-23) · decisions [#59](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/59)
 
 > **What changed in v2.** v1.0 specified a *remote* connector on Cloudflare Workers. What was built is a
 > **local stdio** MCP server (the "Mode A" recommended by the hosting investigation), originally with
 > a Windows installer, since replaced by a Claude Desktop extension (§11, D13). v2 makes the spec match that reality, records the decisions taken when the two
-> diverged (§16), and moves the remote design to a future-phase section (§15).
+> diverged (§16), and moves the remote design to a deferred section (§15).
 >
 > **Status markers.** Requirements the implementation does not yet meet carry the issue that tracks
 > them, e.g. *(→ #42)*. Anything unmarked is implemented. The key words MUST, SHOULD and MAY are
@@ -52,8 +52,8 @@ personal accounts for mail and calendar when you use **your own** Entra app regi
 ### Non-goals (v2)
 - **Being anyone's host or support desk.** Others may use the connector, but each user brings
   **their own** Entra app registration and runs it themselves. Builds do not embed a shared client id,
-  and support is community, best effort *(→ #77)*.
-- Use from claude.ai web/mobile or cloud sessions. That needs a remote mode, a future phase (§15, #58).
+  and support is community, best effort *(#77)*.
+- Use from claude.ai web/mobile or cloud sessions. That would need a remote mode (§15), which is deferred: #58 was closed as not planned.
 - Contacts, OneDrive/Files, Teams, SharePoint.
 - Deleting or permanently destroying mail. **No hard-delete tools.** Calendar events can only be
   soft-deleted through the guarded `cancel_event` (§7.8).
@@ -111,11 +111,12 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
     Unix socket, which Node can listen on only from 20.8. Every process sharing a cache must use the
     same lock, so older runtimes are refused rather than given a different one (§7.1a); that check
     stays, for anyone running below the declared minimum.
-- **Libraries:** `zod` (input validation), `dotenv` (dev config), `open` (system browser). Build with
+- **Libraries:** `zod` (input validation), `dotenv` (dev config), `open` (system browser), `unpdf` (PDF
+  text, §7.3b). Build with
   `tsup`, test with `vitest`. Crypto (PKCE, AES-256-GCM, SHA-256) uses Node's built-in `crypto`; no
   hand-rolled primitives.
 - Dependencies MUST be kept free of known high/critical advisories, and build tools invoked by scripts
-  (e.g. `postject`, `esbuild`) MUST be pinned in `devDependencies` *(→ #44)*.
+  (e.g. `esbuild`, `@anthropic-ai/mcpb`) MUST be pinned in `devDependencies` *(#44)*.
 
 ---
 
@@ -169,7 +170,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - A sign-in or refresh still in flight when the user signs out is **discarded**, not saved, so it
   can't silently undo the sign-out. This holds across processes too (Claude Desktop, Claude Code,
   `login`/`logout`): counters in `auth-state.json` next to the cache, updated under an exclusive
-  `auth.lock`, make a sign-out anywhere win over anything that began before it. Of two browser
+  cross-process lock (below), make a sign-out anywhere win over anything that began before it. Of two browser
   sign-ins in different processes, the first to finish is saved and the other uses it *(#95)*.
   - A sign-out stores the raised count *before* deleting anything. If the count can't be stored,
     nothing is deleted and the sign-out fails, so no process can save the sign-in again past an
@@ -237,8 +238,8 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   `folder`, as in §7.2). A message in Junk Email is flagged in the summary line, since the folder is the
   connector's own finding, not message text *(#53)*. Attachment content is read with
   `get_attachment` (§7.3b).
-- Bodies MUST be size-capped, with a `truncated` flag *(→ #38)*. HTML-to-text MUST tolerate malformed
-  entities *(→ #32)*.
+- Bodies MUST be size-capped, with a `truncated` flag *(#38)*. HTML-to-text MUST tolerate malformed
+  entities *(#32)*.
 - Read-only. `Mail.Read`.
 
 ### 7.3a `list_mail_folders` — the mailbox's folders
@@ -295,7 +296,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   default 25), `calendarId?` (from `list_calendars`; default calendar if omitted), `pageToken?`.
 - MUST send `Prefer: outlook.timezone="<IANA tz>"` so returned times are in the requested zone.
 - A bare local `startDateTime`/`endDateTime` MUST be interpreted in `timeZone`. This includes date-only
-  and fractional-second forms *(→ #33)*. `end` MUST be after `start`.
+  and fractional-second forms *(#33)*. `end` MUST be after `start`.
 - **Output per event:** `id`, `subject`, `start` / `end` (with timeZone), `location`, `isAllDay`, `webLink`,
   `type` (singleInstance / occurrence / exception / seriesMaster), `seriesMasterId`, `showAs`
   (free / tentative / busy / …), `organizer` and `isCancelled` *(#49)*.
@@ -355,7 +356,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   no offset/`Z`** and `timeZone` is IANA; `location?`; `body?` (plain text); `isReminderOn?`;
   `reminderMinutesBeforeStart?`; `transactionId?`; `calendarId?`; `isAllDay?`; `showAs?`; `recurrence?`.
 - **Timezone correctness (critical):** send local wall-clock + IANA `timeZone`. Values with `Z` or an
-  offset MUST be rejected. `end` MUST be after `start` *(→ #33)*.
+  offset MUST be rejected. `end` MUST be after `start` *(#33)*.
 - **All-day** *(#51)*: `start`/`end` are dates (`YYYY-MM-DD`) or midnights, in **one** zone, and `end` is
   exclusive (the day after the last day). They are sent as midnight wall-clock in that zone, never
   shifted; anything that isn't whole days is refused before writing.
@@ -405,7 +406,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 ### 7.6 `update_event` — edit an event
 - **Graph:** `PATCH /me/events/{id}` for subject / start / end / location / body / reminder.
 - Same time rules as §7.5. If only one of `start` / `end` changes, the result MUST still have end > start
-  *(→ #33)*.
+  *(#33)*.
 - Classified as a **destructive write**: it overwrites the event in place with no undo. Annotations:
   `destructiveHint: true`, `idempotentHint: true`. The description instructs the model to confirm
   the change first and to show the result.
@@ -527,7 +528,7 @@ signed in to that tenant. Registration settings:
   - In Claude Code / VS Code, it comes from the server's `env`; in development, from a local `.env`.
   - Without it, every command fails with an actionable error.
 - Builds MUST NOT embed a shared client id. The maintainer's former shared registration (used by
-  v0.1.0) is retired after the next release *(→ #68)*.
+  v0.1.0) was deleted on 2026-10-23, after v0.2.0 shipped without it *(#68)*.
 
 ### 8.2 Sign-in
 - **Flow:** authorization code + **PKCE (S256)** against
@@ -549,7 +550,7 @@ signed in to that tenant. Registration settings:
   support it.
 - A loopback request with a missing or wrong `state` is answered 400 and ignored. It neither aborts
   nor completes the pending sign-in, and an `error=` callback counts only if its `state` matches.
-- Token requests MUST have a timeout *(→ #37)*.
+- Token requests MUST have a timeout (15 s) *(#37)*.
 
 ### 8.3 Token handling
 - Silent refresh on expiry. Single-flight within the process. A 401 refreshes once and retries.
@@ -565,7 +566,8 @@ signed in to that tenant. Registration settings:
     reset, which means signing in again.
   - **macOS / Linux:** plain owner-only key file. Keychain/libsecret support is not planned (owner
     decision 2026-10-23: the maintainer supports Windows only); PRs welcome *(#83)*.
-- Cache location: `%LOCALAPPDATA%\claude-hotmail-connector` (Windows) or `~/.claude-hotmail-connector`,
+- Cache location: `%LOCALAPPDATA%\claude-hotmail-connector` (Windows), else
+  `$XDG_STATE_HOME/claude-hotmail-connector` if set, else `~/.claude-hotmail-connector`,
   overridable with `CLAUDE_HOTMAIL_CACHE_DIR`. Claude for Windows is an MSIX package, so Windows
   redirects the extension's copy to
   `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector`. The
@@ -578,13 +580,14 @@ signed in to that tenant. Registration settings:
 ### 8.4 Configuration
 | Variable | Default | Notes |
 |---|---|---|
-| `MICROSOFT_CLIENT_ID` | the id saved by `setup` (§8.1) | The user's Entra app client id; required if none is saved. |
+| `MICROSOFT_CLIENT_ID` | none (required) | The user's Entra app client id (§8.1). In the extension, its "Application (client) ID" setting. |
 | `MICROSOFT_TENANT` | `consumers` | Personal accounts only; `common` with a multitenant registration (§8.1). |
 | `DEFAULT_TIMEZONE` | The system's IANA zone, else `UTC` | Validated at startup (§9.5, #34). |
 | `MICROSOFT_SCOPES` | §6 default set | Narrowing only (§6). |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
+| `ALLOW_SEND_MAIL` | `false` | Requests `Mail.Send` and offers `send_email` / `reply_to_email`, each confirmed by the user in the browser (§7.9, #57). The extension's "Allow sending email". |
 | `LOG_FILE` | `false` | Also write the logs to `connector.log` in the cache directory, capped at 2 MB (§9.4, #178). |
-| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir | Token cache location. |
+| `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir (§8.3) | Token cache location; also holds `auth-state.json` and, when on, `connector.log`. |
 
 `.env` is a **development** convenience, read only from the connector checkout's root, found from the
 entry script's path (`<repo>/dist/index.js` → `<repo>/.env`). It is never read from the directory the
@@ -596,7 +599,8 @@ can't swap the client id, tenant, scopes or cache dir. Extension installs have n
 ## 9. Non-functional requirements
 
 ### 9.1 Security
-- **stdio only:** no network listener except the transient loopback sign-in listener.
+- **stdio only:** no network listener except the transient loopback sign-in listener and, when sending
+  is on, the loopback send-confirmation page (§7.9).
 - **Least-privilege scopes** (§6). No client secret.
 - **Logging hygiene:** never log `Authorization` headers, tokens, codes or secrets. Scrub structured logs.
 - **Untrusted content:** email and calendar content is written by third parties and MUST be treated as
@@ -633,9 +637,9 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | T2 | **Sending mail.** Injected text asks Claude to email the mailbox contents somewhere. | Off by default (no `Mail.Send`, never `Mail.ReadWrite`, §6). When turned on, every email is shown on the connector's own local page and sent only when the user clicks Send there; the model never sees that page's URL, and the client's approval prompt isn't relied on. First-time recipients are flagged. No forwarding, reply-all or attachments; at most 10 recipients (§7.9). | ✅ #57 (user-confirmed) |
 | T3 | **Invitations and meeting updates as a send channel.** `create_event` with attendees emails them. Changing (or deleting) an existing meeting you organised emails its attendees even without an `attendees` field. | Attendees can't be written (three layers, §7.5). `update_event` and `cancel_event` refuse events that have attendees, checked on a fresh read. `update_event` writes only the checked version (`If-Match`, enforced by Graph). For `cancel_event`, Graph ignores `If-Match` on deletes, so every DELETE attempt is sent once, right after its own fresh read and check (retries start over), leaving only a milliseconds-wide read-then-delete window per attempt (§7.8). | ✅ #61, #55 |
 | T4 | **Cancellations as a send channel.** Deleting a meeting emails cancellations. | `cancel_event` refuses events with attendees (§7.8). | ✅ #55 |
-| T5 | **Destructive edits.** An injected mail says "move all my events" or "delete the dentist appointment". | `destructiveHint` on `update_event`/`cancel_event`; descriptions require explicit confirmation; `update_event` echoes before/after; `cancel_event` needs a title match, soft-deletes only, and refuses recurring events. **These are server-side guards; per-call human approval is enforced by the MCP client's permission prompts, not the server.** The model can satisfy `confirmSubject` itself, so a client set to auto-approve these tools can still be steered (see residual risks). | Partial (client-enforced approval) |
+| T5 | **Destructive edits.** An injected mail says "move all my events" or "delete the dentist appointment". | `destructiveHint` on `update_event`/`cancel_event`; descriptions require explicit confirmation; `update_event` echoes before/after; `cancel_event` needs a title match, soft-deletes only, and refuses recurring events. **These are server-side guards; per-call human approval is enforced by the MCP client's permission prompts, not the server.** The model can satisfy `confirmSubject` itself, so a client set to auto-approve these tools can still be steered (see residual risks). Claude Desktop currently doesn't show that prompt for extension tools (#138), so there the server-side guards are the only check. | Partial (client-enforced approval) |
 | T6 | **Data planted in the calendar.** Mail contents copied into event bodies, visible to anyone the calendar is shared with. | Writes require confirmation, and the created event is echoed. Residual risk if the calendar is shared or published (see residual risks). | Partial |
-| T7 | **Phishing presented as genuine.** A fake "booking" in Junk is read as real. | Exclude Junk/Deleted by default and report each message's folder (#53). | *→ #53* |
+| T7 | **Phishing presented as genuine.** A fake "booking" in Junk is read as real. | Exclude Junk/Deleted by default and report each message's folder (#53). | ✅ #53 |
 | T8 | **Context flooding.** A huge newsletter fills the model's context and pushes out the user's instructions. | Result caps on lists. `get_message` cuts bodies at `maxChars` (default 20,000) with `truncated`, `totalChars` and `nextStartChar`, so the rest can be read in parts. | ✅ #38 |
 | T9 | **Hostile launch environment.** A repo's `.env` swaps the client id, tenant, cache dir or scopes. | `.env` is read only from the checkout root, never the CWD (§8.4). Scope override can only narrow (§6). | ✅ #41, #70 |
 | T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; macOS/Linux not planned *(#83)* |
@@ -665,16 +669,18 @@ cancellation guards are covered by unit tests (#61, #55).
 - A compromised MCP client, or **other tools in the same conversation**: e.g. a web-fetch tool from
   another connector could be steered by email content this connector returned. Rule 1 and #88 reduce
   but can't eliminate this.
-- **Auto-approved tool calls.** If the user's client is set to run `create_event`, `update_event` or
-  `cancel_event` without asking, injected content can still cause the allowed (guarded) writes and
-  deletes.
+- **Auto-approved tool calls.** If the client runs `create_event`, `update_event` or `cancel_event`
+  without asking (a user setting, or Claude Desktop for extension tools, #138), injected content can
+  still cause the allowed (guarded) writes and deletes.
 - Data the user confirms writing into a calendar that is shared or published.
 
 ### 9.3 Reliability & performance
-- Graph calls: 10 s timeout; retry 429/503/504 with capped exponential backoff + jitter, honoring
-  `Retry-After` (capped at 60 s), max 3 retries.
-- SHOULD also retry 500/502 for idempotent requests, propagate MCP cancellation (`AbortSignal`) to Graph,
-  and enforce an overall per-call deadline *(→ #37)*.
+- Graph calls: 10 s timeout per request. 429 is retried for any request; 500/502/503/504, timeouts and
+  network errors only for requests safe to repeat (GET/PUT/PATCH/DELETE, or a POST carrying a
+  `transactionId`). Retries use capped exponential backoff + jitter, honoring `Retry-After` (capped at
+  60 s), max 3 retries. `cancel_event`'s DELETE is sent once (§7.8).
+- MCP cancellation (`AbortSignal`) is propagated to Graph, and each tool call has an overall 55 s
+  deadline *(#37)*.
 - Result caps on every list (§7) and body truncation (§7.3) to protect the model's context.
 
 ### 9.4 Observability
@@ -721,15 +727,19 @@ Claude-Hotmail-Connector/
 │  ├─ local-hosting-investigation-and-requirements.md  # superseded; kept for the investigation record
 │  └─ packaging.md                # Claude Desktop extension (.mcpb): install, upgrade, build
 ├─ src/
-│  ├─ index.ts                    # CLI: (default) stdio server, login, logout, whoami
+│  ├─ index.ts                    # entry: stdio server, or a CLI command
+│  ├─ cli.ts                      # commands: login, logout, whoami, help, version
 │  ├─ mcp.ts                      # McpServer + tool registration
 │  ├─ config.ts                   # env/config loading & validation
-│  ├─ auth/{microsoft,tokens,protect}.ts  # upstream OAuth (PKCE + loopback), token store, DPAPI
-│  ├─ graph/{client,mail,calendar,user}.ts   # Graph client (auth, retry, paging) + modules
-│  ├─ tools/{mail,calendar,user,types}.ts    # zod schemas + thin handlers
-│  └─ util/{time,html,log,errors}.ts
+│  ├─ pdf-worker.ts               # PDF text extraction (worker thread)
+│  ├─ auth/{microsoft,tokens,protect,coordination}.ts  # OAuth (PKCE + loopback), token store, DPAPI, cross-process lock
+│  ├─ graph/{client,paging,mail,calendar,freebusy,attachments,pdf,pdf-text,send,user}.ts  # Graph client + modules
+│  ├─ tools/{mail,calendar,send,user,types}.ts  # zod schemas + thin handlers
+│  ├─ send/confirm.ts             # loopback send-confirmation page (§7.9)
+│  └─ util/{time,html,ics,log,log-file,errors,fs-retry}.ts
 │     (tests are colocated: src/**/*.test.ts)
-├─ scripts/                       # build-mcpb.mjs, check-text.mjs, register-app.ps1
+├─ assets/                        # icon.svg, icon.png (extension icon)
+├─ scripts/                       # build-mcpb.mjs, check-text.mjs, register-app.ps1, test-live.mjs
 └─ .github/workflows/             # ci.yml, release.yml
 ```
 
@@ -738,9 +748,11 @@ Claude-Hotmail-Connector/
 ## 11. Packaging & distribution
 
 - **Claude Desktop: MCP Bundle (`.mcpb`)** (owner decision on #63, option A).
-  - `npm run build:mcpb` produces `build/hotmail-connector.mcpb` (see `docs/packaging.md`): a
-    single-file esbuild server bundle (no `node_modules`) plus `manifest.json` (spec 0.3). It is
-    validated and packed with the pinned `@anthropic-ai/mcpb` CLI.
+  - `npm run build:mcpb` produces `build/hotmail-connector.mcpb` (see `docs/packaging.md`): an
+    esbuild server bundle and the PDF worker it starts (`server/index.cjs`, `server/pdf-worker.cjs`;
+    no `node_modules`), the extension icon (`icon.png`, rendered from `assets/icon.svg`, #179),
+    license notices, and `manifest.json` (spec 0.3). It is validated and packed with the pinned
+    `@anthropic-ai/mcpb` CLI.
   - Claude Desktop installs it from **Settings → Extensions → Advanced settings → Install
     Extension…**, runs it on its own bundled Node, and collects the client id through a generated
     settings UI. The bundle declares Windows, macOS and Linux as compatible, but only **Windows** is
@@ -754,7 +766,7 @@ Claude-Hotmail-Connector/
   that edited `claude_desktop_config.json`. Users upgrading must uninstall v0.1.0 first, or every tool
   shows twice.
 - **CI/release:** CI MUST run on Windows as well as Linux, the release job MUST run the full checks, and
-  the version MUST have a single source *(→ #46)*.
+  the version MUST have a single source *(#46)*.
 
 ---
 
@@ -762,9 +774,9 @@ Claude-Hotmail-Connector/
 
 - **Unit tests (vitest), colocated** as `src/**/*.test.ts`. They cover zod validation, wall-clock↔IANA
   mapping (`2026-07-20T12:00:00` + `Australia/Brisbane` is preserved, not shifted), Graph client
-  retry/paging with mocked `fetch`, auth refresh paths, the token store, HTML-to-text, and setup config
-  merging.
-- **Coverage threshold** enforced in `vitest.config.ts` *(→ #47)*.
+  retry/paging with mocked `fetch`, auth refresh paths, the token store, HTML-to-text, the .ics and PDF
+  attachment readers, cross-process sign-in coordination, the send confirmation page, and the log file.
+- **Coverage threshold** enforced in `vitest.config.ts` *(#47)*.
 - **DST-zone tests** (§9.5): Sydney and New York across both transitions *(#64)*.
 - **stdio subprocess smoke test:** launch `dist/index.js` and list tools (in `mcp.test.ts`).
 - **Source hygiene:** `npm run check:text` rejects raw control characters in tracked files (CI step).
@@ -807,13 +819,14 @@ Claude-Hotmail-Connector/
 | Over-broad access | `Mail.Read` only; scope override narrowing-only (§6); no hard delete. |
 | Graph throttling / outages | Backoff with `Retry-After`; timeouts; result caps (§9.3). |
 | Outdated dependencies in the shipped bundle | Dependabot/audit (#44); Claude Desktop supplies the Node runtime. |
-| Only usable on the user's PC | Accepted for v2; remote mode is a future phase (§15). |
+| Only usable on the user's PC | Accepted; remote mode is deferred (§15, #58 not planned). |
 
 ---
 
-## 15. Future phase: remote mode (claude.ai web / mobile)
+## 15. Deferred: remote mode (claude.ai web / mobile)
 
-Tracked in **#58**. This section holds the v1.0 remote requirements, refreshed. Nothing here applies to
+Deferred: #58 was closed as not planned (2026-10-23). This section holds the v1.0 remote requirements,
+refreshed, as a record in case it is taken up. Nothing here applies to
 the local stdio server.
 
 ### 15.1 Options
