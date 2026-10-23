@@ -22,7 +22,7 @@ import { createLogger, type Logger } from "./util/log.js";
 export const SERVER_NAME = "claude-hotmail-connector";
 export const SERVER_TITLE = "Personal Outlook.com / Hotmail";
 /** Must equal package.json's version (a test checks; the release tag must too). */
-export const SERVER_VERSION = "0.3.0";
+export const SERVER_VERSION = "1.0.0";
 
 /** Sent once at initialization; tool descriptions and results repeat the rule (T12). */
 export const SERVER_INSTRUCTIONS =
