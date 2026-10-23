@@ -76,8 +76,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="Claude Desktop extension for $TAG: download hotmail-connector.mcpb and double-click it (or drag it into Claude Desktop > Settings > Extensions), then enter your own Entra app's Application (client) ID. Verify against SHA256SUMS.txt, or check its build provenance with: gh attestation verify hotmail-connector.mcpb --repo $GITHUB_REPOSITORY. See the README for creating your app registration and for Claude Code (source) setup."
+          # The notes are this version's CHANGELOG.md section (from its "## vX.Y.Z" heading to
+          # the next "## "), then how to install and verify. A tag with no section fails here
+          # rather than publish an empty release.
+          awk -v tag="$TAG" '
+            index($0, "## " tag " ") == 1 || $0 == "## " tag { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "CHANGELOG.md has no section for $TAG." >&2
+            exit 1
+          fi
+          cat >> notes.md <<EOF
+
+          ### Install and verify
+
+          Download \`hotmail-connector.mcpb\`, then in Claude Desktop open **Settings → Extensions → Advanced settings → Install Extension…**, choose it, and enter your own Entra app's Application (client) ID. See the README for creating the app registration, and for Claude Code (source) setup.
+
+          Verify the download against \`SHA256SUMS.txt\`, or check its build provenance: \`gh attestation verify hotmail-connector.mcpb --repo $GITHUB_REPOSITORY\`.
+          EOF
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "$TAG" --notes "$notes" --target "$GITHUB_SHA"
+            gh release create "$TAG" --title "$TAG" --notes-file notes.md --target "$GITHUB_SHA"
           fi
           gh release upload "$TAG" build/hotmail-connector.mcpb build/SHA256SUMS.txt --clobber

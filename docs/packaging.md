@@ -35,8 +35,10 @@ The connector signs in to Microsoft through an Entra app registration that **you
    `SHA256SUMS.txt`. Releases also carry signed build provenance, so with the GitHub CLI you can
    check the bundle was built by this repository's release workflow:
    `gh attestation verify hotmail-connector.mcpb --repo TGoodhew/Claude-Hotmail-Connector`.
-2. **Double-click it** (or drag it into **Claude Desktop → Settings → Extensions**) and choose
-   **Install**.
+2. In Claude Desktop, open **Settings → Extensions → Advanced settings → Install Extension…**,
+   choose the file, then **Install**. (Double-clicking it, or dragging it onto the Extensions page, may
+   also work in some versions; dropping it on a chat only attaches it. Claude Desktop 3.1623.4 on
+   Windows, the MSIX build, registers no file association for `.mcpb`.)
 3. Enter your **Application (client) ID** when asked. You can change it later under **Settings →
    Extensions → Hotmail Connector**.
 4. Ask Claude something that needs your mailbox or calendar. The first time, a Microsoft sign-in opens

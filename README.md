@@ -8,10 +8,10 @@ Claude's official Microsoft 365 connector only supports work/school (Microsoft E
 rejects personal Microsoft accounts. This project fills that gap as a **personal, single-user tool**
 that runs entirely on your own machine.
 
-> **Status:** the latest release (v0.1.0) is a Windows installer. The next release ships as a
-> **Claude Desktop extension (`.mcpb`)** for Windows, macOS and Linux. The requirements are in
-> [spec v2](docs/personal-outlook-mcp-connector-requirements.md), and the remaining work is tracked in
-> the [Spec v2 epic (#66)](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66).
+> **Status:** v0.2.0 ships as a **Claude Desktop extension (`.mcpb`)** for Windows, macOS and Linux
+> (only Windows has been tested by hand so far). What changed is in the [changelog](CHANGELOG.md),
+> the requirements are in [spec v2](docs/personal-outlook-mcp-connector-requirements.md), and future
+> work is collected in [#150](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/150).
 
 ## How it works — local stdio
 
@@ -98,8 +98,10 @@ The connector signs in as a **public/native client**. No client secret is ever u
    [Releases](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases) and verify it against
    `SHA256SUMS.txt`. (Until the next release, build it yourself: `npm run build:mcpb`, see
    [Development](#development).)
-2. **Double-click it**, or drag it into **Claude Desktop → Settings → Extensions**, and choose
-   **Install**.
+2. In Claude Desktop, open **Settings → Extensions → Advanced settings → Install Extension…**,
+   choose the downloaded file, then **Install**. (Double-clicking it, or dragging it onto the
+   Extensions page, may also work in some versions; dropping it on a chat only attaches it to the
+   chat.)
 3. Enter your **Application (client) ID** from step 1. You can change it later under **Settings →
    Extensions → Hotmail Connector**.
 4. Ask Claude something that needs your mailbox or calendar. The first time, a Microsoft sign-in opens
