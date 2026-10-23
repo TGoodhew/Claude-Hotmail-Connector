@@ -1,7 +1,7 @@
 /**
- * MCP tool definitions for the calendar: list_calendars, list_events and
- * get_event (reads), create_event and update_event (writes), and the guarded
- * cancel_event (soft delete). Event times are local wall-clock + IANA zone.
+ * MCP tool definitions for the calendar: list_calendars, list_events, get_event
+ * and find_free_time (reads), create_event and update_event (writes), and the
+ * guarded cancel_event (soft delete). Event times are local wall-clock + IANA zone.
  */
 
 import { z } from "zod";
@@ -18,6 +18,7 @@ import {
   listEvents,
   updateEvent,
 } from "../graph/calendar.js";
+import { findFreeTime, MAX_RANGE_DAYS } from "../graph/freebusy.js";
 import { DEFAULT_MAX_BODY_CHARS } from "../graph/mail.js";
 import {
   defineTool,
@@ -428,9 +429,81 @@ export const listCalendarsTool: ToolDefinition<typeof listCalendarsShape> = defi
   },
 });
 
+const findFreeTimeShape = {
+  startDateTime: z
+    .string()
+    .describe(
+      'Range start: a local "YYYY-MM-DDTHH:mm[:ss]" (or "YYYY-MM-DD" for midnight), read in ' +
+        "timeZone; or an ISO 8601 value with an offset/Z for an exact instant.",
+    ),
+  endDateTime: z
+    .string()
+    .describe(`Range end, in the same forms; at most ${MAX_RANGE_DAYS} days after the start.`),
+  timeZone: z
+    .string()
+    .optional()
+    .describe(
+      "IANA time zone for the range, the hours and the slots (defaults to DEFAULT_TIMEZONE).",
+    ),
+  minDurationMinutes: z
+    .number()
+    .int()
+    .min(5)
+    .max(1440)
+    .default(30)
+    .describe("Shortest free slot to return, in minutes (5-1440, default 30)."),
+  withinHours: z
+    .object({
+      start: z.string().describe('Local start of the daily window, "HH:mm", e.g. "09:00".'),
+      end: z.string().describe('Local end of the daily window, "HH:mm", after the start.'),
+    })
+    .optional()
+    .describe("Only look within these hours each day (e.g. working hours)."),
+  tentativeIsBusy: z
+    .boolean()
+    .default(true)
+    .describe("Treat tentative events as busy (default true)."),
+  calendarId: calendarIdShape,
+};
+
+export const findFreeTimeTool: ToolDefinition<typeof findFreeTimeShape> = defineTool({
+  name: "find_free_time",
+  title: "Find free time",
+  description:
+    "Find free time in the user's personal Outlook.com / Hotmail calendar over a range (e.g. a " +
+    "slot for a booking or travel), optionally only within daily hours. Returns free slots of at " +
+    "least minDurationMinutes and the merged busy times, in the requested IANA time zone, each " +
+    "also as an exact UTC instant (startUtc/endUtc: rely on those in the hour that repeats when " +
+    "clocks go back). Events " +
+    "shown as free, and cancelled ones, don't count as busy; tentative ones do unless " +
+    "tentativeIsBusy is false. Returns times only, no event details (use list_events for those). " +
+    "Read-only.",
+  inputShape: findFreeTimeShape,
+  annotations: { readOnlyHint: true, openWorldHint: true },
+  scopesAnyOf: ["Calendars.Read", "Calendars.ReadWrite"],
+  async handler(input, ctx) {
+    const result = await findFreeTime(ctx.graph, {
+      startDateTime: input.startDateTime,
+      endDateTime: input.endDateTime,
+      timeZone: input.timeZone ?? ctx.config.defaultTimeZone,
+      minDurationMinutes: input.minDurationMinutes,
+      withinHours: input.withinHours,
+      tentativeIsBusy: input.tentativeIsBusy,
+      calendarId: input.calendarId,
+    });
+    const n = result.freeSlots.length;
+    const summary =
+      n === 0
+        ? `No free slot of ${input.minDurationMinutes}+ minutes in that range.`
+        : `Found ${n} free slot(s) of ${input.minDurationMinutes}+ minutes (times in ${result.timeZone}).`;
+    return toolResult(summary, result);
+  },
+});
+
 export const calendarTools: RegisteredTool[] = [
   toRegistered(listCalendarsTool),
   toRegistered(listEventsTool),
+  toRegistered(findFreeTimeTool),
   toRegistered(getEventTool),
   toRegistered(createEventTool),
   toRegistered(updateEventTool),
