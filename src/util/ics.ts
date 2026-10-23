@@ -152,6 +152,10 @@ function parseTime(line: ContentLine): IcsTime | null {
   // A declared value type must be one this reader handles, and match the value.
   const type = line.params.get("VALUE")?.trim().toUpperCase();
   if (type !== undefined && type !== "DATE" && type !== "DATE-TIME") return null;
+  // An oversized zone name isn't one: the value is then of no known zone,
+  // whichever form it takes.
+  const tzid = line.params.get("TZID");
+  if (tzid !== undefined && !bounded(tzid)) return null;
   const d = DATE_RE.exec(value);
   // A bare date with no VALUE is strictly malformed (the default type is
   // DATE-TIME), but it's unambiguous and booking systems do send it, so it's
@@ -165,9 +169,6 @@ function parseTime(line: ContentLine): IcsTime | null {
   const [, y, mo, da, h, mi, s, z] = t;
   if (!realDate(y!, mo!, da!)) return null;
   if (Number(h) > 23 || Number(mi) > 59 || Number(s) > 60) return null;
-  const tzid = line.params.get("TZID");
-  // An oversized zone name isn't one: the time is then of no known zone.
-  if (tzid !== undefined && !bounded(tzid)) return null;
   return {
     dateTime: `${y}-${mo}-${da}T${h}:${mi}:${s === "60" ? "59" : s}`,
     timeZone: z ? "UTC" : (tzid?.trim() ?? null),

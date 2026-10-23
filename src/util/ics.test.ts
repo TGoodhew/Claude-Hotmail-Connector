@@ -241,7 +241,7 @@ describe("parseIcs (#54)", () => {
       starts(
         "DTSTART;VALUE=DATE:20260720T190000", // a date type with a time
         "DTSTART;VALUE=DATE-TIME:20260720", // a date-time type with a date
-        "DTSTART;VALUE=PERIOD:20260720T190000Z/PT1H", // unsupported type
+        "DTSTART;VALUE=TIME:20260720T190000", // unsupported type, with a value that would parse
         "DTSTART;VALUE=DATE:20260720",
         "DTSTART;VALUE=DATE-TIME:20260720T190000",
         "DTSTART:20260720", // no VALUE: strictly malformed, but plainly a date
@@ -271,6 +271,10 @@ describe("parseIcs (#54)", () => {
     const tz = "Z".repeat(MAX_ICS_TOKEN_CHARS);
     expect(event(`DTSTART;TZID=${tz}:20260720T190000`).start?.timeZone).toBe(tz);
     expect(event(`DTSTART;TZID=${tz}Z:20260720T190000`).start).toBeNull();
+    // All-day dates too, with VALUE=DATE or bare, and on DTEND.
+    expect(event(`DTSTART;VALUE=DATE;TZID=${tz}Z:20260720`).start).toBeNull();
+    expect(event(`DTSTART;TZID=${tz}Z:20260720`).start).toBeNull();
+    expect(event(`DTEND;TZID=${tz}Z:20260721`).end).toBeNull();
     // A long RRULE is dropped rather than cut into a different rule.
     expect(event(`RRULE:FREQ=WEEKLY;BYDAY=${"MO,".repeat(400)}TU`).recurrence).toBeNull();
     expect(event("RRULE:FREQ=WEEKLY;BYDAY=MO").recurrence).toBe("FREQ=WEEKLY;BYDAY=MO");
