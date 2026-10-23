@@ -428,7 +428,9 @@ Approved by the owner with guards (#55).
     read (whose key unwrap can take seconds), refresh or sign-in can come after the checks. Without a current token it isn't sent, and `cancel_event` starts over: the
     re-read gets a token, then the guards run again.
     Just before the DELETE, the shared sign-out count is read once more (the small state file, not the
-    token cache), so a sign-out in *another* process during the re-read stops it too *(#143)*. A
+    token cache), so a sign-out in *another* process during the re-read stops it too *(#143)*. That read has
+    a 500 ms budget: past it the checks may be stale, so the DELETE isn't sent and `cancel_event` starts
+    over with a fresh read and guards. A
     sign-out in this process is seen at once.
   - After a transient failure (throttling, a 5xx, a timeout, a 401), `cancel_event` starts over: it
     re-reads the event, re-runs every guard, then sends one DELETE. It makes at most 3 attempts. Between

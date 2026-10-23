@@ -11,7 +11,13 @@
  */
 
 import type { MicrosoftAuth } from "../auth/microsoft.js";
-import { GraphError, NoCurrentTokenError, TimeoutError, ValidationError } from "../util/errors.js";
+import {
+  GraphError,
+  NoCurrentTokenError,
+  PreSendCheckTimeoutError,
+  TimeoutError,
+  ValidationError,
+} from "../util/errors.js";
 import { createLogger, type Logger } from "../util/log.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -117,7 +123,18 @@ export interface GraphClientDeps {
    * non-interactive use (CLI diagnostics): a missing sign-in is then an error.
    */
   interactiveSignIn?: { waitMs: number };
+  /**
+   * Most a send-once request waits for its last sign-out check before giving
+   * up unsent (default {@link PRE_SEND_CHECK_MS}).
+   */
+  preSendCheckMs?: number;
 }
+
+/**
+ * The sign-out check before a send-once request reads one small file. Past
+ * this, the caller's own checks may be stale, so the request isn't sent (#143).
+ */
+export const PRE_SEND_CHECK_MS = 500;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -411,10 +428,27 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
     // read), and its token comes from memory, which only knows this process's
     // sign-outs. So catch up with other processes once more just before it goes:
     // a sign-out elsewhere during those checks then stops it (#143). The read is
-    // the small shared-state file, not the token cache, so the gap stays short.
+    // the small shared-state file, not the token cache, and it gets only a short
+    // budget: if it stalls, the caller's checks may be stale by the time it ends,
+    // so the request isn't sent and the caller starts over with fresh checks.
     if (opts.sendOnce && opts.signOutEpoch !== undefined && deps.auth.syncSignOuts) {
       ensureStillWanted();
-      await withinLimits(deps.auth.syncSignOuts(), opts.signal, remainingMs());
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const budget = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new PreSendCheckTimeoutError()),
+          deps.preSendCheckMs ?? PRE_SEND_CHECK_MS,
+        );
+      });
+      try {
+        await withinLimits(
+          Promise.race([deps.auth.syncSignOuts(), budget]),
+          opts.signal,
+          remainingMs(),
+        );
+      } finally {
+        clearTimeout(timer);
+      }
     }
 
     for (;;) {
