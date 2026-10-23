@@ -19,19 +19,21 @@ The connector signs in to Microsoft through an Entra app registration that **you
    [Create a free tenant](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-create-new-tenant),
    typically by signing up for a free Azure account.
 2. **Register the app**, either:
-   - with one command (Azure CLI signed in to your tenant):
+   - with one command from a source checkout. This needs the
+     [Azure CLI](https://aka.ms/installazurecli) (on Windows:
+     `winget install -e --id Microsoft.AzureCLI`, then open a new terminal):
      ```pwsh
-     az login
-     pwsh ./scripts/register-app.ps1   # personal accounts only; -Audience Multitenant to widen
+     az login --allow-no-subscriptions   # a free tenant usually has no subscription
+     pwsh ./scripts/register-app.ps1     # personal accounts only; -Audience Multitenant to widen
      ```
-   - or by hand in the portal, following **"Register a Microsoft Entra application"** in the
-     [README](../README.md).
+   - or by hand in the portal, following **"Step 1: register your own Microsoft Entra application"**
+     in the [README](../README.md#step-1-register-your-own-microsoft-entra-application).
 3. Copy the printed **Application (client) ID**.
 
 ## Install
 
-1. Download `hotmail-connector.mcpb` from
-   [Releases](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases) and verify it against
+1. Download `hotmail-connector.mcpb` from the
+   [latest release](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases/latest) and verify it against
    `SHA256SUMS.txt`. Releases also carry signed build provenance, so with the GitHub CLI you can
    check the bundle was built by this repository's release workflow:
    `gh attestation verify hotmail-connector.mcpb --repo TGoodhew/Claude-Hotmail-Connector`.
@@ -40,7 +42,8 @@ The connector signs in to Microsoft through an Entra app registration that **you
    also work in some versions; dropping it on a chat only attaches it. Claude Desktop 3.1623.4 on
    Windows, the MSIX build, registers no file association for `.mcpb`.)
 3. Enter your **Application (client) ID** when asked. You can change it later under **Settings →
-   Extensions → Hotmail Connector**.
+   Extensions → Hotmail Connector**. Make sure the extension is switched on there. If you also run a
+   source checkout, give it the same client ID: the two share one saved sign-in.
 4. Ask Claude something that needs your mailbox or calendar. The first time, a Microsoft sign-in opens
    in your browser. Finish it and that request carries on, or ask again if it took longer than about
    45 seconds.
@@ -48,13 +51,19 @@ The connector signs in to Microsoft through an Entra app registration that **you
 Uninstall or disable it from **Settings → Extensions**. Removing the extension doesn't delete the
 saved sign-in, so to leave nothing behind, first ask Claude to **sign out** (the `sign_out` tool).
 
+### Updating to a newer release
+
+Install the new `.mcpb` the same way, over the old one. If Claude Desktop asks for your client ID
+again, enter the same one. What changed is in the [changelog](../CHANGELOG.md).
+
 ### Upgrading from v0.1.0 (Windows installer)
 
 1. Uninstall the old **Claude Hotmail Connector** from Windows **Settings → Apps**. Its uninstaller
    also removes its entry from Claude Desktop's config. Leaving both would run two servers and show
    every tool twice.
-2. Install the `.mcpb` as above, with **your own** client ID (v0.1.0's shared ID is being retired,
-   [#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)).
+2. Install the `.mcpb` as above, with **your own** client ID. v0.1.0's shared registration has been
+   deleted, so v0.1.0 can no longer sign in
+   ([#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)).
 3. Sign in again when prompted.
 
 ## Building

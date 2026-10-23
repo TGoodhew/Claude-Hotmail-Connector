@@ -5,7 +5,7 @@
     "hotmail-connector": {
       "type": "stdio",
       "command": "node",
-      "args": ["C:\\Users\\Tony\\Source\\Repos\\Claude-Hotmail-Connector\\dist\\index.js"],
+      "args": ["C:\\path\\to\\Claude-Hotmail-Connector\\dist\\index.js"],
       "env": {
         "MICROSOFT_CLIENT_ID": "<your-entra-app-client-id>"
       }

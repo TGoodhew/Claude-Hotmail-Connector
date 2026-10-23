@@ -58,6 +58,18 @@ three checks:
 
 `update_event` likewise refuses events with attendees, because changing a meeting emails its attendees.
 
+A few behaviours worth knowing:
+
+- **Junk and Deleted are left out.** Across all folders, `list_messages` leaves out Junk Email and
+  Deleted Items, and the folders beneath them, unless you ask for them. Mail in Junk is flagged as
+  such, so phishing can't pass for a real booking.
+- **PDFs aren't read yet.** `get_attachment` refuses PDFs and other binary files, as well as anything
+  over 1 MB ([#156](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/156) tracks PDFs).
+  Open those from the message in Outlook.
+- **Times use your time zone.** `find_free_time` and the other calendar tools work in your computer's
+  time zone unless you name another, with daylight saving applied. All-day events count as whole
+  days in that zone.
+
 Full tool contracts are in spec v2 §7.
 
 ## Step 1: register your own Microsoft Entra application
@@ -68,8 +80,12 @@ personal account doesn't come with one. If you don't have a tenant,
 [create a free one](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-create-new-tenant)
 first (typically by signing up for a free Azure account).
 
-> **Shortcut:** with the Azure CLI signed in to your tenant (`az login`),
-> `pwsh ./scripts/register-app.ps1` does all of the steps below and prints the client ID.
+> **Shortcut:** from a source checkout, `pwsh ./scripts/register-app.ps1` does all of the steps below
+> and prints the client ID. It needs the [Azure CLI](https://aka.ms/installazurecli). On Windows,
+> install it with `winget install -e --id Microsoft.AzureCLI`, open a new terminal, and sign in with
+> `az login --allow-no-subscriptions`. The flag is needed because a free tenant usually has no Azure
+> subscription; add `--tenant <your-tenant>` if you belong to several. Use the script from v0.2.1 or
+> later: the earlier one created the registration without its API permissions listed.
 
 The connector signs in as a **public/native client**. No client secret is ever used or stored.
 
@@ -94,24 +110,32 @@ The connector signs in as a **public/native client**. No client secret is ever u
 
 ## Step 2a: install in Claude Desktop (extension)
 
-1. Download `hotmail-connector.mcpb` from
-   [Releases](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases) and verify it against
-   `SHA256SUMS.txt`. (Until the next release, build it yourself: `npm run build:mcpb`, see
-   [Development](#development).)
+1. Download `hotmail-connector.mcpb` from the
+   [latest release](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases/latest). You can
+   verify it against `SHA256SUMS.txt`, or check where it was built, with the GitHub CLI:
+   `gh attestation verify hotmail-connector.mcpb --repo TGoodhew/Claude-Hotmail-Connector`.
 2. In Claude Desktop, open **Settings → Extensions → Advanced settings → Install Extension…**,
    choose the downloaded file, then **Install**. (Double-clicking it, or dragging it onto the
    Extensions page, may also work in some versions; dropping it on a chat only attaches it to the
    chat.)
 3. Enter your **Application (client) ID** from step 1. You can change it later under **Settings →
-   Extensions → Hotmail Connector**.
+   Extensions → Hotmail Connector**. Make sure the extension is switched on there. If you also run
+   the connector from source (step 2b), use the same client ID: the two share one saved sign-in.
 4. Ask Claude something that needs your mailbox or calendar. The first time, a Microsoft sign-in opens
    in your browser. Finish it within about 45 seconds and that request carries on; otherwise ask
    again once you've signed in.
 
-> **Upgrading from the v0.1.0 Windows installer:** first uninstall **Claude Hotmail Connector** from
-> Windows **Settings → Apps**. That removes its Claude Desktop entry; keeping both would show every
-> tool twice. Then install the extension with **your own** client ID (v0.1.0's shared ID is being
-> retired, [#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)) and sign in again.
+> **Updating to a newer release:** install the new `.mcpb` the same way, over the old one. If Claude
+> Desktop asks for your client ID again, enter the same one. What changed is in the
+> [changelog](CHANGELOG.md).
+>
+> **Upgrading from the v0.1.0 Windows installer:**
+>
+> 1. Uninstall **Claude Hotmail Connector** from Windows **Settings → Apps**. That removes its Claude
+>    Desktop entry; keeping both would show every tool twice.
+> 2. Install the extension with **your own** client ID, then sign in again. v0.1.0's shared
+>    registration has been deleted, so v0.1.0 can no longer sign in
+>    ([#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)).
 
 More detail, including how the bundle is built, is in [`docs/packaging.md`](docs/packaging.md).
 
@@ -133,7 +157,7 @@ Then point your client at `dist/index.js` and pass your client ID in the server'
 **Claude Code:**
 
 ```bash
-claude mcp add --scope user --env MICROSOFT_CLIENT_ID=<your-client-id> \
+claude mcp add --scope user --transport stdio --env MICROSOFT_CLIENT_ID=<your-client-id> \
   hotmail-connector -- node /path/to/Claude-Hotmail-Connector/dist/index.js
 ```
 
@@ -189,13 +213,23 @@ Claude uses `list_messages` / `get_message` to read the confirmations and confir
 you. It then calls `create_event` for each booking (and the travel blocks) at the correct local times,
 with no duplicates if it retries.
 
+More things to ask:
+
+- "Read the calendar invite attached to my hotel booking email." The connector uses `get_attachment`
+  to read the `.ics` file's events.
+- "Find me a free hour on Thursday between 9 and 5 Berlin time." This uses `find_free_time` in
+  `Europe/Berlin`, with your events converted across time zones and daylight saving.
+- "What's in my Junk folder from this week?" This is `list_messages` with `folder: junkemail`; Claude
+  is told those messages were judged spam.
+
 ## Security
 
 - **Least privilege:** `Mail.Read` (read-only) + `Calendars.ReadWrite`. No `Mail.Send`, no hard
   delete, no attendees/invitations.
 - **No client secret:** a public/native client using PKCE.
 - **Token storage:** the refresh token is encrypted with AES-256-GCM in your user profile
-  (`%LOCALAPPDATA%\claude-hotmail-connector` on Windows, `~/.claude-hotmail-connector` otherwise).
+  (`%LOCALAPPDATA%\claude-hotmail-connector` on Windows; elsewhere
+  `$XDG_STATE_HOME/claude-hotmail-connector` if that's set, else `~/.claude-hotmail-connector`).
   On **Windows** the encryption key is protected with **DPAPI**, so only your Windows account on this
   PC can unlock it; copying the folder elsewhere isn't enough. On macOS/Linux the key is currently an
   owner-only file in the same folder; Keychain/libsecret support is tracked in
@@ -207,7 +241,9 @@ with no duplicates if it retries.
   steer the model. The connector can't send mail: no `Mail.Send`, no attendees, and no changing or
   deleting meetings with attendees. Writes and deletes are marked destructive so Claude asks before
   running them, but only if your client's tool permissions ask. **Don't auto-approve the calendar
-  write tools.** The full threat model is in
+  write tools.** Claude Desktop 3.1623.4 doesn't show these approval prompts for extension tools at
+  all ([#138](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/138), reported to
+  Anthropic), so read what Claude says it will change before it does it. The full threat model is in
   [spec v2 §9.2](docs/personal-outlook-mcp-connector-requirements.md#92-threat-model). Review what
   Claude proposes before approving calendar changes.
 - **Timezone-correct writes:** events are sent as local wall-clock time + an IANA time zone (never a
@@ -239,6 +275,18 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
   browser window that opened, then ask Claude to retry. If no window appeared, check that a default web
   browser is set; from a source checkout you can also run `node dist/index.js login`. After a cancelled
   sign-in, the connector waits 30 seconds before opening another window.
+- **"Microsoft refused the saved sign-in":** the saved sign-in expired or was revoked, or it was made
+  with a different client ID. A common cause is giving Claude Desktop and a source checkout different
+  client IDs: they share one saved sign-in, so use the same ID in both. Then sign in again: ask
+  Claude, or run `node dist/index.js login`.
+- **v0.1.0 can't sign in any more:** its shared registration was deleted. Upgrade as described in
+  step 2a, with your own client ID.
+- **Claude changes or deletes calendar events without asking:** Claude Desktop 3.1623.4 doesn't show
+  approval prompts for extension tools
+  ([#138](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/138)). The connector's own
+  guards still apply (see [Tools](#tools)).
+- **`find_free_time` shows part of an all-day busy day as free:** fixed in v0.2.1
+  ([#158](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/158)); update the extension.
 - **Every tool appears twice:** you have both the extension and an older installer/manual config
   entry. Uninstall the v0.1.0 installer, or remove the `hotmail-connector` entry from
   `claude_desktop_config.json`.
@@ -265,9 +313,10 @@ Layout (tests are colocated as `src/**/*.test.ts`):
   `src/mcp.ts`: server assembly.
 - `src/auth`: Microsoft OAuth (PKCE + loopback, on-demand sign-in) and the encrypted token cache
   (DPAPI-protected key on Windows).
-- `src/graph`: Graph client (auth, retries, paging) plus the mail / calendar / user modules.
+- `src/graph`: Graph client (auth, retries, paging) plus the mail, attachments, calendar, free/busy
+  and user modules.
 - `src/tools`: zod schemas and thin tool handlers.
-- `src/util`: time zones, HTML-to-text, logging, errors.
+- `src/util`: time zones, HTML-to-text, iCalendar parsing, file retries, logging, errors.
 - `scripts/`: `build-mcpb.mjs` (extension), `check-text.mjs`, `test-live.mjs`, `register-app.ps1`.
 
 ## Requirements, design & roadmap
@@ -279,8 +328,11 @@ Layout (tests are colocated as `src/**/*.test.ts`):
   build.
 - [`docs/local-hosting-investigation-and-requirements.md`](docs/local-hosting-investigation-and-requirements.md):
   the original local-hosting investigation (superseded by spec v2; kept for the record).
+- [`CHANGELOG.md`](CHANGELOG.md): what changed in each release.
 - **Roadmap:** the [Spec v2 epic (#66)](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66)
-  orders all open work: spec decisions → security fixes → correctness → CI/tests → features.
+  is done apart from hands-on platform checks. Future work, such as PDF attachments, macOS/Linux key
+  protection and a remote mode for claude.ai, is collected in
+  [#150](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/150).
 
 ## Support & contributing
 
