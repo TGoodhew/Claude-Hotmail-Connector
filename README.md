@@ -229,6 +229,9 @@ node dist/index.js whoami    # prints your name and account, e.g. Jane Doe <jane
 node dist/index.js logout    # removes the saved sign-in (token cache and key)
 ```
 
+These use the checkout's own sign-in. Claude Desktop's extension keeps a separate one (see
+[Security](#security)), so `logout` doesn't sign it out.
+
 ### Configuration
 
 | Variable                   | Default                                    | Notes                                                                                                                       |
@@ -269,6 +272,12 @@ More things to ask:
 - **Token storage:** the refresh token is encrypted with AES-256-GCM in your user profile
   (`%LOCALAPPDATA%\claude-hotmail-connector` on Windows; elsewhere
   `$XDG_STATE_HOME/claude-hotmail-connector` if that's set, else `~/.claude-hotmail-connector`).
+  Claude for Windows is a Microsoft Store (MSIX) app, so Windows keeps the extension's copy in a
+  private folder for Claude:
+  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector`. The
+  extension and a source checkout therefore sign in separately, and `logout` doesn't sign Claude
+  Desktop out; ask Claude to sign out (`sign_out`) for that
+  ([#176](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/176)).
   On **Windows** the encryption key is protected with **DPAPI**, so only your Windows account on this
   PC can unlock it; copying the folder elsewhere isn't enough. On macOS/Linux the key is an owner-only
   file in the same folder: Keychain/libsecret support isn't planned, but a PR adding it is welcome

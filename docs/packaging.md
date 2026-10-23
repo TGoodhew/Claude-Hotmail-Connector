@@ -91,9 +91,15 @@ Inspect a bundle with `npx mcpb info build/hotmail-connector.mcpb`, or unpack it
   3.6556.1; the version isn't documented, it was read from the app). The manifest declares the same
   minimum as `package.json` `engines.node`, Node 22.12+, in `compatibility.runtimes.node` (#148).
 - **Sign-out:** an extension has no command line, so ask Claude to sign out (`sign_out`). That
-  deletes the token cache and its key in `%LOCALAPPDATA%\claude-hotmail-connector` (or
-  `~/.claude-hotmail-connector`). Removing the extension alone doesn't (Claude Desktop runs no
+  deletes the token cache and its key. Removing the extension alone doesn't (Claude Desktop runs no
   uninstall hook).
+- **Cache location:** the extension asks for `%LOCALAPPDATA%\claude-hotmail-connector` (or
+  `~/.claude-hotmail-connector`). Claude for Windows is an MSIX package, though, and Windows redirects
+  files a packaged app creates under AppData to a per-package folder:
+  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector`. So the
+  extension doesn't share its sign-in with a source checkout. `node dist/index.js logout` and deleting
+  the unredirected folder don't sign Claude Desktop out; `sign_out` does. The two still share the
+  named-pipe sign-in lock, which is named after the path and isn't redirected (#176).
 - **Key protection:** Windows uses DPAPI (#42); macOS/Linux use a plain owner-only key file. OS
   keychain support there isn't planned; PRs welcome
   ([#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83)).
