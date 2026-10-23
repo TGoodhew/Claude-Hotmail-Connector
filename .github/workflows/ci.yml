@@ -49,10 +49,10 @@ jobs:
       - name: Build Claude Desktop extension (.mcpb)
         run: npm run build:mcpb
 
-  # The .mcpb runs on Claude Desktop's own bundled Node, whose version isn't
-  # documented, so the bundle declares package.json engines.node (Node 20.8+) as
-  # its minimum. Keep that claim true: build and test on the oldest supported
-  # major as well.
+  # The .mcpb declares package.json engines.node (Node 22.12+) as its minimum,
+  # and source checkouts need it too. Keep that claim true: build and test on
+  # exactly that version as well (#148). Claude Desktop itself runs extensions on
+  # its own bundled Node, 24.22 as of Claude Desktop 3.6556.1.
   minimum-node:
     runs-on: ubuntu-latest
     steps:
@@ -61,7 +61,7 @@ jobs:
       - name: Set up Node.js (oldest supported)
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: "22.12"
           cache: npm
 
       - name: Install dependencies

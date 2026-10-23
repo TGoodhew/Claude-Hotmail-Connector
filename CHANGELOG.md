@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Node.js 22.12 or later is now required**
+  ([#148](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/148)). Node 20 reached
+  end-of-life in April 2026. This only affects running from source: the Claude Desktop extension runs
+  on Claude Desktop's own Node (24.22 in current versions). Tests now use vitest 5.
+
+### Fixed
+
+- **"Microsoft refused the saved sign-in."** When a saved sign-in no longer works (for example, after
+  changing the client ID), the message now says so and explains how to sign in again, instead of
+  "Fatal: … invalid_grant" ([#161](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/161)).
+- **`cancel_event` and sign-outs elsewhere.** If you sign out in another place (e.g. `logout` in a
+  terminal) while `cancel_event` is checking an event, the delete no longer goes through
+  ([#143](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/143)).
+- **Calendar (`.ics`) attachments** are read more strictly: contradictory date types, invalid
+  statuses and oversized values are skipped rather than returned
+  ([#157](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/157)).
+- **Windows:** saving the sign-in no longer fails now and then when two copies of the connector touch
+  it at once ([#142](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/142)).
+
 ## v0.2.1 — 2026-10-23
 
 A bug-fix release. If you're on v0.2.0, install this over it the same way. If Claude Desktop asks for
