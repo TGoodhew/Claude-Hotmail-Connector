@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.0.0 — 2026-10-23
+
+The first stable release. Everything planned for the connector is done and has been checked by hand
+in Claude Desktop on Windows. This release adds an optional **log file** and an **icon**, and nothing
+else about how the connector works changes.
+
+**Updating from v0.3.x.** Install the new `hotmail-connector.mcpb` the same way: **Settings →
+Extensions → Advanced settings → Install Extension…**. Your client ID, settings and sign-in carry over.
+Fully restart Claude Desktop (Quit from the tray icon) to see the new **Write a log file** setting.
+
+### Added
+
+- **A log file, if you turn it on**
+  ([#178](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/178)). Claude Desktop doesn't
+  keep an extension's logs, so when something goes wrong there was nothing to look at.
+  - Turn on **Write a log file** in the extension's settings. The connector then also writes its logs
+    to `connector.log`: in Claude Desktop that's in
+    `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector`.
+  - It never holds tokens, your email address, or what's in your emails and events. Email addresses
+    are now also removed from any error text in the logs.
+  - It never grows past 2 MB: when it would, the older half is dropped.
+  - Signing out leaves it in place. Delete it by hand if you like.
+- **An icon** for the extension in Claude Desktop
+  ([#179](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/179)).
+
+### Changed
+
+- **Separate sign-ins, now documented**
+  ([#176](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/176)). Claude Desktop is a
+  Microsoft Store app, so Windows keeps the extension's saved sign-in in a private folder. It's
+  separate from a source checkout's, so `node dist/index.js logout` doesn't sign Claude Desktop out:
+  ask Claude to sign out for that. The README now says where each one lives.
+
+### Fixed
+
+- **Command line:** when you're not signed in, the command line now says how to sign in, instead of
+  printing "Fatal: …" ([#175](https://github.com/TGoodhew/Claude-Hotmail-Connector/pull/175)).
+
 ## v0.3.0 — 2026-10-23
 
 Two new abilities: Claude can **send email** (only if you turn it on, and only after you confirm each
