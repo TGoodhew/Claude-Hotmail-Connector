@@ -504,8 +504,10 @@ signed in to that tenant. Registration settings:
 
 ### 8.3 Token handling
 - Silent refresh on expiry. Single-flight within the process. A 401 refreshes once and retries.
-- Refresh tokens MUST be stored **OS-protected**: DPAPI (CurrentUser) on Windows, Keychain on macOS,
-  libsecret on Linux. An AES-256-GCM file store is permitted only as a fallback where none is available.
+- Refresh tokens MUST be stored **OS-protected** on **Windows**, the one platform the maintainer
+  supports: DPAPI (CurrentUser). On macOS and Linux the AES-256-GCM file store with an owner-only key
+  file is an accepted limitation, not a requirement breach (owner decision 2026-10-23). Keychain and
+  libsecret support would be welcome as a contribution (#83).
   - **Windows (implemented):** the cache (`token-cache.enc`) is AES-256-GCM encrypted. Its key file
     (`token-cache.key`) holds only the DPAPI-wrapped key (`{"v":2,"protection":"dpapi",…}`, with
     app-specific entropy), produced through PowerShell's `ProtectedData` with the key passed on stdin.
@@ -676,8 +678,10 @@ Claude-Hotmail-Connector/
   - `npm run build:mcpb` produces `build/hotmail-connector.mcpb` (see `docs/packaging.md`): a
     single-file esbuild server bundle (no `node_modules`) plus `manifest.json` (spec 0.3). It is
     validated and packed with the pinned `@anthropic-ai/mcpb` CLI.
-  - Claude Desktop installs it with a double-click, runs it on its own bundled Node, and collects the
-    client id through a generated settings UI. Windows, macOS and Linux are all supported.
+  - Claude Desktop installs it from **Settings → Extensions → Advanced settings → Install
+    Extension…**, runs it on its own bundled Node, and collects the client id through a generated
+    settings UI. The bundle declares Windows, macOS and Linux as compatible, but only **Windows** is
+    supported and tested by the maintainer; macOS and Linux are untested (README, Platforms).
   - Sign-in is on demand (§8.2). CI builds the bundle on every PR, and `release.yml` publishes it with
     a SHA-256 checksum when a `v*` tag matching `package.json` is pushed.
 - **Claude Code / VS Code:** a source checkout (`npm run build` + `node dist/index.js`), configured with
