@@ -82,7 +82,8 @@ npm run build:mcpb   # -> build/hotmail-connector.mcpb
    the icon.
 2. Writes `manifest.json` (MCPB manifest spec 0.3). The version comes from `package.json`. The
    settings map to environment variables: `client_id` (required) to `MICROSOFT_CLIENT_ID`,
-   **Allow sending email** to `ALLOW_SEND_MAIL`, and **Write a log file** to `LOG_FILE`.
+   **Allow sending email** to `ALLOW_SEND_MAIL`, **Allow saving email drafts** to
+   `ALLOW_MAIL_DRAFTS`, and **Write a log file** to `LOG_FILE`.
 3. Validates and packs it with the official CLI, `@anthropic-ai/mcpb` (pinned in `devDependencies`).
 
 The result is about 1 MB, mostly pdf.js. CI builds it on every PR, and [`release.yml`](../.github/workflows/release.yml)

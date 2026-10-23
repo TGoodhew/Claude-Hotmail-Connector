@@ -2,7 +2,7 @@
 
 **Document type:** Build specification / requirements
 **Audience:** Claude Code (building the connector) and the repository owner (reviewing it)
-**Version:** 2.0 · **Date:** 2026-10-21, last updated 2026-10-23 for release v1.0.0 and drafts (#184) · **Owner:** Tony Goodhew
+**Version:** 2.0 · **Date:** 2026-10-21, last updated 2026-10-23 for release v1.1.0 (drafts, #184) · **Owner:** Tony Goodhew
 **Supersedes:** v1.0 (2026-07-19) and `local-hosting-investigation-and-requirements.md` v1.0
 **Tracking:** epic [#66](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66) (closed 2026-10-23) · decisions [#59](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/59)
 
@@ -130,7 +130,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 | Read calendars/events | `Calendars.Read` (covered by ReadWrite) | ✅ |
 | Create/update calendar events | `Calendars.ReadWrite` | ✅ |
 | Send mail | `Mail.Send` | ✅ Opt-in only: `ALLOW_SEND_MAIL` (§7.9, #57) |
-| Save drafts | `Mail.ReadWrite` | Opt-in only: `ALLOW_MAIL_DRAFTS` (§7.10) *(→ #184)* |
+| Save drafts | `Mail.ReadWrite` | ✅ Opt-in only: `ALLOW_MAIL_DRAFTS` (§7.10, #184) |
 | Contacts / Files / Teams | various | ❌ Out of scope |
 
 - The server requests `Mail.Send` only when sending is turned on (`ALLOW_SEND_MAIL`, §7.9), and
@@ -510,7 +510,7 @@ out, so it's built around the user's own confirmation, not the model's or the cl
   Items", never "not sent". Sends aren't retried. Logs record counts, never recipients or bodies.
 - `destructiveHint: true`, `openWorldHint: true`. Results carry no message content.
 
-### 7.10 `create_draft` — save a draft for the user to send *(→ #184)*
+### 7.10 `create_draft` — save a draft for the user to send *(#184)*
 Owner decision, 2026-10-23 (#184). The send tools can only send, so nothing matches a request to prepare
 an email that the user finishes and sends themselves. This tool does that, and it never sends.
 - **Opt-in, off by default.** `ALLOW_MAIL_DRAFTS=true` (the extension's "Allow saving email drafts"
@@ -622,7 +622,7 @@ signed in to that tenant. Registration settings:
 | `MICROSOFT_SCOPES` | §6 default set | Narrowing only (§6). |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
 | `ALLOW_SEND_MAIL` | `false` | Requests `Mail.Send` and offers `send_email` / `reply_to_email`, each confirmed by the user in the browser (§7.9, #57). The extension's "Allow sending email". |
-| `ALLOW_MAIL_DRAFTS` | `false` | Requests `Mail.ReadWrite` and offers `create_draft`, which saves drafts and never sends (§7.10) *(→ #184)*. The extension's "Allow saving email drafts". |
+| `ALLOW_MAIL_DRAFTS` | `false` | Requests `Mail.ReadWrite` and offers `create_draft`, which saves drafts and never sends (§7.10, #184). The extension's "Allow saving email drafts". |
 | `LOG_FILE` | `false` | Also write the logs to `connector.log` in the cache directory, capped at 2 MB (§9.4, #178). |
 | `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir (§8.3) | Token cache location; also holds `auth-state.json` and, when on, `connector.log`. |
 
@@ -682,7 +682,7 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; macOS/Linux not planned *(#83)* |
 | T11 | **Interference with the loopback sign-in.** A stray or hostile local request hits the redirect port. | Random `state`, checked in constant time. Mismatched requests get a 400 and neither abort nor complete the sign-in (§8.2). | ✅ #41 |
 | T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message`, `get_attachment`, `list_mail_folders`, `list_events`, `get_event` and `list_calendars` descriptions repeat it, and mail in Junk Email is left out of listings by default and flagged when read (#53). Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
-| T13 | **Drafts and the broader scope.** Injected text gets Claude to save a draft to an attacker's address, or a stolen token with `Mail.ReadWrite` is used to change or delete mail. | Off by default (no `Mail.ReadWrite`, §6). `create_draft` never sends: a planted draft goes nowhere unless the user sends it from Outlook, where they see it in full. Its description rules out drafts that content asks for. No tool changes, moves or deletes an existing message, and no other tool uses the scope (§7.10). The token is protected as in T10. | Planned *(→ #184)* |
+| T13 | **Drafts and the broader scope.** Injected text gets Claude to save a draft to an attacker's address, or a stolen token with `Mail.ReadWrite` is used to change or delete mail. | Off by default (no `Mail.ReadWrite`, §6). `create_draft` never sends: a planted draft goes nowhere unless the user sends it from Outlook, where they see it in full. Its description rules out drafts that content asks for. No tool changes, moves or deletes an existing message, and no other tool uses the scope (§7.10). The token is protected as in T10. | ✅ #184 |
 
 **Rules (normative)**
 1. All mail and calendar content returned by tools is **untrusted data**, never instructions.

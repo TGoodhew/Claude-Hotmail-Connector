@@ -35,6 +35,8 @@ export interface ToolContext {
   deadline?: number;
   /** Shows an email to the user for confirmation before it's sent (#57). */
   sendConfirmer?: SendConfirmer;
+  /** Opens a URL in the user's default browser, e.g. a saved draft in Outlook (#184). */
+  openBrowser?: (url: string) => Promise<void>;
 }
 
 /** MCP behaviour hints surfaced to the client/model. */

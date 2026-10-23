@@ -34,26 +34,29 @@ does **not** work in claude.ai on the web or mobile; that would need a remote mo
 
 ## Tools
 
-| Tool                | Purpose                                              | Graph permission      |
-| ------------------- | ---------------------------------------------------- | --------------------- |
-| `whoami`            | Confirm the connected account                        | `User.Read`           |
-| `list_messages`     | Search/list mail (find booking confirmations)        | `Mail.Read`           |
-| `get_message`       | Read one email as text                               | `Mail.Read`           |
-| `get_attachment`    | Read a text, HTML, PDF or calendar (.ics) attachment | `Mail.Read`           |
-| `list_mail_folders` | List mail folders                                    | `Mail.Read`           |
-| `list_calendars`    | List your calendars (own and shared)                 | `Calendars.Read`      |
-| `list_events`       | Read the calendar over a date range                  | `Calendars.Read`      |
-| `get_event`         | Read one event in full (notes, attendees, pattern)   | `Calendars.Read`      |
-| `find_free_time`    | Find free slots in a date range                      | `Calendars.Read`      |
-| `create_event`      | Add a calendar event (timezone-correct, idempotent)  | `Calendars.ReadWrite` |
-| `update_event`      | Edit a calendar event (destructive: overwrites)      | `Calendars.ReadWrite` |
-| `cancel_event`      | Delete an event, guarded (see below)                 | `Calendars.ReadWrite` |
-| `sign_out`          | Remove the saved sign-in from this computer          | (none)                |
-| `send_email`        | Send an email, after you confirm it (opt-in)         | `Mail.Send`           |
-| `reply_to_email`    | Reply to a sender, after you confirm it (opt-in)     | `Mail.Send`           |
+| Tool                | Purpose                                                                    | Graph permission      |
+| ------------------- | -------------------------------------------------------------------------- | --------------------- |
+| `whoami`            | Confirm the connected account                                              | `User.Read`           |
+| `list_messages`     | Search/list mail (find booking confirmations)                              | `Mail.Read`           |
+| `get_message`       | Read one email as text                                                     | `Mail.Read`           |
+| `get_attachment`    | Read a text, HTML, PDF or calendar (.ics) attachment                       | `Mail.Read`           |
+| `list_mail_folders` | List mail folders                                                          | `Mail.Read`           |
+| `list_calendars`    | List your calendars (own and shared)                                       | `Calendars.Read`      |
+| `list_events`       | Read the calendar over a date range                                        | `Calendars.Read`      |
+| `get_event`         | Read one event in full (notes, attendees, pattern)                         | `Calendars.Read`      |
+| `find_free_time`    | Find free slots in a date range                                            | `Calendars.Read`      |
+| `create_event`      | Add a calendar event (timezone-correct, idempotent)                        | `Calendars.ReadWrite` |
+| `update_event`      | Edit a calendar event (destructive: overwrites)                            | `Calendars.ReadWrite` |
+| `cancel_event`      | Delete an event, guarded (see below)                                       | `Calendars.ReadWrite` |
+| `sign_out`          | Remove the saved sign-in from this computer                                | (none)                |
+| `send_email`        | Send an email, after you confirm it (opt-in)                               | `Mail.Send`           |
+| `reply_to_email`    | Reply to a sender, after you confirm it (opt-in)                           | `Mail.Send`           |
+| `create_draft`      | Save an email or reply as a draft, opened in Outlook (opt-in; never sends) | `Mail.ReadWrite`      |
 
-Mail is **read-only** unless you turn sending on ([Sending email](#sending-email-optional)), and
-then **every email is shown to you in your browser and sent only when you click Send there**.
+Mail is **read-only** unless you turn sending or drafts on. With sending on
+([Sending email](#sending-email-optional)), **every email is shown to you in your browser and sent
+only when you click Send there**. With drafts on ([Saving drafts](#saving-drafts-optional)), Claude
+can save drafts but **never sends them**: you send them yourself from Outlook.
 Calendar writes never add attendees or send invitations.
 There is **no hard-delete**. `cancel_event` moves an event to Outlook's Deleted Items, and only after
 three checks:
@@ -103,6 +106,28 @@ Plain text only, to at most 10 people. Forwarding, reply-all, attachments and BC
 since they're the easiest ways to leak mail. Replies go to the message's Reply-To address if it has
 one, else its sender, and don't quote the original.
 
+## Saving drafts (optional)
+
+Off by default. When it's on, Claude can save a new email, or a reply to a message, as a draft in your
+**Drafts** folder, and open it in Outlook on the web in your browser. You review it, edit it, add
+attachments if you like, and send it yourself. **The connector never sends a draft.** Use it when you
+want to finish an email yourself: "draft a reply to Shane so I can review and send it".
+
+A reply draft goes to the message's sender (or its Reply-To), in the same conversation, with your text
+above the quoted original. Add Cc in Outlook if you need it.
+
+To turn it on, tick **Allow saving email drafts** under **Settings → Extensions → Hotmail
+Connector**, or set `ALLOW_MAIL_DRAFTS=true` when running from source. Then:
+
+- **Fully restart Claude Desktop** (Quit from the tray icon, then reopen it), so chats see the new tool.
+- The first time, Claude will say your sign-in doesn't include permission to save drafts. Ask it to
+  sign out (`sign_out`) and try again: Microsoft will ask you to allow it.
+
+**What it costs in permissions.** Microsoft has no drafts-only permission, so this asks for
+`Mail.ReadWrite`, which also allows changing and deleting any mail. The connector uses it only to
+create drafts: no tool changes, moves or deletes an existing message. Leave it off if you don't need
+it. It's separate from sending: you can turn on either, both or neither.
+
 ## Step 1: register your own Microsoft Entra application
 
 Every user needs their own registration; the connector doesn't ship a shared one, so each user owns
@@ -137,8 +162,8 @@ The connector signs in as a **public/native client**. No client secret is ever u
    client secret.
 7. Under **API permissions → Add a permission → Microsoft Graph → Delegated permissions**, add:
    `openid`, `profile`, `email`, `offline_access`, `User.Read`, `Mail.Read`, `Calendars.ReadWrite`.
-   If you'll turn sending on, add `Mail.Send` too. A personal account doesn't need admin consent; you
-   consent at sign-in.
+   If you'll turn sending on, add `Mail.Send` too, and if you'll turn drafts on, add `Mail.ReadWrite`.
+   A personal account doesn't need admin consent; you consent at sign-in.
 
 ## Step 2a: install in Claude Desktop (extension)
 
@@ -244,6 +269,7 @@ the checkout's (see [Security](#security)), so `logout` doesn't sign it out ther
 | `LOG_LEVEL`                | `info`                                     | `debug` / `info` / `warn` / `error` (logs go to stderr, and to the log file if `LOG_FILE` is on).                           |
 | `MICROSOFT_SCOPES`         | least-privilege set (spec §6)              | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
 | `ALLOW_SEND_MAIL`          | `false`                                    | `true` lets Claude send emails and replies, each confirmed by you in the browser (adds `Mail.Send`).                        |
+| `ALLOW_MAIL_DRAFTS`        | `false`                                    | `true` lets Claude save drafts that you send yourself from Outlook; it never sends (adds `Mail.ReadWrite`).                 |
 | `LOG_FILE`                 | `false`                                    | `true` also writes the logs to `connector.log` in the cache folder, capped at 2 MB (see Troubleshooting).                   |
 | `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir                         | Where the encrypted token cache (and the log file, if on) lives.                                                            |
 
@@ -270,7 +296,8 @@ More things to ask:
 ## Security
 
 - **Least privilege:** `Mail.Read` (read-only) + `Calendars.ReadWrite`. `Mail.Send` only if you turn
-  sending on; never `Mail.ReadWrite`, no hard delete, no attendees/invitations.
+  sending on, and `Mail.ReadWrite` only if you turn drafts on, used only to create drafts. No hard
+  delete, no attendees/invitations.
 - **No client secret:** a public/native client using PKCE.
 - **Token storage:** the refresh token is encrypted with AES-256-GCM in your user profile
   (`%LOCALAPPDATA%\claude-hotmail-connector` on Windows; elsewhere
@@ -346,6 +373,10 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
   ask Claude to sign out (`sign_out`), then try again. Microsoft will ask you to allow sending.
 - **No confirmation page appears when sending:** check that a default web browser is set. Nothing is
   sent without the page.
+- **"Saving drafts is turned on, but your Microsoft sign-in doesn't include permission to save
+  them":** ask Claude to sign out (`sign_out`), then try again. Microsoft will ask you to allow it.
+- **A draft was saved but Outlook didn't open:** Claude gets the link and can give it to you, or look
+  in **Drafts** in Outlook. You need to be signed in to Outlook on the web in your default browser.
 - **v0.1.0 can't sign in any more:** its shared registration was deleted. Upgrade as described in
   step 2a, with your own client ID.
 - **Claude changes or deletes calendar events without asking:** Claude Desktop 3.1623.4 doesn't show

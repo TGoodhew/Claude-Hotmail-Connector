@@ -63,6 +63,14 @@ export const DEFAULT_SCOPES = [
 export const SEND_SCOPE = "Mail.Send";
 
 /**
+ * Saving drafts (#184): requested only when the user turns drafts on
+ * (`ALLOW_MAIL_DRAFTS`). Graph has no drafts-only scope, and `Mail.ReadWrite`
+ * can also change or delete any message, so only `create_draft` uses it, and
+ * only to create drafts (spec v2 §6, §7.10).
+ */
+export const DRAFTS_SCOPE = "Mail.ReadWrite";
+
+/**
  * Personal Microsoft accounts only (spec v2 §8.1, #62): this connector exists
  * for hotmail/outlook/live accounts. Work/school accounts use Claude's official
  * M365 connector. Set `MICROSOFT_TENANT=common` with a multitenant registration
@@ -116,6 +124,7 @@ const EnvSchema = z.object({
   MICROSOFT_SCOPES: z.string().trim().optional(),
   // The extension passes its checkbox as "true" / "false"; blank means off.
   ALLOW_SEND_MAIL: z.string().trim().optional(),
+  ALLOW_MAIL_DRAFTS: z.string().trim().optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   // The extension's "Write a log file" checkbox (#178); blank means off.
   LOG_FILE: z.string().trim().optional(),
@@ -139,6 +148,12 @@ export interface AppConfig {
    * still needing the user's click in the browser.
    */
   allowSendMail: boolean;
+  /**
+   * Whether saving drafts is turned on (`ALLOW_MAIL_DRAFTS`, #184). Off by
+   * default; when on, `Mail.ReadWrite` is requested and `create_draft` is
+   * offered. It never sends.
+   */
+  allowMailDrafts: boolean;
   /** Microsoft Graph v1.0 base URL. */
   graphBaseUrl: string;
   /** Loopback host for the OAuth redirect listener. */
@@ -168,17 +183,26 @@ function resolveCacheDir(env: NodeJS.ProcessEnv): string {
  * Scopes `MICROSOFT_SCOPES` may choose from: the least-privilege default plus
  * `Calendars.Read`, the read-only narrowing of `Calendars.ReadWrite`. The
  * override can only narrow access, never broaden it (spec v2 §6, decision D11).
- * `Mail.Send` joins both lists only when sending is turned on (#57).
+ * `Mail.Send` joins both lists only when sending is turned on (#57), and
+ * `Mail.ReadWrite` only when drafts are (#184).
  */
 export const ALLOWED_SCOPES = [...DEFAULT_SCOPES, "Calendars.Read"] as const;
 
-function scopeLists(allowSend: boolean): { defaults: string[]; allowed: string[] } {
-  const extra = allowSend ? [SEND_SCOPE] : [];
+interface ScopeSwitches {
+  allowSend: boolean;
+  allowDrafts: boolean;
+}
+
+function scopeLists({ allowSend, allowDrafts }: ScopeSwitches): {
+  defaults: string[];
+  allowed: string[];
+} {
+  const extra = [...(allowSend ? [SEND_SCOPE] : []), ...(allowDrafts ? [DRAFTS_SCOPE] : [])];
   return { defaults: [...DEFAULT_SCOPES, ...extra], allowed: [...ALLOWED_SCOPES, ...extra] };
 }
 
 /**
- * A switch such as `ALLOW_SEND_MAIL` or `LOG_FILE`: true / false (also 1/0,
+ * A switch such as `ALLOW_SEND_MAIL`, `ALLOW_MAIL_DRAFTS` or `LOG_FILE`: true / false (also 1/0,
  * yes/no, on/off); unset or blank is off, and so is a setting the extension
  * host left unfilled (`${...}`): a missing switch must never stop the server,
  * nor turn anything on.
@@ -194,8 +218,8 @@ function parseSwitch(name: string, raw: string | undefined): boolean {
 /** Always requested: needed for sign-in and silent refresh. */
 export const REQUIRED_SCOPES = ["openid", "offline_access"] as const;
 
-function parseScopes(raw: string | undefined, allowSend: boolean): string[] {
-  const { defaults, allowed } = scopeLists(allowSend);
+function parseScopes(raw: string | undefined, switches: ScopeSwitches): string[] {
+  const { defaults, allowed } = scopeLists(switches);
   if (!raw) return defaults;
   const requested = raw
     .split(/[\s,]+/)
@@ -207,12 +231,14 @@ function parseScopes(raw: string | undefined, allowSend: boolean): string[] {
   const canonical = new Map<string, string>(allowed.map((s) => [s.toLowerCase(), s]));
   const rejected = requested.filter((s) => !canonical.has(s.toLowerCase()));
   if (rejected.length > 0) {
-    const sendHint = rejected.some((s) => s.toLowerCase() === SEND_SCOPE.toLowerCase())
-      ? " To send mail, set ALLOW_SEND_MAIL=true instead."
+    const has = (scope: string) => rejected.some((s) => s.toLowerCase() === scope.toLowerCase());
+    const sendHint = has(SEND_SCOPE) ? " To send mail, set ALLOW_SEND_MAIL=true instead." : "";
+    const draftsHint = has(DRAFTS_SCOPE)
+      ? " To save drafts, set ALLOW_MAIL_DRAFTS=true instead."
       : "";
     throw new ConfigError(
       `MICROSOFT_SCOPES may only narrow the default scopes; not allowed: ${rejected.join(", ")}. ` +
-        `Allowed: ${allowed.join(" ")}.${sendHint}`,
+        `Allowed: ${allowed.join(" ")}.${sendHint}${draftsHint}`,
     );
   }
   const chosen = new Set(requested.map((s) => canonical.get(s.toLowerCase())!));
@@ -253,6 +279,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const e = parsed.data;
   const cacheDir = resolveCacheDir(env);
   const allowSendMail = parseSwitch("ALLOW_SEND_MAIL", e.ALLOW_SEND_MAIL);
+  const allowMailDrafts = parseSwitch("ALLOW_MAIL_DRAFTS", e.ALLOW_MAIL_DRAFTS);
   parseSwitch("LOG_FILE", e.LOG_FILE); // a typo stops the server, as for the other switches
   const clientId = e.MICROSOFT_CLIENT_ID;
   if (!clientId) throw new ConfigError(MISSING_CLIENT_ID_MESSAGE);
@@ -269,8 +296,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     microsoftTenant: e.MICROSOFT_TENANT,
     authority: `https://login.microsoftonline.com/${e.MICROSOFT_TENANT}`,
     defaultTimeZone: e.DEFAULT_TIMEZONE ?? systemTimeZone(),
-    scopes: parseScopes(e.MICROSOFT_SCOPES, allowSendMail),
+    scopes: parseScopes(e.MICROSOFT_SCOPES, {
+      allowSend: allowSendMail,
+      allowDrafts: allowMailDrafts,
+    }),
     allowSendMail,
+    allowMailDrafts,
     graphBaseUrl: GRAPH_BASE_URL,
     loopbackHost: LOOPBACK_HOST,
     cacheDir,
