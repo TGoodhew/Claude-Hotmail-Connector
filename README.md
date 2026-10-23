@@ -157,9 +157,12 @@ Then point your client at `dist/index.js` and pass your client ID in the server'
 **Claude Code:**
 
 ```bash
-claude mcp add --scope user --transport stdio --env MICROSOFT_CLIENT_ID=<your-client-id> \
+claude mcp add --scope user --env MICROSOFT_CLIENT_ID=<your-client-id> --transport stdio \
   hotmail-connector -- node /path/to/Claude-Hotmail-Connector/dist/index.js
 ```
+
+Keep `--transport stdio` where it is, between the `--env` value and the server name. `--env` accepts
+several `KEY=value` pairs, so without something in between, the name is read as another pair.
 
 **VS Code:** use **Command Palette → "MCP: Add Server…" → Command (stdio)**, or copy
 [`.vscode/mcp.json.example`](.vscode/mcp.json.example) to `.vscode/mcp.json` and edit the path and
