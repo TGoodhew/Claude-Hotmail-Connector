@@ -289,6 +289,24 @@ describe("findFreeTime (#52)", () => {
     ]);
   });
 
+  it("doesn't let an event outside the range change the status inside it", async () => {
+    // Away 07:00-08:00 (outside a 09:00-17:00 lookup) touches busy 08:00-10:00.
+    const { graph } = graphOf({
+      value: [
+        ev("2026-07-20T07:00:00", "2026-07-20T08:00:00", "oof"),
+        ev("2026-07-20T08:00:00", "2026-07-20T10:00:00"),
+      ],
+    });
+    const res = await findFreeTime(graph, {
+      ...base,
+      startDateTime: "2026-07-20T09:00:00Z",
+      endDateTime: "2026-07-20T17:00:00Z",
+    });
+    expect(local(res.busy)).toEqual([
+      { start: "2026-07-20T09:00:00", end: "2026-07-20T10:00:00", showAs: "busy" },
+    ]);
+  });
+
   it("reads a day past each end of the range, where all-day events can sit (#158)", async () => {
     const { request, graph } = graphOf();
     await findFreeTime(graph, base);

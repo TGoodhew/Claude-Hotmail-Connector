@@ -277,7 +277,11 @@ export async function findFreeTime(
             "worked out reliably. Check the calendar with list_events.",
         );
       }
-      if (end > start) busy.push({ start, end, showAs: e.showAs ?? "busy" });
+      // Clipped to the range first: an event read only through the margin
+      // mustn't join, or lend its status to, busy time inside the range.
+      const from = Math.max(start, range.start);
+      const to = Math.min(end, range.end);
+      if (to > from) busy.push({ start: from, end: to, showAs: e.showAs ?? "busy" });
     }
     if (!result.truncated) break;
     if (!result.nextPageToken || page + 1 >= MAX_PAGES) {
