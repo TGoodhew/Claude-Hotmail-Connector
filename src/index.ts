@@ -23,17 +23,21 @@ import { createFileCoordinator } from "./auth/coordination.js";
 import { createMicrosoftAuth, launcherSucceeded } from "./auth/microsoft.js";
 import { defaultKeyProtector } from "./auth/protect.js";
 import { createFileTokenStore } from "./auth/tokens.js";
-import { getConfig } from "./config.js";
+import { getConfig, logFilePath } from "./config.js";
 import { createGraphClient } from "./graph/client.js";
 import { whoami } from "./graph/user.js";
 import { parseCommand, USAGE } from "./cli.js";
 import { createMcpServer, SERVER_VERSION } from "./mcp.js";
 import { createSendConfirmer } from "./send/confirm.js";
 import { SignInRequiredError } from "./util/errors.js";
-import { createLogger } from "./util/log.js";
+import { createLogger, setLogFileSink, writeToLogFile } from "./util/log.js";
+import { createLogFileSink } from "./util/log-file.js";
 
 /** How long a tool call waits for an on-demand browser sign-in before asking the user to retry. */
 const ON_DEMAND_SIGN_IN_WAIT_MS = 45_000;
+
+/** Startup notes and fatal errors for the log file (#178), which stderr already gets in its own words. */
+const fileOnlyLog = createLogger({ name: "startup", write: writeToLogFile });
 
 async function run(): Promise<void> {
   // Dispatch before loading config, so help, version and usage errors work
@@ -50,6 +54,12 @@ async function run(): Promise<void> {
   }
   const command = parsed.kind;
   const log = createLogger({ name: "startup" });
+  // Claude Desktop doesn't keep stderr, so a log file can be turned on (#178).
+  // Set up before the rest of the configuration is checked, so its errors reach the file.
+  const logFile = logFilePath();
+  if (logFile) setLogFileSink(createLogFileSink(logFile));
+  // To the file only: at a terminal, `whoami` shouldn't print a log line first.
+  fileOnlyLog.info("Starting.", { version: SERVER_VERSION, command });
   const config = getConfig();
   const store = createFileTokenStore(config.tokenCacheFile, { protector: defaultKeyProtector() });
   const auth = createMicrosoftAuth({
@@ -129,6 +139,7 @@ async function run(): Promise<void> {
 run().catch((err: unknown) => {
   // Startup failures go to stderr; stdout stays clean. A sign-in message is an
   // instruction to the user, not a crash, so it goes out as it is (#161).
+  fileOnlyLog.error("Stopped.", { error: err });
   if (err instanceof SignInRequiredError) {
     process.stderr.write(`${err.message}\n`);
     process.exit(1);

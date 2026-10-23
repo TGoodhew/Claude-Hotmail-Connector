@@ -1,4 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -378,7 +380,13 @@ describe("built server subprocess", () => {
       const transport = new StdioClientTransport({
         command: process.execPath,
         args: [distPath],
-        env: { ...stringEnv(), MICROSOFT_CLIENT_ID: "smoke-test-dummy-id" },
+        // Switches pinned off: a checkout's .env may turn them on (the environment wins).
+        env: {
+          ...stringEnv(),
+          MICROSOFT_CLIENT_ID: "smoke-test-dummy-id",
+          ALLOW_SEND_MAIL: "false",
+          LOG_FILE: "false",
+        },
         stderr: "ignore",
       });
       const client = new Client({ name: "smoke", version: "0.0.0" });
@@ -388,6 +396,36 @@ describe("built server subprocess", () => {
         expect(tools.map((t) => t.name).sort()).toEqual(DEFAULT_TOOLS);
       } finally {
         await client.close();
+      }
+    },
+    30_000,
+  );
+
+  it.runIf(existsSync(distPath))(
+    "writes a configuration error to the log file (#178)",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "cht-startup-log-"));
+      try {
+        const run = spawnSync(process.execPath, [distPath], {
+          env: {
+            ...stringEnv(),
+            MICROSOFT_CLIENT_ID: "smoke-test-dummy-id",
+            DEFAULT_TIMEZONE: "Not/AZone",
+            LOG_FILE: "true",
+            LOG_LEVEL: "info", // the "Starting." line is info: pin it against a local .env
+
+            CLAUDE_HOTMAIL_CACHE_DIR: dir,
+          },
+          encoding: "utf8",
+          timeout: 20_000,
+        });
+        expect(run.status).toBe(1);
+        const log = readFileSync(join(dir, "connector.log"), "utf8");
+        expect(log).toContain('"msg":"Starting."');
+        expect(log).toContain('"msg":"Stopped."');
+        expect(log).toContain("Not/AZone");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
     },
     30_000,

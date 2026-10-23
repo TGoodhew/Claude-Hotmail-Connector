@@ -7,6 +7,7 @@ import {
   dotenvPath,
   FALLBACK_TIMEZONE,
   loadConfig,
+  logFilePath,
   MISSING_CLIENT_ID_MESSAGE,
   SEND_SCOPE,
   systemTimeZone,
@@ -160,6 +161,30 @@ describe("loadConfig", () => {
 
   it("rejects an invalid LOG_LEVEL", () => {
     expect(() => loadConfig({ ...base, LOG_LEVEL: "verbose" })).toThrow(ConfigError);
+  });
+});
+
+describe("LOG_FILE (#178)", () => {
+  it("is off unless turned on, and then names connector.log in the cache directory", () => {
+    expect(loadConfig(base).logFile).toBeUndefined();
+    for (const off of ["", "false", "0", "${user_config.log_file}"]) {
+      expect(loadConfig({ ...base, LOG_FILE: off }).logFile, off).toBeUndefined();
+    }
+    const cfg = loadConfig({ ...base, LOG_FILE: "true" });
+    expect(cfg.logFile).toBe(join(cfg.cacheDir, "connector.log"));
+    expect(() => loadConfig({ ...base, LOG_FILE: "maybe" })).toThrow(
+      /LOG_FILE must be true or false/,
+    );
+  });
+
+  it("is found without the rest of the configuration, so its errors can be logged", () => {
+    const dir = join(tmpdir(), "cht-logpath");
+    // No client id and a bad time zone: loadConfig would throw.
+    const env = { LOG_FILE: "true", DEFAULT_TIMEZONE: "Not/AZone", CLAUDE_HOTMAIL_CACHE_DIR: dir };
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+    expect(logFilePath(env)).toBe(join(dir, "connector.log"));
+    expect(logFilePath({ ...env, LOG_FILE: " false " })).toBeUndefined();
+    expect(logFilePath({ ...env, LOG_FILE: "maybe" })).toBeUndefined(); // loadConfig reports it
   });
 });
 

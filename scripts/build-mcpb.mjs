@@ -152,6 +152,7 @@ const manifest = {
       env: {
         MICROSOFT_CLIENT_ID: "${user_config.client_id}",
         ALLOW_SEND_MAIL: "${user_config.allow_send}",
+        LOG_FILE: "${user_config.log_file}",
       },
     },
   },
@@ -172,6 +173,19 @@ const manifest = {
         "Let Claude send emails and replies from your account. Each one is shown to you in your " +
         "browser first, and sent only if you click Send there. Turning this on asks you to sign " +
         "in to Microsoft once more, to allow sending.",
+      default: false,
+      required: false,
+    },
+    // Claude Desktop doesn't keep the extension's stderr, so logs can go to a file (#178).
+    log_file: {
+      type: "boolean",
+      title: "Write a log file",
+      description:
+        "Save the connector's logs to connector.log, to help diagnose problems. It never holds " +
+        "tokens, your email address, or what's in your emails and events, and never grows past " +
+        "2 MB. It's in " +
+        "%LOCALAPPDATA%\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Local\\claude-hotmail-connector " +
+        "(see the README).",
       default: false,
       required: false,
     },
