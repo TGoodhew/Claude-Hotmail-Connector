@@ -54,7 +54,11 @@ export function toolsForScopes(
   tools: RegisteredTool[] = allTools(),
 ): RegisteredTool[] {
   const granted = new Set(scopes.map((s) => s.toLowerCase()));
-  return tools.filter((t) => t.scopesAnyOf.some((s) => granted.has(s.toLowerCase())));
+  return tools.filter(
+    (t) =>
+      t.scopesAnyOf.some((s) => granted.has(s.toLowerCase())) &&
+      (t.scopesAllOf ?? []).every((s) => granted.has(s.toLowerCase())),
+  );
 }
 
 /** Build an McpServer with the tools the configured scopes support (or the given set). */
@@ -97,7 +101,10 @@ export function createMcpServer(
           const result = await tool.handler(args ?? {}, {
             ...ctx,
             graph,
-            unscopedGraph: ctx.unscopedGraph ?? ctx.graph,
+            // Outlives the call (a late click on a send confirmation) but not a
+            // sign-out: same epoch, no deadline or cancellation (#57).
+            unscopedGraph: scopeToOperation(ctx.unscopedGraph ?? ctx.graph, { signOutEpoch }),
+            deadline,
           });
           return result as CallToolResult;
         } catch (err) {

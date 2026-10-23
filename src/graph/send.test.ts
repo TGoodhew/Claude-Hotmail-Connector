@@ -95,6 +95,13 @@ describe("hasEmailedYou / knownSenders (#57)", () => {
     await expect(hasEmailedYou(signIn, "a@example.com")).rejects.toBeInstanceOf(
       SignInRequiredError,
     );
+    // Nor a cancelled call: no page may open after it (Copilot review on #172).
+    const cancelled = graphWith(async () => {
+      throw new GraphError("cancelled", { reason: "cancelled" });
+    });
+    await expect(hasEmailedYou(cancelled, "a@example.com")).rejects.toMatchObject({
+      reason: "cancelled",
+    });
   });
 
   it("checks several addresses, keyed in lower case", async () => {
@@ -133,7 +140,13 @@ describe("sendNewEmail (#57)", () => {
 
   it("doesn't claim nothing was sent when the answer was lost", async () => {
     const email = { to: ["a@example.com"], cc: [], subject: "s", body: "b" };
-    for (const lost of [new TimeoutError("t"), new GraphError("network", {})]) {
+    const lostAnswers = [
+      new TimeoutError("t"),
+      new GraphError("network", {}),
+      // A server error can come after the work is done (Copilot review on #172).
+      ...[500, 502, 503, 504].map((status) => new GraphError("server", { status })),
+    ];
+    for (const lost of lostAnswers) {
       const graph = graphWith(undefined, async () => {
         throw lost;
       });

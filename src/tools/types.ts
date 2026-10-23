@@ -25,11 +25,14 @@ export interface ToolContext {
   auth?: Pick<MicrosoftAuth, "signOut"> &
     Partial<Pick<MicrosoftAuth, "signOutEpoch" | "syncSignOuts" | "grantedScopes">>;
   /**
-   * The connector's own Graph client, not bound to this tool call: for work
-   * that can finish after the call returns, such as an email sent when the
-   * user confirms it later (#57).
+   * A Graph client free of this call's deadline and cancellation, but still
+   * bound to its sign-out epoch: for work that can finish after the call
+   * returns, such as an email sent when the user confirms it later (#57). A
+   * sign-out meanwhile still stops it.
    */
   unscopedGraph?: GraphClient;
+  /** When this tool call must have answered by (epoch ms). */
+  deadline?: number;
   /** Shows an email to the user for confirmation before it's sent (#57). */
   sendConfirmer?: SendConfirmer;
 }
@@ -58,6 +61,8 @@ export interface ToolDefinition<Shape extends ZodRawShape = ZodRawShape> {
   annotations?: ToolAnnotations;
   /** Graph scopes, any one of which makes the tool usable (see `toolsForScopes`). */
   scopesAnyOf: string[];
+  /** Graph scopes the tool needs every one of, as well (e.g. a reply reads, then sends). */
+  scopesAllOf?: string[];
   handler: (input: z.infer<z.ZodObject<Shape>>, ctx: ToolContext) => Promise<ToolResult>;
 }
 
@@ -69,6 +74,7 @@ export interface RegisteredTool {
   inputShape: ZodRawShape;
   annotations?: ToolAnnotations;
   scopesAnyOf: string[];
+  scopesAllOf?: string[];
   handler: (input: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
 }
 
@@ -94,6 +100,7 @@ export function toRegistered<Shape extends ZodRawShape>(
     inputShape: def.inputShape,
     annotations: def.annotations,
     scopesAnyOf: def.scopesAnyOf,
+    ...(def.scopesAllOf ? { scopesAllOf: def.scopesAllOf } : {}),
     handler: (input, ctx) => def.handler(schema.parse(input), ctx),
   };
 }

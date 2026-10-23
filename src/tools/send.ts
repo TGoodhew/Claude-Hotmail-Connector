@@ -30,9 +30,17 @@ import {
 
 /**
  * How long a send waits for the user's click before reporting that the email
- * is waiting: inside the tool call's 55 s deadline, after the lookups.
+ * is waiting, at most; it's cut to fit what's left of the tool call's deadline.
  */
 export const SEND_CONFIRM_WAIT_MS = 40_000;
+/** Left before the call's deadline for the answer to get back to the client. */
+const DEADLINE_MARGIN_MS = 3_000;
+
+/** The confirmation wait: the usual 40 s, or less if the call's deadline is nearer. */
+export function confirmWaitMs(ctx: ToolContext, now = Date.now()): number {
+  const left = (ctx.deadline ?? Number.POSITIVE_INFINITY) - now - DEADLINE_MARGIN_MS;
+  return Math.max(0, Math.min(SEND_CONFIRM_WAIT_MS, left));
+}
 
 /** Shared by both tools' descriptions. */
 const HOW_IT_SENDS =
@@ -89,9 +97,11 @@ export function outcomeResult(outcome: ConfirmOutcome, recipients: number): Tool
         status: "cancelled",
       });
     case "failed":
-      return toolResult(`The user confirmed the email, but sending it failed: ${outcome.message}`, {
-        status: "failed",
-      });
+      // Neutral: the message says whether it may have been sent anyway.
+      return toolResult(
+        `The user confirmed the email, but sending didn't complete: ${outcome.message}`,
+        { status: "failed" },
+      );
     case "pending": {
       const minutes = Math.max(1, Math.round((outcome.expiresAt - Date.now()) / 60_000));
       return toolResult(
@@ -137,7 +147,7 @@ export const sendEmailTool: ToolDefinition<typeof sendEmailShape> = defineTool({
     const outcome = await confirm.confirm(
       { kind: "new", to: to!, cc: cc!, subject: email.subject, body: email.body },
       () => sendNewEmail(graph, email),
-      SEND_CONFIRM_WAIT_MS,
+      confirmWaitMs(ctx),
     );
     return outcomeResult(outcome, email.to.length + email.cc.length);
   },
@@ -159,6 +169,8 @@ export const replyToEmailTool: ToolDefinition<typeof replyShape> = defineTool({
   inputShape: replyShape,
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   scopesAnyOf: ["Mail.Send"],
+  // It reads the message it answers first.
+  scopesAllOf: ["Mail.Send", "Mail.Read"],
   async handler(input, ctx) {
     const confirm = confirmer(ctx);
     await ensureCanSend(ctx);
@@ -175,7 +187,7 @@ export const replyToEmailTool: ToolDefinition<typeof replyShape> = defineTool({
         inReplyTo: reply.original,
       },
       () => sendReply(graph, reply),
-      SEND_CONFIRM_WAIT_MS,
+      confirmWaitMs(ctx),
     );
     return outcomeResult(outcome, reply.to.length);
   },

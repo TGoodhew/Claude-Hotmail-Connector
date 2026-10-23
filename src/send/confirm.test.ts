@@ -158,8 +158,9 @@ describe("send confirmation page (#57)", () => {
     await outcome;
   });
 
-  it("reports a failed send without claiming it went", async () => {
-    const { confirmer, urls } = setup();
+  it("reports a send that didn't complete neutrally, logging counts only", async () => {
+    const warn = vi.fn();
+    const { confirmer, urls } = setup({ logger: { ...(quiet as object), warn } as never });
     const outcome = confirmer.confirm(
       EMAIL,
       async () => {
@@ -169,8 +170,26 @@ describe("send confirmation page (#57)", () => {
     );
     const res = await post(await opened(urls), "send");
     expect(res.status).toBe(502);
-    expect(await res.text()).toContain("Sending failed: Recipient rejected.");
+    const html = await res.text();
+    expect(html).toContain("Sending didn&#39;t complete");
+    expect(html).toContain("<p>Recipient rejected.</p>");
+    expect(html).not.toContain("Not sent"); // the message may say it went anyway
     expect(await outcome).toEqual({ status: "failed", message: "Recipient rejected." });
+    // Microsoft's error text can quote recipients or content: never logged.
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("Recipient rejected");
+    expect(warn.mock.calls[0]![1]).toEqual({ recipients: 3 });
+  });
+
+  it("counts a slow browser launch towards the wait", async () => {
+    const confirmer = createSendConfirmer({
+      openBrowser: () => new Promise<void>(() => undefined), // never returns
+      logger: quiet,
+    });
+    open.push(confirmer);
+    const started = Date.now();
+    const outcome = await confirmer.confirm(EMAIL, async () => undefined, 50);
+    expect(outcome.status).toBe("pending");
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it("allows only a few confirmations waiting at once", async () => {

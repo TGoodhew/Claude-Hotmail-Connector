@@ -31,6 +31,16 @@ describe("toolsForScopes", () => {
     );
   });
 
+  it("offers reply_to_email only with Mail.Read as well as Mail.Send (#57)", () => {
+    const sendOnly = loadConfig({
+      MICROSOFT_CLIENT_ID: "c",
+      ALLOW_SEND_MAIL: "true",
+      MICROSOFT_SCOPES: "Mail.Send",
+    }).scopes;
+    expect(names(sendOnly)).toContain("send_email");
+    expect(names(sendOnly)).not.toContain("reply_to_email");
+  });
+
   it("adds the send tools only when sending is turned on (#57)", () => {
     const on = loadConfig({ MICROSOFT_CLIENT_ID: "c", ALLOW_SEND_MAIL: "true" }).scopes;
     expect(toolsForScopes(on)).toHaveLength(allTools().length);
@@ -382,4 +392,47 @@ describe("built server subprocess", () => {
     },
     30_000,
   );
+});
+
+describe("the client for work that outlives a call (#57)", () => {
+  it("keeps the call's sign-out epoch, but not its deadline or cancellation", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const graph = {
+      get: vi.fn(async (_p: string, opts?: Record<string, unknown>) => {
+        seen.push(opts ?? {});
+        return {};
+      }),
+    } as unknown as GraphClient;
+    let late: GraphClient | undefined;
+    let deadline: number | undefined;
+    const probe: RegisteredTool = {
+      name: "probe",
+      description: "test",
+      inputShape: {},
+      scopesAnyOf: ["User.Read"],
+      async handler(_input, ctx) {
+        late = ctx.unscopedGraph;
+        deadline = ctx.deadline;
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    };
+    const ctx: ToolContext = {
+      graph,
+      config,
+      auth: { signOut: async () => undefined, syncSignOuts: async () => 7 },
+    };
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await createMcpServer(ctx, [probe]).connect(serverTransport);
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+    const before = Date.now();
+    await client.callTool({ name: "probe", arguments: {} });
+    expect(deadline).toBeGreaterThan(before);
+
+    // Used later, as a late click on a send confirmation would.
+    await late!.get("/me");
+    expect(seen[0]).toMatchObject({ signOutEpoch: 7 });
+    expect(seen[0]).not.toHaveProperty("deadline");
+    expect(seen[0]).not.toHaveProperty("signal");
+  });
 });

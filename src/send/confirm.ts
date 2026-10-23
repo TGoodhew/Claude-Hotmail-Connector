@@ -212,10 +212,14 @@ export function createSendConfirmer(deps: SendConfirmerDeps): SendConfirmer {
       res.end(page("Sent", "<p>The email was sent. You can close this tab.</p>"));
     } catch (e) {
       const message = clientSafeMessage(e);
-      log.warn("Sending a confirmed email failed", { error: (e as Error).message });
+      // Counts only: Microsoft's error text can quote recipients or content.
+      log.warn("A confirmed email didn't send cleanly", {
+        recipients: entry.email.to.length + entry.email.cc.length,
+      });
       finish(token, entry, { status: "failed", message });
       res.writeHead(502, SECURITY_HEADERS);
-      res.end(page("Not sent", `<p>Sending failed: ${escapeHtml(message)}</p>`));
+      // Neutral: the message itself says whether it may have gone anyway.
+      res.end(page("Sending didn't complete", `<p>${escapeHtml(message)}</p>`));
     }
   }
 
@@ -248,8 +252,17 @@ export function createSendConfirmer(deps: SendConfirmerDeps): SendConfirmer {
       };
       entry.expiry.unref?.();
       pending.set(token, entry);
+      const started = now();
+      let launchTimer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await deps.openBrowser(`http://${host}:${await port()}/send/${token}`);
+        // The browser launch counts towards the wait: a slow one mustn't push
+        // the call past its deadline. The page stays open either way.
+        await Promise.race([
+          deps.openBrowser(`http://${host}:${await port()}/send/${token}`),
+          new Promise<void>((resolve) => {
+            launchTimer = setTimeout(resolve, waitMs);
+          }),
+        ]);
       } catch {
         clearTimeout(entry.expiry);
         pending.delete(token);
@@ -258,13 +271,18 @@ export function createSendConfirmer(deps: SendConfirmerDeps): SendConfirmer {
           "Couldn't open your web browser to confirm the email. Check that a default web browser " +
             "is set, then try again. Nothing was sent.",
         );
+      } finally {
+        clearTimeout(launchTimer);
       }
       log.info("Opened a send confirmation in the browser", {
         recipients: email.to.length + email.cc.length,
       });
       let timer: ReturnType<typeof setTimeout> | undefined;
       const waited = new Promise<ConfirmOutcome>((resolve) => {
-        timer = setTimeout(() => resolve({ status: "pending", expiresAt }), waitMs);
+        timer = setTimeout(
+          () => resolve({ status: "pending", expiresAt }),
+          Math.max(0, waitMs - (now() - started)),
+        );
       });
       try {
         return await Promise.race([decided, waited]);

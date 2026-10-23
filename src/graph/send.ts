@@ -101,8 +101,8 @@ export async function hasEmailedYou(graph: GraphClient, address: string): Promis
     return (page.value ?? []).length > 0;
   } catch (e) {
     // A query Graph won't answer means "couldn't check"; anything else (a
-    // sign-in needed, a sign-out, a cancellation) still ends the call.
-    if (e instanceof GraphError) return null;
+    // sign-in needed, a sign-out, the call cancelled) still ends the call.
+    if (e instanceof GraphError && e.reason !== "cancelled") return null;
     throw e;
   }
 }
@@ -124,11 +124,15 @@ export async function knownSenders(
 }
 
 /**
- * A send may have reached Microsoft even when no answer came back: never say
- * "nothing was sent" then.
+ * A send may have reached Microsoft even when no answer came back, or when the
+ * answer was a server error (it can fail after the work is done): never say
+ * "nothing was sent" then. Sends aren't retried, for the same reason.
  */
 function uncertain(e: unknown): never {
-  if (e instanceof TimeoutError || (e instanceof GraphError && e.status === undefined)) {
+  if (
+    e instanceof TimeoutError ||
+    (e instanceof GraphError && (e.status === undefined || [500, 502, 503, 504].includes(e.status)))
+  ) {
     throw new ValidationError(
       "Microsoft didn't confirm the email was sent, but it may have been. Check Sent Items " +
         "before sending it again.",

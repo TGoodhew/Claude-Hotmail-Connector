@@ -3,7 +3,14 @@ import type { AppConfig } from "../config.js";
 import type { GraphClient } from "../graph/client.js";
 import type { ConfirmOutcome, OutgoingEmail, SendConfirmer } from "../send/confirm.js";
 import { SignInRequiredError, ValidationError } from "../util/errors.js";
-import { outcomeResult, replyToEmailTool, sendEmailTool, sendTools } from "./send.js";
+import {
+  confirmWaitMs,
+  outcomeResult,
+  replyToEmailTool,
+  SEND_CONFIRM_WAIT_MS,
+  sendEmailTool,
+  sendTools,
+} from "./send.js";
 import type { ToolContext } from "./types.js";
 
 type Get = (path: string, opts?: { query?: Record<string, unknown> }) => Promise<unknown>;
@@ -176,11 +183,21 @@ describe("the send tools (#57)", () => {
       "Sent: the user confirmed it in their browser, and it went to 2 recipient(s).",
     );
     expect(text({ status: "failed", message: "Recipient rejected." })).toBe(
-      "The user confirmed the email, but sending it failed: Recipient rejected.",
+      "The user confirmed the email, but sending didn't complete: Recipient rejected.",
     );
     expect(text({ status: "pending", expiresAt: Date.now() + 4 * 60_000 })).toMatch(
       /within about 4 minute\(s\)\. Don't send it again/,
     );
     expect(text({ status: "pending", expiresAt: Date.now() })).toMatch(/about 1 minute/);
+  });
+});
+
+describe("confirmWaitMs (#57)", () => {
+  it("waits 40 s, or less to answer before the call's deadline", () => {
+    const now = 1_000_000;
+    expect(confirmWaitMs(ctx(), now)).toBe(SEND_CONFIRM_WAIT_MS);
+    expect(confirmWaitMs(ctx({ deadline: now + 60_000 }), now)).toBe(SEND_CONFIRM_WAIT_MS);
+    expect(confirmWaitMs(ctx({ deadline: now + 10_000 }), now)).toBe(7_000);
+    expect(confirmWaitMs(ctx({ deadline: now + 1_000 }), now)).toBe(0);
   });
 });
