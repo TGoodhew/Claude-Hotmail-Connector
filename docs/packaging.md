@@ -94,6 +94,7 @@ Inspect a bundle with `npx mcpb info build/hotmail-connector.mcpb`, or unpack it
   deletes the token cache and its key in `%LOCALAPPDATA%\claude-hotmail-connector` (or
   `~/.claude-hotmail-connector`). Removing the extension alone doesn't (Claude Desktop runs no
   uninstall hook).
-- **Key protection:** Windows uses DPAPI (#42); macOS/Linux use a plain owner-only key file for now
+- **Key protection:** Windows uses DPAPI (#42); macOS/Linux use a plain owner-only key file. OS
+  keychain support there isn't planned; PRs welcome
   ([#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83)).
 - **Signing:** bundles are currently unsigned (`mcpb sign` is available if that changes).

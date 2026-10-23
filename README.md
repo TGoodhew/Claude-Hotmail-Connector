@@ -9,7 +9,8 @@ rejects personal Microsoft accounts. This project fills that gap as a **personal
 that runs entirely on your own machine.
 
 > **Status:** since v0.2.0 the connector ships as a **Claude Desktop extension (`.mcpb`)** for Windows, macOS and Linux
-> (only Windows has been tested by hand so far). What changed is in the [changelog](CHANGELOG.md),
+> (only Windows is tested and supported by the maintainer; see
+> [Platforms](#platforms)). What changed is in the [changelog](CHANGELOG.md),
 > the requirements are in [spec v2](docs/personal-outlook-mcp-connector-requirements.md), and future
 > work is collected in [#150](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/150).
 
@@ -234,9 +235,9 @@ More things to ask:
   (`%LOCALAPPDATA%\claude-hotmail-connector` on Windows; elsewhere
   `$XDG_STATE_HOME/claude-hotmail-connector` if that's set, else `~/.claude-hotmail-connector`).
   On **Windows** the encryption key is protected with **DPAPI**, so only your Windows account on this
-  PC can unlock it; copying the folder elsewhere isn't enough. On macOS/Linux the key is currently an
-  owner-only file in the same folder; Keychain/libsecret support is tracked in
-  [#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83). Tokens are never committed,
+  PC can unlock it; copying the folder elsewhere isn't enough. On macOS/Linux the key is an owner-only
+  file in the same folder: Keychain/libsecret support isn't planned, but a PR adding it is welcome
+  ([#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83)). Tokens are never committed,
   logged or returned to the client.
 - **Logging:** structured logs go to **stderr only** (stdout is reserved for MCP JSON-RPC) and are
   scrubbed of tokens, `Authorization` headers, OAuth codes and secrets.
@@ -333,9 +334,19 @@ Layout (tests are colocated as `src/**/*.test.ts`):
   the original local-hosting investigation (superseded by spec v2; kept for the record).
 - [`CHANGELOG.md`](CHANGELOG.md): what changed in each release.
 - **Roadmap:** the [Spec v2 epic (#66)](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/66)
-  is done apart from hands-on platform checks. Future work, such as PDF attachments, macOS/Linux key
-  protection and a remote mode for claude.ai, is collected in
+  is done apart from hands-on checks. Future work, such as PDF attachments and a remote mode for claude.ai, is collected in
   [#150](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/150).
+
+## Platforms
+
+The maintainer uses and tests the connector on **Windows** only. The extension also builds for macOS
+and Linux, and CI runs the tests on Linux, but nothing on those platforms has been tested by hand, and
+no macOS/Linux-specific work is planned. Known gaps there: the saved sign-in's key isn't protected by
+the OS keychain ([#83](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/83)), a rare
+lock-recovery race on macOS ([#131](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/131)),
+and setup notes for those platforms
+([#56](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/56)). If you use macOS or Linux,
+PRs are very welcome.
 
 ## Support & contributing
 

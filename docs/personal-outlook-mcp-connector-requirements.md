@@ -182,7 +182,8 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
   - Elsewhere (macOS) it is an `auth.lock` file. A lock file is broken only once its holder's
     process has exited, and it is removed only if it still holds what was judged stale.
   - Known limits of the lock file: a reused process id makes waiters time out until that process
-    exits. A narrow race remains in recovering from a reaper that crashed (#131).
+    exits. A narrow race remains in recovering from a reaper that crashed (#131, not planned:
+    Windows only, PRs welcome).
 - Annotations: `destructiveHint: true` (local data), `idempotentHint: true`, `openWorldHint: false`.
   The description says to call it only when the user asks. Misuse only means signing in again.
 
@@ -511,7 +512,8 @@ signed in to that tenant. Registration settings:
     A legacy plain key is upgraded in place on the next save (loads never write to disk), so existing sign-ins survive. If DPAPI fails, a warning is
     logged and the plain key file is used. A key that can't be unwrapped (another user or machine) is
     reset, which means signing in again.
-  - **macOS / Linux:** plain owner-only key file for now *(→ #83)*.
+  - **macOS / Linux:** plain owner-only key file. Keychain/libsecret support is not planned (owner
+    decision 2026-10-23: the maintainer supports Windows only); PRs welcome *(#83)*.
 - Cache location: `%LOCALAPPDATA%\claude-hotmail-connector` (Windows) or `~/.claude-hotmail-connector`,
   overridable with `CLAUDE_HOTMAIL_CACHE_DIR`.
 - Tokens are never logged, returned to the client, or committed. Users MUST have a way to sign out and
@@ -580,7 +582,7 @@ access tokens; the user's identity and contacts' addresses visible in mail.
 | T7 | **Phishing presented as genuine.** A fake "booking" in Junk is read as real. | Exclude Junk/Deleted by default and report each message's folder (#53). | *→ #53* |
 | T8 | **Context flooding.** A huge newsletter fills the model's context and pushes out the user's instructions. | Result caps on lists. `get_message` cuts bodies at `maxChars` (default 20,000) with `truncated`, `totalChars` and `nextStartChar`, so the rest can be read in parts. | ✅ #38 |
 | T9 | **Hostile launch environment.** A repo's `.env` swaps the client id, tenant, cache dir or scopes. | `.env` is read only from the checkout root, never the CWD (§8.4). Scope override can only narrow (§6). | ✅ #41, #70 |
-| T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; *→ #83* |
+| T10 | **Token theft from disk.** The cache folder is copied off the PC. | The AES key is wrapped with DPAPI on Windows (§8.3). | ✅ Windows; macOS/Linux not planned *(#83)* |
 | T11 | **Interference with the loopback sign-in.** A stray or hostile local request hits the redirect port. | Random `state`, checked in constant time. Mismatched requests get a 400 and neither abort nor complete the sign-in (§8.2). | ✅ #41 |
 | T12 | **Instruction-following from content.** Text in a message tells the model what to do next. | Treat content as data. The server's MCP `instructions` say so once. The `list_messages`, `get_message`, `get_attachment`, `list_mail_folders`, `list_events`, `get_event` and `list_calendars` descriptions repeat it, and mail in Junk Email is left out of listings by default and flagged when read (#53). Their results lead with a `notice` field marking the message or event text as untrusted third-party content, and keep that text out of the summary line. This reduces the risk but can't remove it: the model still reads the content. | ✅ #88 (mitigation, not prevention) |
 
@@ -679,7 +681,8 @@ Claude-Hotmail-Connector/
   - Sign-in is on demand (§8.2). CI builds the bundle on every PR, and `release.yml` publishes it with
     a SHA-256 checksum when a `v*` tag matching `package.json` is pushed.
 - **Claude Code / VS Code:** a source checkout (`npm run build` + `node dist/index.js`), configured with
-  `MICROSOFT_CLIENT_ID` in the server's `env`. Smoother setup for these clients is tracked in #56.
+  `MICROSOFT_CLIENT_ID` in the server's `env`. Smoother setup on macOS/Linux (#56) is not
+  planned; PRs welcome.
 - **Retired:** the v0.1.0 Node SEA exe, the Inno Setup installer and the `setup` / `unsetup` commands
   that edited `claude_desktop_config.json`. Users upgrading must uninstall v0.1.0 first, or every tool
   shows twice.
