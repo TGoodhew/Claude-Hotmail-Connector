@@ -103,6 +103,7 @@ const manifest = {
     { name: "list_calendars", description: "List your calendars (own and shared)." },
     { name: "list_events", description: "List calendar events in a date range." },
     { name: "get_event", description: "Read one calendar event in full (notes, attendees)." },
+    { name: "find_free_time", description: "Find free time in a date range." },
     { name: "create_event", description: "Add a calendar event (timezone-correct, idempotent)." },
     { name: "update_event", description: "Edit a calendar event; reports before/after values." },
     { name: "cancel_event", description: "Guarded soft delete of a calendar event." },

@@ -303,6 +303,27 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - The result carries the untrusted-content notice (T12), and the summary line holds none of the event's
   text. Read-only. `Calendars.Read`.
 
+### 7.4c `find_free_time` — free slots in a range
+- **Graph:** `calendarView` over the range, read in UTC (`Prefer: outlook.timezone="UTC"`) so instants are
+  exact. `getSchedule` isn't used: personal accounts can't rely on it.
+- **Inputs:** `startDateTime`, `endDateTime` (as §7.4; at most 62 days), `timeZone?`, `minDurationMinutes?`
+  (5–1440, default 30), `withinHours?` (`{start, end}` local `HH:mm`, e.g. working hours),
+  `tentativeIsBusy?` (default true), `calendarId?`.
+- **Busy rule:** `busy`, `oof` and `workingElsewhere` take the time, and so does `tentative` unless
+  `tentativeIsBusy` is false. `free` and cancelled events don't. Overlapping busy time is merged, reporting
+  the strongest status.
+- **Output:** `freeSlots` (local start/end and minutes, each at least `minDurationMinutes`) and the merged
+  `busy` intervals, clipped to the range. With `withinHours`, each local day's window is pinned in the zone,
+  so it moves with a DST change. The windows are exactly the instants whose local clock reads within the hours: the hour skipped when
+  clocks go forward contributes nothing, and the hour repeated when they go back counts twice, as two
+  separate windows (each must reach `minDurationMinutes` on its own). Every endpoint is given twice: local wall-clock (the form `create_event`
+  takes) and `startUtc`/`endUtc`, the exact instant. In the hour that repeats when clocks go back, the local
+  time alone is ambiguous; the UTC one isn't.
+- **Never a half answer:** a range with more events than it can read (10 pages) is refused with "try a
+  shorter range" rather than inventing free time; so is a range where an event that takes time has times
+  that can't be read. A slot's `minutes` counts whole free minutes only (rounded down). The result has times only, no event text, so it carries
+  no untrusted-content notice *(#52)*. Read-only. `Calendars.Read`.
+
 ### 7.5 `create_event` — write calendar
 - **Graph:** `POST /me/events` → `201 Created` (or `POST /me/calendars/{calendarId}/events`).
 - **Inputs:** `subject`; `start` / `end` as `{ dateTime, timeZone }`, where `dateTime` is **local wall-clock,
@@ -378,7 +399,7 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 - Same attendee prohibition for the payload as §7.5. `Calendars.ReadWrite`.
 
 ### 7.7 Planned read tools (optional)
-Free/busy lookup (#52). Attachment text is §7.3b (#54).
+None left: free/busy (§7.4c, #52), mail folders (§7.3a, #53) and attachment text (§7.3b, #54) are done.
 
 ### 7.8 `cancel_event` — guarded soft delete
 Approved by the owner with guards (#55).
