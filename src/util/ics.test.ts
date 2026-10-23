@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_ICS_EVENTS, MAX_ICS_TEXT_CHARS, parseIcs } from "./ics.js";
+import { MAX_ICS_EVENTS, MAX_ICS_TEXT_CHARS, MAX_ICS_TOKEN_CHARS, parseIcs } from "./ics.js";
 
 const ics = (...lines: string[]) => lines.join("\r\n");
 
@@ -226,6 +226,58 @@ describe("parseIcs (#54)", () => {
     for (const bad of ["PT", "P1", "P1M", "P1D2H", "P1Y", "PT1S2M", "P1W2D", "P", "1H"]) {
       expect(duration(bad), bad).toBeNull();
     }
+  });
+
+  it("rejects contradictory or unsupported VALUE types; reads a bare date as a date (#157)", () => {
+    const starts = (...values: string[]) =>
+      parseIcs(
+        ics(
+          "BEGIN:VCALENDAR",
+          ...values.flatMap((v) => ["BEGIN:VEVENT", v, "END:VEVENT"]),
+          "END:VCALENDAR",
+        ),
+      ).events.map((e) => (e.start ? [e.start.dateTime, e.start.allDay] : null));
+    expect(
+      starts(
+        "DTSTART;VALUE=DATE:20260720T190000", // a date type with a time
+        "DTSTART;VALUE=DATE-TIME:20260720", // a date-time type with a date
+        "DTSTART;VALUE=TIME:20260720T190000", // unsupported type, with a value that would parse
+        "DTSTART;VALUE=DATE:20260720",
+        "DTSTART;VALUE=DATE-TIME:20260720T190000",
+        "DTSTART:20260720", // no VALUE: strictly malformed, but plainly a date
+      ),
+    ).toEqual([
+      null,
+      null,
+      null,
+      ["2026-07-20", true],
+      ["2026-07-20T19:00:00", false],
+      ["2026-07-20", true],
+    ]);
+  });
+
+  it("keeps only valid statuses and methods, and drops oversized identifiers (#157)", () => {
+    const one = (...props: string[]) => parseIcs(ics("BEGIN:VCALENDAR", ...props, "END:VCALENDAR"));
+    const event = (...props: string[]) => one("BEGIN:VEVENT", ...props, "END:VEVENT").events[0]!;
+    expect(event("STATUS:tentative").status).toBe("TENTATIVE");
+    expect(event("STATUS:COMPLETED").status).toBeNull(); // a VTODO status, not a VEVENT one
+    expect(event(`STATUS:${"C".repeat(MAX_ICS_TOKEN_CHARS + 1)}`).status).toBeNull();
+    expect(one("METHOD:request").method).toBe("REQUEST");
+    expect(one(`METHOD:${"X".repeat(MAX_ICS_TOKEN_CHARS + 1)}`).method).toBeNull();
+    expect(one("METHOD:not a token").method).toBeNull();
+    expect(event(`DURATION:P${"1".repeat(MAX_ICS_TOKEN_CHARS)}D`).duration).toBeNull();
+    expect(event("DURATION:P1D").duration).toBe("P1D");
+    // A TZID at the limit is kept; past it, the time has no known zone and is dropped.
+    const tz = "Z".repeat(MAX_ICS_TOKEN_CHARS);
+    expect(event(`DTSTART;TZID=${tz}:20260720T190000`).start?.timeZone).toBe(tz);
+    expect(event(`DTSTART;TZID=${tz}Z:20260720T190000`).start).toBeNull();
+    // All-day dates too, with VALUE=DATE or bare, and on DTEND.
+    expect(event(`DTSTART;VALUE=DATE;TZID=${tz}Z:20260720`).start).toBeNull();
+    expect(event(`DTSTART;TZID=${tz}Z:20260720`).start).toBeNull();
+    expect(event(`DTEND;TZID=${tz}Z:20260721`).end).toBeNull();
+    // A long RRULE is dropped rather than cut into a different rule.
+    expect(event(`RRULE:FREQ=WEEKLY;BYDAY=${"MO,".repeat(400)}TU`).recurrence).toBeNull();
+    expect(event("RRULE:FREQ=WEEKLY;BYDAY=MO").recurrence).toBe("FREQ=WEEKLY;BYDAY=MO");
   });
 
   it("caps the events and the text it returns", () => {
