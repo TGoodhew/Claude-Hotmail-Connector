@@ -20,7 +20,7 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createFileCoordinator } from "./auth/coordination.js";
-import { createMicrosoftAuth } from "./auth/microsoft.js";
+import { createMicrosoftAuth, launcherSucceeded } from "./auth/microsoft.js";
 import { defaultKeyProtector } from "./auth/protect.js";
 import { createFileTokenStore } from "./auth/tokens.js";
 import { getConfig } from "./config.js";
@@ -28,6 +28,7 @@ import { createGraphClient } from "./graph/client.js";
 import { whoami } from "./graph/user.js";
 import { parseCommand, USAGE } from "./cli.js";
 import { createMcpServer, SERVER_VERSION } from "./mcp.js";
+import { createSendConfirmer } from "./send/confirm.js";
 import { SignInRequiredError } from "./util/errors.js";
 import { createLogger } from "./util/log.js";
 
@@ -97,7 +98,14 @@ async function run(): Promise<void> {
     baseUrl: config.graphBaseUrl,
     interactiveSignIn: { waitMs: ON_DEMAND_SIGN_IN_WAIT_MS },
   });
-  const server = createMcpServer({ graph: toolGraph, config, auth });
+  // Only when sending is turned on (#57): every email is then shown on a local
+  // page in the browser, and sent only when the user clicks Send there.
+  const sendConfirmer = config.allowSendMail
+    ? createSendConfirmer({
+        openBrowser: (url) => import("open").then((m) => m.default(url).then(launcherSucceeded)),
+      })
+    : undefined;
+  const server = createMcpServer({ graph: toolGraph, config, auth, sendConfirmer });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info("MCP server ready on stdio.", { account });
@@ -110,7 +118,9 @@ async function run(): Promise<void> {
   }
 
   const shutdown = (): void => {
-    void server.close().finally(() => process.exit(0));
+    void Promise.allSettled([server.close(), sendConfirmer?.close()]).finally(() =>
+      process.exit(0),
+    );
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

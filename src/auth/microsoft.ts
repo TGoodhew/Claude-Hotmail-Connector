@@ -246,6 +246,12 @@ export interface MicrosoftAuth {
   signIn(): Promise<TokenSet>;
   signOut(): Promise<void>;
   getAccount(): Promise<string | undefined>;
+  /**
+   * The scopes the saved sign-in was granted, or undefined if there is none
+   * (or it can't be read). Lets a tool that needs a scope added later (e.g.
+   * `Mail.Send`, #57) say "sign in again" before it does anything.
+   */
+  grantedScopes(): Promise<string[] | undefined>;
   /** Current sign-out epoch: note it when an operation starts (see `signOutEpoch` above). */
   signOutEpoch(): number;
   /**
@@ -1018,6 +1024,14 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
     async getAccount(): Promise<string | undefined> {
       try {
         return (await store.load())?.account;
+      } catch {
+        return undefined;
+      }
+    },
+
+    async grantedScopes(): Promise<string[] | undefined> {
+      try {
+        return (await store.load())?.scopes;
       } catch {
         return undefined;
       }

@@ -13,6 +13,7 @@ import { z, type ZodRawShape } from "zod";
 import type { AppConfig } from "../config.js";
 import type { MicrosoftAuth } from "../auth/microsoft.js";
 import type { GraphClient } from "../graph/client.js";
+import type { SendConfirmer } from "../send/confirm.js";
 
 export interface ToolContext {
   graph: GraphClient;
@@ -22,7 +23,18 @@ export interface ToolContext {
    * lets the server bind each tool call's Graph requests to one sign-out epoch.
    */
   auth?: Pick<MicrosoftAuth, "signOut"> &
-    Partial<Pick<MicrosoftAuth, "signOutEpoch" | "syncSignOuts">>;
+    Partial<Pick<MicrosoftAuth, "signOutEpoch" | "syncSignOuts" | "grantedScopes">>;
+  /**
+   * A Graph client free of this call's deadline and cancellation, but still
+   * bound to its sign-out epoch: for work that can finish after the call
+   * returns, such as an email sent when the user confirms it later (#57). A
+   * sign-out meanwhile still stops it.
+   */
+  unscopedGraph?: GraphClient;
+  /** When this tool call must have answered by (epoch ms). */
+  deadline?: number;
+  /** Shows an email to the user for confirmation before it's sent (#57). */
+  sendConfirmer?: SendConfirmer;
 }
 
 /** MCP behaviour hints surfaced to the client/model. */
@@ -49,6 +61,8 @@ export interface ToolDefinition<Shape extends ZodRawShape = ZodRawShape> {
   annotations?: ToolAnnotations;
   /** Graph scopes, any one of which makes the tool usable (see `toolsForScopes`). */
   scopesAnyOf: string[];
+  /** Graph scopes the tool needs every one of, as well (e.g. a reply reads, then sends). */
+  scopesAllOf?: string[];
   handler: (input: z.infer<z.ZodObject<Shape>>, ctx: ToolContext) => Promise<ToolResult>;
 }
 
@@ -60,6 +74,7 @@ export interface RegisteredTool {
   inputShape: ZodRawShape;
   annotations?: ToolAnnotations;
   scopesAnyOf: string[];
+  scopesAllOf?: string[];
   handler: (input: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
 }
 
@@ -85,6 +100,7 @@ export function toRegistered<Shape extends ZodRawShape>(
     inputShape: def.inputShape,
     annotations: def.annotations,
     scopesAnyOf: def.scopesAnyOf,
+    ...(def.scopesAllOf ? { scopesAllOf: def.scopesAllOf } : {}),
     handler: (input, ctx) => def.handler(schema.parse(input), ctx),
   };
 }

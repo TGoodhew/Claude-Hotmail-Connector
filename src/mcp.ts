@@ -13,6 +13,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { scopeToOperation, withinLimits } from "./graph/client.js";
 import { calendarTools } from "./tools/calendar.js";
 import { mailTools } from "./tools/mail.js";
+import { sendTools } from "./tools/send.js";
 import type { RegisteredTool, ToolContext } from "./tools/types.js";
 import { userTools } from "./tools/user.js";
 import { clientSafeMessage } from "./util/errors.js";
@@ -39,7 +40,7 @@ export const TOOL_CALL_DEADLINE_MS = 55_000;
 
 /** All tools exposed by the connector. */
 export function allTools(): RegisteredTool[] {
-  return [...userTools, ...mailTools, ...calendarTools];
+  return [...userTools, ...mailTools, ...sendTools, ...calendarTools];
 }
 
 /**
@@ -53,7 +54,11 @@ export function toolsForScopes(
   tools: RegisteredTool[] = allTools(),
 ): RegisteredTool[] {
   const granted = new Set(scopes.map((s) => s.toLowerCase()));
-  return tools.filter((t) => t.scopesAnyOf.some((s) => granted.has(s.toLowerCase())));
+  return tools.filter(
+    (t) =>
+      t.scopesAnyOf.some((s) => granted.has(s.toLowerCase())) &&
+      (t.scopesAllOf ?? []).every((s) => granted.has(s.toLowerCase())),
+  );
 }
 
 /** Build an McpServer with the tools the configured scopes support (or the given set). */
@@ -93,7 +98,14 @@ export function createMcpServer(
             signal: extra?.signal,
             deadline,
           });
-          const result = await tool.handler(args ?? {}, { ...ctx, graph });
+          const result = await tool.handler(args ?? {}, {
+            ...ctx,
+            graph,
+            // Outlives the call (a late click on a send confirmation) but not a
+            // sign-out: same epoch, no deadline or cancellation (#57).
+            unscopedGraph: scopeToOperation(ctx.unscopedGraph ?? ctx.graph, { signOutEpoch }),
+            deadline,
+          });
           return result as CallToolResult;
         } catch (err) {
           log.error("Tool handler failed", {

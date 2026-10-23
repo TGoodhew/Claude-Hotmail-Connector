@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Sending email, if you turn it on**
+  ([#57](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/57)).
+  - New tools `send_email` and `reply_to_email` (reply to a message's sender, in its thread). Both are
+    off by default: tick **Allow sending email** in the extension's settings, then sign in again.
+  - **Every email is shown to you in your browser before it's sent**, with anyone who has never emailed
+    you flagged. It's sent only when you click **Send** there. Claude can't confirm for you, and this
+    doesn't depend on Claude Desktop's approval prompts.
+  - Plain text, at most 10 recipients. No forwarding, reply-all, attachments or BCC.
+
 - **PDF attachments** ([#156](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/156)).
   `get_attachment` now reads the text of PDF attachments, such as booking confirmations and tickets,
   from the first 30 pages of PDFs up to 5 MB.

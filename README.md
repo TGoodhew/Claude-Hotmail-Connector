@@ -48,8 +48,12 @@ phase ([#58](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/58)).
 | `update_event`      | Edit a calendar event (destructive: overwrites)      | `Calendars.ReadWrite` |
 | `cancel_event`      | Delete an event, guarded (see below)                 | `Calendars.ReadWrite` |
 | `sign_out`          | Remove the saved sign-in from this computer          | (none)                |
+| `send_email`        | Send an email, after you confirm it (opt-in)         | `Mail.Send`           |
+| `reply_to_email`    | Reply to a sender, after you confirm it (opt-in)     | `Mail.Send`           |
 
-Mail is **read-only** (no `Mail.Send`), and calendar writes never add attendees or send invitations.
+Mail is **read-only** unless you turn sending on ([Sending email](#sending-email-optional)), and
+then **every email is shown to you in your browser and sent only when you click Send there**.
+Calendar writes never add attendees or send invitations.
 There is **no hard-delete**. `cancel_event` moves an event to Outlook's Deleted Items, and only after
 three checks:
 
@@ -74,6 +78,29 @@ A few behaviours worth knowing:
   days in that zone.
 
 Full tool contracts are in spec v2 §7.
+
+## Sending email (optional)
+
+Off by default. When it's on, Claude can send new emails, and replies to the person who sent you a
+message, but **only after you confirm each one**:
+
+1. Claude prepares the email, and the connector opens a page in your browser showing exactly what will
+   be sent: To, Cc, Subject and the whole text. Anyone who has **never emailed you** is flagged.
+2. Nothing is sent until you click **Send** on that page. **Don't send** cancels it, and the page stops
+   working after 5 minutes. Claude never sees the page's link, so it can't confirm for you.
+3. Claude is told whether you sent or cancelled it.
+
+To turn it on, tick **Allow sending email** under **Settings → Extensions → Hotmail Connector**, or set
+`ALLOW_SEND_MAIL=true` when running from source. Then:
+
+- **Fully restart Claude Desktop** (Quit from the tray icon, then reopen it). Claude Desktop keeps
+  using its earlier list of tools in chats until it restarts, so Claude won't see the send tools yet.
+- The first time you send, Claude will say your sign-in doesn't include permission to send. Ask it to
+  sign out (`sign_out`) and try again: Microsoft will ask you to allow sending.
+
+Plain text only, to at most 10 people. Forwarding, reply-all, attachments and BCC aren't supported,
+since they're the easiest ways to leak mail. Replies go to the message's Reply-To address if it has
+one, else its sender, and don't quote the original.
 
 ## Step 1: register your own Microsoft Entra application
 
@@ -109,7 +136,8 @@ The connector signs in as a **public/native client**. No client secret is ever u
    client secret.
 7. Under **API permissions → Add a permission → Microsoft Graph → Delegated permissions**, add:
    `openid`, `profile`, `email`, `offline_access`, `User.Read`, `Mail.Read`, `Calendars.ReadWrite`.
-   A personal account doesn't need admin consent; you consent at first sign-in.
+   If you'll turn sending on, add `Mail.Send` too. A personal account doesn't need admin consent; you
+   consent at sign-in.
 
 ## Step 2a: install in Claude Desktop (extension)
 
@@ -130,7 +158,9 @@ The connector signs in as a **public/native client**. No client secret is ever u
 
 > **Updating to a newer release:** install the new `.mcpb` the same way, over the old one. If Claude
 > Desktop asks for your client ID again, enter the same one. What changed is in the
-> [changelog](CHANGELOG.md).
+> [changelog](CHANGELOG.md). Claude Desktop only replaces an installed extension with a **newer
+> version number**: a different build with the same version (e.g. one you built yourself) is treated
+> as already installed, so uninstall first, or give the build a new version.
 >
 > **Upgrading from the v0.1.0 Windows installer:**
 >
@@ -208,6 +238,7 @@ node dist/index.js logout    # removes the saved sign-in (token cache and key)
 | `DEFAULT_TIMEZONE`         | This computer's time zone (UTC if unknown) | IANA zone used when a call doesn't specify one. An invalid name stops the server at startup.                                |
 | `LOG_LEVEL`                | `info`                                     | `debug` / `info` / `warn` / `error` (logs go to stderr).                                                                    |
 | `MICROSOFT_SCOPES`         | least-privilege set (spec §6)              | Narrowing only: drop scopes or use `Calendars.Read`; broader scopes are rejected. Tools needing a dropped scope are hidden. |
+| `ALLOW_SEND_MAIL`          | `false`                                    | `true` lets Claude send emails and replies, each confirmed by you in the browser (adds `Mail.Send`).                        |
 | `CLAUDE_HOTMAIL_CACHE_DIR` | per-OS profile dir                         | Where the encrypted token cache lives.                                                                                      |
 
 ## Usage example
@@ -232,8 +263,8 @@ More things to ask:
 
 ## Security
 
-- **Least privilege:** `Mail.Read` (read-only) + `Calendars.ReadWrite`. No `Mail.Send`, no hard
-  delete, no attendees/invitations.
+- **Least privilege:** `Mail.Read` (read-only) + `Calendars.ReadWrite`. `Mail.Send` only if you turn
+  sending on; never `Mail.ReadWrite`, no hard delete, no attendees/invitations.
 - **No client secret:** a public/native client using PKCE.
 - **Token storage:** the refresh token is encrypted with AES-256-GCM in your user profile
   (`%LOCALAPPDATA%\claude-hotmail-connector` on Windows; elsewhere
@@ -246,8 +277,9 @@ More things to ask:
 - **Logging:** structured logs go to **stderr only** (stdout is reserved for MCP JSON-RPC) and are
   scrubbed of tokens, `Authorization` headers, OAuth codes and secrets.
 - **Email (and others' invites) are untrusted input:** they're written by strangers and may try to
-  steer the model. The connector can't send mail: no `Mail.Send`, no attendees, and no changing or
-  deleting meetings with attendees. Writes and deletes are marked destructive so Claude asks before
+  steer the model. Unless you turn sending on, the connector can't send mail; when it's on, every
+  email waits for your click on the connector's own page, which the model can't reach. There are no
+  attendees, and no changing or deleting meetings with attendees. Writes and deletes are marked destructive so Claude asks before
   running them, but only if your client's tool permissions ask. **Don't auto-approve the calendar
   write tools.** Claude Desktop 3.1623.4 doesn't show these approval prompts for extension tools at
   all ([#138](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/138), reported to
@@ -287,6 +319,10 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
   with a different client ID. A common cause is giving Claude Desktop and a source checkout different
   client IDs: they share one saved sign-in, so use the same ID in both. Then sign in again: ask
   Claude, or run `node dist/index.js login`.
+- **"Sending email is turned on, but your Microsoft sign-in doesn't include permission to send":**
+  ask Claude to sign out (`sign_out`), then try again. Microsoft will ask you to allow sending.
+- **No confirmation page appears when sending:** check that a default web browser is set. Nothing is
+  sent without the page.
 - **v0.1.0 can't sign in any more:** its shared registration was deleted. Upgrade as described in
   step 2a, with your own client ID.
 - **Claude changes or deletes calendar events without asking:** Claude Desktop 3.1623.4 doesn't show
