@@ -7,6 +7,7 @@ import {
   dotenvPath,
   FALLBACK_TIMEZONE,
   loadConfig,
+  logFilePath,
   MISSING_CLIENT_ID_MESSAGE,
   SEND_SCOPE,
   systemTimeZone,
@@ -174,6 +175,16 @@ describe("LOG_FILE (#178)", () => {
     expect(() => loadConfig({ ...base, LOG_FILE: "maybe" })).toThrow(
       /LOG_FILE must be true or false/,
     );
+  });
+
+  it("is found without the rest of the configuration, so its errors can be logged", () => {
+    const dir = join(tmpdir(), "cht-logpath");
+    // No client id and a bad time zone: loadConfig would throw.
+    const env = { LOG_FILE: "true", DEFAULT_TIMEZONE: "Not/AZone", CLAUDE_HOTMAIL_CACHE_DIR: dir };
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+    expect(logFilePath(env)).toBe(join(dir, "connector.log"));
+    expect(logFilePath({ ...env, LOG_FILE: " false " })).toBeUndefined();
+    expect(logFilePath({ ...env, LOG_FILE: "maybe" })).toBeUndefined(); // loadConfig reports it
   });
 });
 

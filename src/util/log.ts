@@ -8,7 +8,8 @@
  *
  * All context objects and messages pass through {@link redact} before being
  * serialised, so tokens, `Authorization` headers, OAuth codes, cookies,
- * secrets, and account identifiers (email/UPN) can never reach the log output.
+ * secrets, and account identifiers (email/UPN, and email addresses anywhere in
+ * free text) can never reach the log output.
  */
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -65,13 +66,17 @@ const BEARER_RE = /(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi;
 const JWT_RE = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 const QUERY_SECRET_RE =
   /([?&](?:access_token|refresh_token|id_token|code|client_secret|code_verifier|state)=)[^&\s"']+/gi;
+// Email addresses inside free text, such as Graph's error messages ("Mailbox
+// someone@outlook.com …"): account identifiers, which the log file would keep (#178).
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 
-/** Redact secret-looking substrings from a free-text string. */
+/** Redact secret-looking substrings, and email addresses, from a free-text string. */
 export function redactString(input: string): string {
   return input
     .replace(BEARER_RE, `$1${REDACTED}`)
     .replace(QUERY_SECRET_RE, `$1${REDACTED}`)
-    .replace(JWT_RE, "[REDACTED_JWT]");
+    .replace(JWT_RE, "[REDACTED_JWT]")
+    .replace(EMAIL_RE, "[REDACTED_EMAIL]");
 }
 
 /**

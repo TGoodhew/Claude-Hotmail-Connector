@@ -221,6 +221,22 @@ function parseScopes(raw: string | undefined, allowSend: boolean): string[] {
 }
 
 /**
+ * The log file's path if `LOG_FILE` is on, else undefined (#178). Separate from
+ * {@link loadConfig} so the file can be set up before the rest of the
+ * configuration is checked, and a configuration error reaches it too. An
+ * unreadable `LOG_FILE` counts as off here; loadConfig reports it.
+ */
+export function logFilePath(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  let on: boolean;
+  try {
+    on = parseSwitch("LOG_FILE", env.LOG_FILE?.trim());
+  } catch {
+    on = false;
+  }
+  return on ? join(resolveCacheDir(env), LOG_FILE_NAME) : undefined;
+}
+
+/**
  * Build a validated {@link AppConfig} from an environment object.
  * Throws {@link ConfigError} with a friendly, aggregated message on failure,
  * including when no client id is configured.
@@ -237,7 +253,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const e = parsed.data;
   const cacheDir = resolveCacheDir(env);
   const allowSendMail = parseSwitch("ALLOW_SEND_MAIL", e.ALLOW_SEND_MAIL);
-  const logToFile = parseSwitch("LOG_FILE", e.LOG_FILE);
+  parseSwitch("LOG_FILE", e.LOG_FILE); // a typo stops the server, as for the other switches
   const clientId = e.MICROSOFT_CLIENT_ID;
   if (!clientId) throw new ConfigError(MISSING_CLIENT_ID_MESSAGE);
   // Checked here so a typo fails at startup, not on every calendar call.
@@ -260,7 +276,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     cacheDir,
     tokenCacheFile: join(cacheDir, "token-cache.enc"),
     logLevel: e.LOG_LEVEL,
-    logFile: logToFile ? join(cacheDir, LOG_FILE_NAME) : undefined,
+    logFile: logFilePath(env),
   };
 }
 

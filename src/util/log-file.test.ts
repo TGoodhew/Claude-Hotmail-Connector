@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -67,12 +76,53 @@ describe("createLogFileSink (#178)", () => {
 
   it("warns once and stops if the file can't be written", () => {
     const warn = vi.fn();
-    // A directory where the file should be: appends fail.
+    // A directory where the file should be: appends fail (on Windows possibly
+    // as a "transient" EPERM, which is given up on after a run of them).
     const sink = createLogFileSink(dir, { warn });
-    sink("a");
-    sink("b");
+    for (let i = 0; i < 60; i++) sink(`line ${i}`);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]![0]).toMatch(/can't write the log file/);
+  });
+
+  it("warns once and stops if a cut fails, without passing the cap", () => {
+    const path = join(dir, "connector.log");
+    writeFileSync(path, "old line\n".repeat(20)); // 180 bytes, over the cap below
+    // A directory where the cut writes its temporary file: the cut fails.
+    mkdirSync(`${path}.${process.pid}.tmp`);
+    const warn = vi.fn();
+    const sink = createLogFileSink(path, { maxBytes: 100, warn });
+    for (let i = 0; i < 60; i++) sink(`line ${i}`);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(readFileSync(path, "utf8")).toBe("old line\n".repeat(20)); // nothing appended
+  });
+
+  it("drops a line while another process holds the lock, and leaves its lock alone", () => {
+    const path = join(dir, "connector.log");
+    writeFileSync(`${path}.lock`, "");
+    createLogFileSink(path, { now: at })("dropped");
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(`${path}.lock`)).toBe(true);
+  });
+
+  it("breaks a stale lock left by a process that stopped mid-write", () => {
+    const path = join(dir, "connector.log");
+    writeFileSync(`${path}.lock`, "");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${path}.lock`, old, old);
+    createLogFileSink(path, { now: at })("written");
+    expect(lines(path)[0]).toMatch(/ written$/);
+    expect(existsSync(`${path}.lock`)).toBe(false);
+  });
+
+  it("keeps the cap with two writers sharing the file", () => {
+    const path = join(dir, "connector.log");
+    const a = createLogFileSink(path, { maxBytes: 1000, now: at });
+    const b = createLogFileSink(path, { maxBytes: 1000, now: at });
+    for (let i = 0; i < 100; i++) {
+      (i % 2 ? a : b)(`writer ${i % 2 ? "a" : "b"} ${i}`);
+      expect(statSync(path).size).toBeLessThanOrEqual(1000);
+    }
+    expect(lines(path).at(-1)).toMatch(/writer a 99$/);
   });
 });
 
@@ -91,6 +141,25 @@ describe("the logger with a log file (#178)", () => {
     expect(line).toContain('"msg":"hello"');
     expect(line).toContain(REDACTED);
     expect(line).not.toContain("leak-me");
+  });
+
+  it("keeps email addresses out of the file, even inside error text", () => {
+    const path = join(dir, "connector.log");
+    setLogFileSink(createLogFileSink(path, { now: at }));
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      createLogger({ name: "mcp" }).error("Tool handler failed for tony@hotmail.com", {
+        tool: "get_message",
+        error: "Mailbox tony@hotmail.com item could not be found",
+        account: "tony@hotmail.com",
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+    const text = readFileSync(path, "utf8");
+    expect(text).toContain("Tool handler failed");
+    expect(text).not.toContain("tony@hotmail.com");
+    expect(text).toContain("[REDACTED_EMAIL]");
   });
 
   it("writes nothing when the log file is off", () => {

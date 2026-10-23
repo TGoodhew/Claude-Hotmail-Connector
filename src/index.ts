@@ -23,7 +23,7 @@ import { createFileCoordinator } from "./auth/coordination.js";
 import { createMicrosoftAuth, launcherSucceeded } from "./auth/microsoft.js";
 import { defaultKeyProtector } from "./auth/protect.js";
 import { createFileTokenStore } from "./auth/tokens.js";
-import { getConfig } from "./config.js";
+import { getConfig, logFilePath } from "./config.js";
 import { createGraphClient } from "./graph/client.js";
 import { whoami } from "./graph/user.js";
 import { parseCommand, USAGE } from "./cli.js";
@@ -54,11 +54,13 @@ async function run(): Promise<void> {
   }
   const command = parsed.kind;
   const log = createLogger({ name: "startup" });
-  const config = getConfig();
   // Claude Desktop doesn't keep stderr, so a log file can be turned on (#178).
-  if (config.logFile) setLogFileSink(createLogFileSink(config.logFile));
+  // Set up before the rest of the configuration is checked, so its errors reach the file.
+  const logFile = logFilePath();
+  if (logFile) setLogFileSink(createLogFileSink(logFile));
   // To the file only: at a terminal, `whoami` shouldn't print a log line first.
   fileOnlyLog.info("Starting.", { version: SERVER_VERSION, command });
+  const config = getConfig();
   const store = createFileTokenStore(config.tokenCacheFile, { protector: defaultKeyProtector() });
   const auth = createMicrosoftAuth({
     config,

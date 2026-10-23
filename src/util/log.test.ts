@@ -32,6 +32,12 @@ describe("redact", () => {
     expect(redactString(`token=${jwt}`)).not.toContain("s1gnatureVALUE");
   });
 
+  it("scrubs email addresses embedded in free text (#178)", () => {
+    const out = redactString("Mailbox Tony.G+x@sub.hotmail.co.uk not found; ask a@b.io");
+    expect(out).toBe("Mailbox [REDACTED_EMAIL] not found; ask [REDACTED_EMAIL]");
+    expect(redactString("version 1.2.3 at 10:00 @here")).toBe("version 1.2.3 at 10:00 @here");
+  });
+
   it("scrubs secrets embedded in URL query strings", () => {
     const url = "https://host/callback?code=SECRETCODE&state=STATEVAL";
     const out = redactString(url);
