@@ -28,6 +28,7 @@ import { createGraphClient } from "./graph/client.js";
 import { whoami } from "./graph/user.js";
 import { parseCommand, USAGE } from "./cli.js";
 import { createMcpServer, SERVER_VERSION } from "./mcp.js";
+import { SignInRequiredError } from "./util/errors.js";
 import { createLogger } from "./util/log.js";
 
 /** How long a tool call waits for an on-demand browser sign-in before asking the user to retry. */
@@ -116,7 +117,12 @@ async function run(): Promise<void> {
 }
 
 run().catch((err: unknown) => {
-  // Startup failures go to stderr; stdout stays clean.
+  // Startup failures go to stderr; stdout stays clean. A sign-in message is an
+  // instruction to the user, not a crash, so it goes out as it is (#161).
+  if (err instanceof SignInRequiredError) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  }
   process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
 });

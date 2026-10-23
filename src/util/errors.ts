@@ -60,6 +60,19 @@ export class NoCurrentTokenError extends AuthError {
 export class SignInRequiredError extends AuthError {}
 
 /**
+ * The Microsoft token endpoint refused a request. `oauthError` is its short
+ * OAuth error code (e.g. `invalid_grant`); its description is never kept.
+ */
+export class TokenEndpointError extends AuthError {
+  constructor(
+    readonly status: number,
+    readonly oauthError: string,
+  ) {
+    super(`Microsoft token endpoint returned ${status}: ${oauthError}`);
+  }
+}
+
+/**
  * The user signed out while this request (a sign-in, refresh or tool call) was
  * in progress. It must stop: no fallback sign-in, nothing saved.
  */

@@ -10,6 +10,7 @@ import {
   NoCurrentTokenError,
   SignedOutError,
   SignInRequiredError,
+  TokenEndpointError,
 } from "../util/errors.js";
 import {
   buildAuthorizeUrl,
@@ -19,6 +20,7 @@ import {
   decodeIdTokenUsername,
   generatePkce,
   launcherSucceeded,
+  SAVED_SIGN_IN_REFUSED,
   SIGN_IN_RETRY_COOLDOWN_MS,
   toTokenSet,
   type TokenResponse,
@@ -336,6 +338,37 @@ describe("createMicrosoftAuth.getAccessToken", () => {
       now: () => 1_000,
     });
     await expect(auth.getAccessToken({ interactive: false })).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it("says the saved sign-in was refused, and how to fix it, on invalid_grant (#161)", async () => {
+    const auth = createMicrosoftAuth({
+      config,
+      store: memoryStore({ ...validCached, expiresAt: 1_500 }),
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ error: "invalid_grant", error_description: "AADSTS70000: detail" }, 400),
+      ) as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    const e = (await auth.getAccessToken({ interactive: false }).catch((x: unknown) => x)) as Error;
+    expect(e).toBeInstanceOf(SignInRequiredError);
+    expect(e.message).toBe(SAVED_SIGN_IN_REFUSED);
+    expect(e.message).toContain("different app registration (client ID)");
+    expect(e.message).not.toContain("AADSTS");
+    // Other token-endpoint failures stay plain auth errors, with only the short code.
+    const other = createMicrosoftAuth({
+      config,
+      store: memoryStore({ ...validCached, expiresAt: 1_500 }),
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({ error: "temporarily_unavailable" }, 400),
+      ) as unknown as typeof fetch,
+      now: () => 1_000,
+    });
+    const o = (await other
+      .getAccessToken({ interactive: false })
+      .catch((x: unknown) => x)) as Error;
+    expect(o).toBeInstanceOf(TokenEndpointError);
+    expect(o).not.toBeInstanceOf(SignInRequiredError);
+    expect(o.message).toBe("Microsoft token endpoint returned 400: temporarily_unavailable");
   });
 
   it("throws when not signed in and interactive=false", async () => {

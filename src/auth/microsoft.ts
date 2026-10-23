@@ -25,6 +25,7 @@ import {
   LOGIN_HINT,
   SignedOutError,
   SignInRequiredError,
+  TokenEndpointError,
 } from "../util/errors.js";
 import { createLogger, type Logger } from "../util/log.js";
 import {
@@ -43,6 +44,14 @@ const AUTH_TIMEOUT_MS = 5 * 60_000;
  * window for this long, so automatic model retries can't loop on the user.
  */
 export const SIGN_IN_RETRY_COOLDOWN_MS = 30_000;
+
+/** When Microsoft refuses the saved sign-in (`invalid_grant`) and no browser sign-in may open (#161). */
+export const SAVED_SIGN_IN_REFUSED =
+  "Microsoft refused the saved sign-in: it has expired or been revoked, or it was made with a " +
+  "different app registration (client ID). Sign in again: ask Claude to try again, or run " +
+  "`node dist/index.js login` from a source checkout. If you use the connector in more than one " +
+  "place (e.g. Claude Desktop and a source checkout), give them the same client ID: they share " +
+  "the saved sign-in.";
 
 // ── PKCE ─────────────────────────────────────────────────────────────────────
 
@@ -295,9 +304,7 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
       const err = json as { error?: string; error_description?: string } | undefined;
       // Deliberately surface only the short error code, never error_description
       // (verbose upstream detail we don't want echoed into the thrown message).
-      throw new AuthError(
-        `Microsoft token endpoint returned ${res.status}: ${err?.error ?? "unknown_error"}`,
-      );
+      throw new TokenEndpointError(res.status, err?.error ?? "unknown_error");
     }
     const parsed = TokenResponseSchema.safeParse(json);
     if (!parsed.success) {
@@ -900,7 +907,14 @@ export function createMicrosoftAuth(deps: MicrosoftAuthDeps): MicrosoftAuth {
             if (saved) return held(saved);
           }
           log.warn("Silent token refresh failed", { error: (e as Error).message });
-          if (!interactive) throw e instanceof AuthError ? e : new AuthError("Refresh failed.", e);
+          if (!interactive) {
+            // Microsoft refused the saved sign-in itself: say so, and how to fix
+            // it, rather than surface the bare OAuth code (#161).
+            if (e instanceof TokenEndpointError && e.oauthError === "invalid_grant") {
+              throw new SignInRequiredError(SAVED_SIGN_IN_REFUSED, e);
+            }
+            throw e instanceof AuthError ? e : new AuthError("Refresh failed.", e);
+          }
         }
       }
       ensureNotSignedOut();
