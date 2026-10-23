@@ -129,11 +129,12 @@ describe("osLockName (Copilot review on #126)", () => {
     expect(() => assertOsLockSupported("darwin", "20.0.0")).not.toThrow(); // the lock file
   });
 
-  it("is what package.json requires, so every process picks the same lock", () => {
+  it("is covered by what package.json requires, so every process picks the same lock", () => {
     const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
       engines: { node: string };
     };
-    expect(pkg.engines.node).toBe(">=20.8");
+    // The minimum (22.12 since #148) is above the 20.8 the Linux lock needs.
+    expect(pkg.engines.node).toBe(">=22.12");
   });
 });
 
