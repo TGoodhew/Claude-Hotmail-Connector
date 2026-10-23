@@ -8,7 +8,7 @@ Claude's official Microsoft 365 connector only supports work/school (Microsoft E
 rejects personal Microsoft accounts. This project fills that gap as a **personal, single-user tool**
 that runs entirely on your own machine.
 
-> **Status:** v0.2.0 ships as a **Claude Desktop extension (`.mcpb`)** for Windows, macOS and Linux
+> **Status:** since v0.2.0 the connector ships as a **Claude Desktop extension (`.mcpb`)** for Windows, macOS and Linux
 > (only Windows has been tested by hand so far). What changed is in the [changelog](CHANGELOG.md),
 > the requirements are in [spec v2](docs/personal-outlook-mcp-connector-requirements.md), and future
 > work is collected in [#150](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/150).
