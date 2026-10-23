@@ -27,6 +27,7 @@ import { mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from "no
 import { createServer, type Server } from "node:net";
 import { join, resolve } from "node:path";
 import { AuthError } from "../util/errors.js";
+import { isErrno, isTransientFsError, retrying } from "../util/fs-retry.js";
 
 export interface SharedAuthState {
   signOuts: number;
@@ -156,30 +157,6 @@ const REAP_FILE = "auth.lock.reap";
 /** A reaper holds its guard for milliseconds; an id-less one this old was left by a crash. */
 const REAP_STALE_MS = 5_000;
 
-function isErrno(e: unknown, code: string): boolean {
-  return typeof e === "object" && e !== null && (e as NodeJS.ErrnoException).code === code;
-}
-
-/**
- * Windows refuses to open, rename or delete a file for a moment while another
- * process is replacing or deleting it (EPERM / EACCES / EBUSY): try again.
- */
-function isTransient(e: unknown): boolean {
-  return isErrno(e, "EPERM") || isErrno(e, "EACCES") || isErrno(e, "EBUSY");
-}
-
-/** Run `op`, retrying it briefly while it fails transiently (see {@link isTransient}). */
-async function retrying<T>(op: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await op();
-    } catch (e) {
-      if (!isTransient(e) || attempt >= 50) throw e;
-      await new Promise((r) => setTimeout(r, 10));
-    }
-  }
-}
-
 /** Whether a process with this id is running (EPERM: it is, but isn't ours to signal). */
 function isRunning(pid: number): boolean {
   try {
@@ -203,7 +180,7 @@ async function inspect(path: string): Promise<Holder | null | "busy"> {
     return { content: await readFile(path, "utf8"), mtimeMs };
   } catch (e) {
     if (isErrno(e, "ENOENT")) return null;
-    if (isTransient(e)) return "busy";
+    if (isTransientFsError(e)) return "busy";
     throw e;
   }
 }
@@ -226,7 +203,7 @@ async function publish(path: string, content: string): Promise<boolean> {
     }
   } catch (e) {
     // Held, or (Windows) still being replaced or deleted: either way, not ours.
-    if (isErrno(e, "EEXIST") || isTransient(e)) return false;
+    if (isErrno(e, "EEXIST") || isTransientFsError(e)) return false;
     throw e;
   }
   try {

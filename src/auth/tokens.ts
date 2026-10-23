@@ -21,6 +21,7 @@ import { chmod, link, mkdir, readFile, rename, stat, unlink, writeFile } from "n
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { AuthError } from "../util/errors.js";
+import { retrying } from "../util/fs-retry.js";
 import { createLogger, type Logger } from "../util/log.js";
 import type { KeyProtector } from "./protect.js";
 
@@ -196,7 +197,7 @@ export function createFileTokenStore(
   async function readKey(upgrade: boolean): Promise<KeyRead> {
     let raw: string;
     try {
-      raw = (await readFile(resolvedKeyFile, "utf8")).trim();
+      raw = (await retrying(() => readFile(resolvedKeyFile, "utf8"))).trim();
     } catch (e) {
       if (isErrnoException(e) && e.code === "ENOENT") return { status: "absent" };
       throw e;
@@ -233,7 +234,7 @@ export function createFileTokenStore(
   /** Identity of the key file on disk; changes whenever any process replaces it. */
   async function keyFileSignature(): Promise<string | null> {
     try {
-      const st = await stat(resolvedKeyFile);
+      const st = await retrying(() => stat(resolvedKeyFile));
       return `${st.ino}:${st.size}:${st.mtimeMs}`;
     } catch (e) {
       if (isErrnoException(e) && e.code === "ENOENT") return null;
@@ -323,7 +324,15 @@ export function createFileTokenStore(
     const tmp = `${path}.tmp-${randomBytes(6).toString("hex")}`;
     await writeFile(tmp, contents, { mode: 0o600 });
     await bestEffortChmod(tmp, 0o600);
-    await rename(tmp, path); // atomic replace (POSIX and Windows via MoveFileEx)
+    try {
+      // Atomic replace (POSIX, and Windows via MoveFileEx). On Windows it fails
+      // for a moment while another process has `path` open, hence the retries
+      // (#142).
+      await retrying(() => rename(tmp, path));
+    } catch (e) {
+      await unlink(tmp).catch(() => undefined);
+      throw e;
+    }
   }
 
   /** Create `path` only if it doesn't exist, atomically. Returns false if it already exists. */
@@ -332,7 +341,10 @@ export function createFileTokenStore(
     await writeFile(tmp, contents, { mode: 0o600 });
     await bestEffortChmod(tmp, 0o600);
     try {
-      await link(tmp, path); // fails with EEXIST if another process published first
+      // Fails with EEXIST if another process published first. EPERM can also be
+      // Windows' brief sharing violation, so that's retried before it's taken to
+      // mean hard links aren't supported here.
+      await retrying(() => link(tmp, path));
       return true;
     } catch (e) {
       if (isErrnoException(e) && e.code === "EEXIST") return false;
@@ -360,7 +372,7 @@ export function createFileTokenStore(
       for (let attempt = 0; ; attempt++) {
         let raw: string;
         try {
-          raw = await readFile(tokenCacheFile, "utf8");
+          raw = await retrying(() => readFile(tokenCacheFile, "utf8"));
         } catch (e) {
           if (isErrnoException(e) && e.code === "ENOENT") return null;
           throw e;
@@ -397,7 +409,7 @@ export function createFileTokenStore(
       const files = options.includeKey ? [tokenCacheFile, resolvedKeyFile] : [tokenCacheFile];
       for (const path of files) {
         try {
-          await unlink(path);
+          await retrying(() => unlink(path));
         } catch (e) {
           if (isErrnoException(e) && e.code !== "ENOENT") throw e;
         }
