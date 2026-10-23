@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
+import { GraphError, SignedOutError, TimeoutError, ValidationError } from "../util/errors.js";
 import {
   buildUrl,
   createGraphClient,
@@ -454,6 +454,43 @@ describe("createGraphClient", () => {
     const e = await pending;
     expect((e as GraphError).reason).toBe("cancelled");
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("catches up with sign-outs elsewhere just before a send-once request (#143)", async () => {
+    // An auth whose memory knows only this process's sign-outs, until it syncs.
+    let epoch = 0;
+    let signedOutElsewhere = false;
+    const auth = {
+      signOutEpoch: () => epoch,
+      syncSignOuts: vi.fn(async () => {
+        if (signedOutElsewhere) epoch += 1; // what observe() does on a remote sign-out
+        return epoch;
+      }),
+      getAccessToken: vi.fn<AuthFn>(async (o) => {
+        if (o?.signOutEpoch !== undefined && o.signOutEpoch !== epoch) {
+          throw new SignedOutError();
+        }
+        return "AT";
+      }),
+    };
+    const fetchImpl = fetchMock(async () => new Response(null, { status: 204 }));
+    const client = createGraphClient({ auth, baseUrl: BASE, fetchImpl: fetchImpl as never });
+    const op = scopeToOperation(client, { signOutEpoch: 0 }); // as a tool call scopes it
+    // Nothing changed elsewhere: the DELETE goes.
+    await op.delete("/me/events/e1", { sendOnce: true });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    // A sign-out elsewhere during the guard read: no DELETE is sent.
+    signedOutElsewhere = true;
+    await expect(op.delete("/me/events/e1", { sendOnce: true })).rejects.toBeInstanceOf(
+      SignedOutError,
+    );
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    // Ordinary requests don't pay for the extra read.
+    auth.syncSignOuts.mockClear();
+    epoch = 0;
+    signedOutElsewhere = false;
+    await op.get("/me");
+    expect(auth.syncSignOuts).not.toHaveBeenCalled();
   });
 
   it("keeps Graph's Retry-After on the error, for a caller that retries itself (#137)", async () => {

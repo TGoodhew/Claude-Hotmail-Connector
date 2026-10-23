@@ -407,6 +407,16 @@ export function createGraphClient(deps: GraphClientDeps): GraphClient {
       if (!(await waitToRetry(opts.waitBeforeMs))) throw outOfTime();
     }
 
+    // A send-once request follows its caller's own checks (cancel_event's guard
+    // read), and its token comes from memory, which only knows this process's
+    // sign-outs. So catch up with other processes once more just before it goes:
+    // a sign-out elsewhere during those checks then stops it (#143). The read is
+    // the small shared-state file, not the token cache, so the gap stays short.
+    if (opts.sendOnce && opts.signOutEpoch !== undefined && deps.auth.syncSignOuts) {
+      ensureStillWanted();
+      await withinLimits(deps.auth.syncSignOuts(), opts.signal, remainingMs());
+    }
+
     for (;;) {
       ensureStillWanted();
       // The token lookup can refresh or wait for a browser sign-in. This call

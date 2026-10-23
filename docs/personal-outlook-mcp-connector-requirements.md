@@ -427,9 +427,9 @@ Approved by the owner with guards (#55).
     it (`sendOnce`). It goes out with the access token already in hand, held in memory, so no token-cache
     read (whose key unwrap can take seconds), refresh or sign-in can come after the checks. Without a current token it isn't sent, and `cancel_event` starts over: the
     re-read gets a token, then the guards run again.
-    Known limit: a sign-out in *another* process that completes while that re-read is in flight isn't seen
-    before the DELETE, which belongs to a request made before it. A sign-out in this process is seen
-    at once. Tracked in #143.
+    Just before the DELETE, the shared sign-out count is read once more (the small state file, not the
+    token cache), so a sign-out in *another* process during the re-read stops it too *(#143)*. A
+    sign-out in this process is seen at once.
   - After a transient failure (throttling, a 5xx, a timeout, a 401), `cancel_event` starts over: it
     re-reads the event, re-runs every guard, then sends one DELETE. It makes at most 3 attempts. Between
     attempts it waits as long as Graph asks (`Retry-After`), and at least 1 s, then 2 s.
