@@ -166,8 +166,10 @@ The connector signs in as a **public/native client**. No client secret is ever u
 >
 > **Upgrading from the v0.1.0 Windows installer:**
 >
-> 1. Uninstall **Claude Hotmail Connector** from Windows **Settings → Apps**. That removes its Claude
->    Desktop entry; keeping both would show every tool twice.
+> 1. Uninstall **Claude Hotmail Connector** from Windows **Settings → Apps**. Keeping both would show
+>    every tool twice. If Claude Desktop has moved its data folder since v0.1.0 was installed, the
+>    uninstaller misses the entry Claude Desktop now reads, so check for it as described in
+>    [Finding Claude Desktop's config file](#finding-claude-desktops-config-file).
 > 2. Install the extension with **your own** client ID, then sign in again. v0.1.0's shared
 >    registration has been deleted, so v0.1.0 can no longer sign in
 >    ([#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)).
@@ -217,8 +219,10 @@ client ID:
 ```
 
 (Claude Desktop can also run a source checkout through `claude_desktop_config.json`, see
-[`examples/claude_desktop_config.example.json`](examples/claude_desktop_config.example.json). The
-extension is simpler.)
+[`examples/claude_desktop_config.example.json`](examples/claude_desktop_config.example.json). Current
+Microsoft Store builds read that file from `%LOCALAPPDATA%\Claude-Data\<Claude package>`, not
+`%APPDATA%\Claude`; [Finding Claude Desktop's config file](#finding-claude-desktops-config-file)
+shows which one yours reads. The extension is simpler.)
 
 You don't need to sign in first: the first tool call opens the Microsoft sign-in in your browser. From
 a source checkout you can also sign in, check or reset explicitly (with `MICROSOFT_CLIENT_ID` set, e.g.
@@ -277,7 +281,9 @@ More things to ask:
   `$XDG_STATE_HOME/claude-hotmail-connector` if that's set, else `~/.claude-hotmail-connector`).
   Claude for Windows is a Microsoft Store (MSIX) app, so Windows keeps the extension's copy in a
   private folder for Claude:
-  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector`. The
+  `%LOCALAPPDATA%\Packages\<Claude package>\LocalCache\Local\claude-hotmail-connector`, where
+  `<Claude package>` is `Claude_pzs8sxrjxfjjc` (or `AnthropicPBC.Claude_fnn82j28hfe8t`). That's still
+  the case now that Claude Desktop keeps its own data in `%LOCALAPPDATA%\Claude-Data`. The
   extension and a source checkout therefore sign in separately, and `logout` doesn't sign Claude
   Desktop out; ask Claude to sign out (`sign_out`) for that
   ([#176](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/176)).
@@ -311,9 +317,9 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
 - **Seeing what the connector did:** Claude Desktop doesn't keep the extension's logs, so turn on
   **Write a log file** under **Settings → Extensions → Hotmail Connector**, then restart Claude Desktop
   fully (Quit from the tray icon). The log is `connector.log` in
-  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector` (the
-  folder Windows gives Claude Desktop, [#176](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/176)),
-  or in `%LOCALAPPDATA%\claude-hotmail-connector` from a source checkout with `LOG_FILE=true`. Each
+  `%LOCALAPPDATA%\Packages\<Claude package>\LocalCache\Local\claude-hotmail-connector` (the
+  folder Windows gives Claude Desktop, see [Security](#security) and
+  [#176](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/176)), or in `%LOCALAPPDATA%\claude-hotmail-connector` from a source checkout with `LOG_FILE=true`. Each
   line starts with the time (UTC) and the process id. It never grows past 2 MB: when it would, the
   older half is dropped. Signing out leaves it in place; delete it by hand if you like. Set
   `LOG_LEVEL=debug` in a source checkout for more detail.
@@ -354,11 +360,49 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
   guards still apply (see [Tools](#tools)).
 - **`find_free_time` shows part of an all-day busy day as free:** fixed in v0.2.1
   ([#158](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/158)); update the extension.
-- **Every tool appears twice:** you have both the extension and an older installer/manual config
-  entry. Uninstall the v0.1.0 installer, or remove the `hotmail-connector` entry from
-  `claude_desktop_config.json`.
+- **Every tool appears twice:** you have both the extension and a `hotmail-connector` entry in
+  Claude Desktop's config, from the v0.1.0 installer or one you added by hand. Uninstalling v0.1.0
+  isn't always enough: when Claude Desktop moves its data to `%LOCALAPPDATA%\Claude-Data`, it takes a
+  copy of the config with it, and the v0.1.0 uninstaller only cleans the old copy. Remove
+  `hotmail-connector` from the file Claude Desktop reads (see
+  [Finding Claude Desktop's config file](#finding-claude-desktops-config-file)). If Claude Desktop
+  also shows an error about a missing `hotmail-connector.exe`, this is the cause too.
 - **`npm install` times out or hangs (dead IPv6 route):** force IPv4:
   `NODE_OPTIONS="--dns-result-order=ipv4first --no-network-family-autoselection" npm install`.
+
+### Finding Claude Desktop's config file
+
+The extension doesn't use `claude_desktop_config.json`, but a v0.1.0 install or a source checkout run
+by Claude Desktop does. Current Microsoft Store builds of Claude Desktop move their data from
+`%LOCALAPPDATA%\Packages\<Claude package>\LocalCache\Roaming\Claude` to
+`%LOCALAPPDATA%\Claude-Data\<Claude package, lower case>` and read the config only from there. The
+old copy stays behind, unread, so changing it has no effect. Builds not from the Store use
+`%APPDATA%\Claude`.
+
+To see which file yours reads, and which ones hold a `hotmail-connector` entry, run this in
+PowerShell:
+
+```powershell
+$la = $env:LOCALAPPDATA
+$cmd = (Get-CimInstance Win32_Process -Filter "Name='Claude.exe'").CommandLine -match '--user-data-dir=' | Select-Object -First 1
+$running = if ($cmd -match '--user-data-dir=(?:"([^"]+)"|(\S+))') { $Matches[1] + $Matches[2] }
+$moved = @(); $notMoved = @()
+foreach ($n in (Get-AppxPackage | Where-Object Name -in 'Claude', 'AnthropicPBC.Claude').PackageFamilyName) {
+  $new = "$la\Claude-Data\$($n.ToLower())"; $old = "$la\Packages\$n\LocalCache\Roaming\Claude"
+  if ((Test-Path $new) -or (Test-Path "$old\.user-data-left.$($n.ToLower())")) { $moved += $new } else { $notMoved += $old }
+}
+$reads = @($running) + $moved + $notMoved + "$env:APPDATA\Claude" | Where-Object { $_ } | Select-Object -First 1
+"Claude Desktop reads: $reads\claude_desktop_config.json"
+$all = @(Get-ChildItem "$la\Claude-Data", "$la\Packages\*\LocalCache\Roaming\Claude", "$env:APPDATA\Claude" -Filter claude_desktop_config.json -Recurse -Depth 1 -ErrorAction SilentlyContinue)
+foreach ($f in $all) {
+  if ((Get-Content $f.FullName -Raw | ConvertFrom-Json).mcpServers.'hotmail-connector') { "hotmail-connector entry: $($f.FullName)" }
+}
+```
+
+Only the entry in the file Claude Desktop reads matters. One left in an old copy is harmless.
+
+Claude Desktop rewrites the file while it runs, so quit it fully first (**Quit** from the tray icon),
+then edit the file and start Claude Desktop again.
 
 ## Development
 
