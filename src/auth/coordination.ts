@@ -118,7 +118,7 @@ export function osLockName(
  * on Linux abstract sockets. Falling back to the lock file there would let it
  * and a newer process sharing the cache take different locks and overlap, so
  * it stops with an error instead (Copilot review on #126). `engines` now
- * requires 22.18 anyway (#148, #188); the check stays for anyone running below it.
+ * requires 22.18 (24.11 on Node 24) anyway (#148, #188); the check stays for anyone running below it.
  */
 export function assertOsLockSupported(
   platform: NodeJS.Platform = process.platform,

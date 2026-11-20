@@ -133,8 +133,8 @@ describe("osLockName (Copilot review on #126)", () => {
     const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
       engines: { node: string };
     };
-    // The minimum (22.18 since #188) is above the 20.8 the Linux lock needs.
-    expect(pkg.engines.node).toBe(">=22.18");
+    // The minimum (22.18, or 24.11 on Node 24, since #188) is above the 20.8 the Linux lock needs.
+    expect(pkg.engines.node).toBe("^22.18.0 || ^24.11.0 || >=26.0.0");
   });
 });
 
