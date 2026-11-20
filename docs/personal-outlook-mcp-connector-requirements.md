@@ -606,7 +606,9 @@ signed in to that tenant. Registration settings:
   `$XDG_STATE_HOME/claude-hotmail-connector` if set, else `~/.claude-hotmail-connector`,
   overridable with `CLAUDE_HOTMAIL_CACHE_DIR`. Claude for Windows is an MSIX package, so Windows
   redirects the extension's copy to
-  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector`. The
+  `%LOCALAPPDATA%\Packages\<Claude package>\LocalCache\Local\claude-hotmail-connector`
+  (`Claude_pzs8sxrjxfjjc` or `AnthropicPBC.Claude_fnn82j28hfe8t`). Claude Desktop moving its own data
+  to `%LOCALAPPDATA%\Claude-Data` doesn't change this (#196). The
   extension and a source checkout keep separate sign-ins, and each signs out on its own: `sign_out`
   in Claude Desktop, `logout` from the checkout (§16, #176).
 - Tokens are never logged, returned to the client, or committed. Users MUST have a way to sign out and
@@ -804,7 +806,8 @@ Claude-Hotmail-Connector/
   planned; PRs welcome.
 - **Retired:** the v0.1.0 Node SEA exe, the Inno Setup installer and the `setup` / `unsetup` commands
   that edited `claude_desktop_config.json`. Users upgrading must uninstall v0.1.0 first, or every tool
-  shows twice.
+  shows twice. Where Claude Desktop has since moved its data to `%LOCALAPPDATA%\Claude-Data`, the copy
+  of the entry there survives the uninstall; the README says how to find and remove it (#197).
 - **CI/release:** CI MUST run on Windows as well as Linux, the release job MUST run the full checks, and
   the version MUST have a single source *(#46)*.
 

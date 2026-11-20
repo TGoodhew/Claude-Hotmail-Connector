@@ -60,9 +60,12 @@ again, enter the same one. What changed is in the [changelog](../CHANGELOG.md).
 
 ### Upgrading from v0.1.0 (Windows installer)
 
-1. Uninstall the old **Claude Hotmail Connector** from Windows **Settings → Apps**. Its uninstaller
-   also removes its entry from Claude Desktop's config. Leaving both would run two servers and show
-   every tool twice.
+1. Uninstall the old **Claude Hotmail Connector** from Windows **Settings → Apps**. Leaving both
+   would run two servers and show every tool twice. Its uninstaller removes its entry from Claude
+   Desktop's config only in the places v0.1.0 knew about. Current Store builds of Claude Desktop
+   move their data, config included, to `%LOCALAPPDATA%\Claude-Data\<Claude package>` and read it
+   only from there, so the copied entry stays. Remove it as described in the README's
+   [Finding Claude Desktop's config file](../README.md#finding-claude-desktops-config-file).
 2. Install the `.mcpb` as above, with **your own** client ID. v0.1.0's shared registration has been
    deleted, so v0.1.0 can no longer sign in
    ([#68](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/68)).
@@ -102,9 +105,14 @@ Inspect a bundle with `npx mcpb info build/hotmail-connector.mcpb`, or unpack it
 - **Cache location:** the extension asks for `%LOCALAPPDATA%\claude-hotmail-connector` (or
   `~/.claude-hotmail-connector`). Claude for Windows is an MSIX package, though, and Windows redirects
   files a packaged app creates under AppData to a per-package folder:
-  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\claude-hotmail-connector`. So the
-  extension doesn't share its sign-in with a source checkout. `node dist/index.js logout` and deleting
-  the unredirected folder don't sign Claude Desktop out; `sign_out` does. The two still share the
+  `%LOCALAPPDATA%\Packages\<Claude package>\LocalCache\Local\claude-hotmail-connector`, where
+  `<Claude package>` is `Claude_pzs8sxrjxfjjc` or `AnthropicPBC.Claude_fnn82j28hfe8t`. So the
+  extension doesn't share its sign-in with a source checkout. Current builds keep Claude Desktop's own
+  data, including installed extensions (`Claude Extensions`), in
+  `%LOCALAPPDATA%\Claude-Data\<Claude package, lower case>`. Their manifest exempts that folder,
+  `Claude-3p`, `Claude\logs` and one Office add-in folder from the redirection, and nothing else, so
+  the connector's folder is still redirected (checked on 6.6395, #196). `node dist/index.js logout`
+  and deleting the unredirected folder don't sign Claude Desktop out; `sign_out` does. The two still share the
   named-pipe sign-in lock, which is named after the path and isn't redirected (#176).
 - **Log file (#178):** Claude Desktop doesn't keep an extension's stderr, so the **Write a log file**
   setting (`LOG_FILE`) also writes the logs to `connector.log` in the cache folder (on the MSIX build,
