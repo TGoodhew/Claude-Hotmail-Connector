@@ -33,14 +33,16 @@ interface GraphDraft {
 }
 
 /**
- * A draft may have been saved even when no answer came back, or when the
- * answer was a server error: never say "nothing was saved" then. The Graph
- * client doesn't repeat these POSTs (they carry no transactionId), so there's
- * no duplicate draft from a retry.
+ * A draft may have been saved even when no answer came back, when the answer
+ * was a server error, or when a success answer couldn't be read (malformed
+ * JSON, a SyntaxError from the client): never say "nothing was saved" then.
+ * The Graph client doesn't repeat these POSTs (they carry no transactionId),
+ * so there's no duplicate draft from a retry.
  */
 function uncertain(e: unknown): never {
   if (
     e instanceof TimeoutError ||
+    e instanceof SyntaxError ||
     (e instanceof GraphError && (e.status === undefined || [500, 502, 503, 504].includes(e.status)))
   ) {
     throw new ValidationError(
@@ -54,9 +56,10 @@ function uncertain(e: unknown): never {
 const addresses = (list?: GraphAddress[]) =>
   (list ?? []).map((r) => r.emailAddress?.address).filter((a): a is string => !!a);
 
-function saved(d: GraphDraft): SavedDraft {
-  // The draft exists: say so, so it isn't saved again by a retry.
-  if (!d.id) {
+function saved(d: GraphDraft | null | undefined): SavedDraft {
+  // The draft exists: say so, so it isn't saved again by a retry. An empty
+  // success answer is the same.
+  if (typeof d !== "object" || d === null || typeof d.id !== "string" || !d.id) {
     throw new ValidationError(
       "Microsoft saved the draft but didn't say which one it is. Check Drafts in Outlook " +
         "before trying again.",

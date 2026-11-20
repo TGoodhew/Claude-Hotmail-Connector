@@ -11,8 +11,18 @@ const WEB_LINK = "https://outlook.live.com/owa/?ItemID=d1&exvsurl=1";
 /** What create_draft opens: the compose deeplink, which opens the draft for editing. */
 const DRAFT_URL = "https://outlook.live.com/mail/0/deeplink/compose/d1";
 
-/** A Graph client that saves drafts; it can't send, change or delete anything. */
-function graph(reply = false) {
+/** The message a reply answers, as the read-only preflight reads it. */
+const ORIGINAL = {
+  subject: "Your booking",
+  from: { emailAddress: { address: "desk@hotel.example" } },
+  replyTo: [] as unknown[],
+};
+
+/**
+ * A Graph client that saves drafts and reads the message a reply answers; it
+ * can't send, change or delete anything.
+ */
+function graph(reply = false, original: object = ORIGINAL) {
   const post = vi.fn<Post>(async () => ({
     id: "d1",
     subject: reply ? "RE: Your booking" : "Hi",
@@ -25,9 +35,14 @@ function graph(reply = false) {
   const fail = vi.fn(async () => {
     throw new Error("not allowed in these tests");
   });
+  const get = vi.fn(async (path: string) => {
+    if (!path.startsWith("/me/messages/")) throw new Error(`unexpected GET ${path}`);
+    return original;
+  });
   return {
     post,
-    client: { get: fail, post, patch: fail, delete: fail } as unknown as GraphClient,
+    get,
+    client: { get, post, patch: fail, delete: fail } as unknown as GraphClient,
   };
 }
 
@@ -130,6 +145,21 @@ describe("create_draft (#184)", () => {
         createDraftTool.handler(input as never, ctx({ graph: g.client })),
         JSON.stringify(input).slice(0, 80),
       ).rejects.toBeInstanceOf(ValidationError);
+      expect(g.post).not.toHaveBeenCalled();
+    }
+    // A reply inherits its recipients and subject: they keep to the same limits.
+    const crowd = many.map((address) => ({ emailAddress: { address } }));
+    for (const original of [
+      { ...ORIGINAL, replyTo: crowd },
+      { ...ORIGINAL, subject: "s".repeat(252) },
+      { subject: "No sender" },
+    ]) {
+      const g = graph(true, original);
+      await expect(
+        createDraftTool.handler({ replyToMessageId: "m1", body: "b" }, ctx({ graph: g.client })),
+        JSON.stringify(original).slice(0, 80),
+      ).rejects.toBeInstanceOf(ValidationError);
+      expect(g.get).toHaveBeenCalledOnce();
       expect(g.post).not.toHaveBeenCalled();
     }
     // The schema refuses more than 10 on one line, and an empty body.

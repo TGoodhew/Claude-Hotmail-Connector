@@ -126,6 +126,27 @@ describe("createReplyDraft (#184)", () => {
     });
   });
 
+  it("says to check Drafts when a success answer can't be read, or is empty", async () => {
+    // Malformed JSON surfaces from the client as a SyntaxError; an empty body as undefined.
+    for (const answer of [
+      async () => {
+        throw new SyntaxError("Unexpected end of JSON input");
+      },
+      async () => undefined,
+      async () => null,
+    ]) {
+      for (const create of [
+        (g: GraphClient) =>
+          createDraft(g, { to: ["a@example.com"], cc: [], subject: "s", body: "b" }),
+        (g: GraphClient) => createReplyDraft(g, "m", "b"),
+      ]) {
+        const err = await create(graphWith(answer)).catch((x: unknown) => x);
+        expect(err).toBeInstanceOf(ValidationError);
+        expect(clientSafeMessage(err)).toMatch(/Check Drafts in Outlook before trying again/);
+      }
+    }
+  });
+
   it("says to check Drafts when Graph saved one but gave no id, so it isn't saved twice", async () => {
     const g = graphWith(async () => ({ subject: "x" }));
     const err = await createReplyDraft(g, "m", "b").catch((x: unknown) => x);

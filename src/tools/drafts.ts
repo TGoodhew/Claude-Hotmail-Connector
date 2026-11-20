@@ -7,7 +7,13 @@
 
 import { z } from "zod";
 import { createDraft, createReplyDraft, draftUrl, type SavedDraft } from "../graph/drafts.js";
-import { checkNewEmail, checkText, MAX_RECIPIENTS, MAX_SEND_BODY_CHARS } from "../graph/send.js";
+import {
+  checkNewEmail,
+  checkText,
+  MAX_RECIPIENTS,
+  MAX_SEND_BODY_CHARS,
+  prepareReply,
+} from "../graph/send.js";
 import { SignInRequiredError, ValidationError } from "../util/errors.js";
 import { createLogger } from "../util/log.js";
 import {
@@ -163,6 +169,11 @@ export const createDraftTool: ToolDefinition<typeof createDraftShape> = defineTo
           body: input.body,
         });
     await ensureCanDraft(ctx);
+    if (isReply) {
+      // Read-only: the recipients and subject the reply inherits must keep to
+      // the same limits as a new email (spec §7.10), before anything is saved.
+      await prepareReply(ctx.graph, input.replyToMessageId!, input.body);
+    }
     const draft = email
       ? await createDraft(ctx.graph, email)
       : await createReplyDraft(ctx.graph, input.replyToMessageId!, input.body);
