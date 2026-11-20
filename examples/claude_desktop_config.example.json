@@ -1,5 +1,5 @@
 {
-  "//": "Merge this into your claude_desktop_config.json. Edit the args path and client id.",
+  "//": "Merge this into the claude_desktop_config.json Claude Desktop reads: on current Store builds that's in %LOCALAPPDATA%\\Claude-Data\\<Claude package>, otherwise %APPDATA%\\Claude (the README's 'Finding Claude Desktop's config file' shows which). Quit Claude Desktop from the tray first. Edit the args path and client id.",
   "mcpServers": {
     "hotmail-connector": {
       "command": "node",

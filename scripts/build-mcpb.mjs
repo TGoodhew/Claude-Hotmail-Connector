@@ -185,8 +185,8 @@ const manifest = {
         "Save the connector's logs to connector.log, to help diagnose problems. It never holds " +
         "tokens, your email address, or what's in your emails and events, and never grows past " +
         "2 MB. It's in " +
-        "%LOCALAPPDATA%\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Local\\claude-hotmail-connector " +
-        "(see the README).",
+        "Claude's folder under %LOCALAPPDATA%\\Packages, in " +
+        "LocalCache\\Local\\claude-hotmail-connector (see the README).",
       default: false,
       required: false,
     },
