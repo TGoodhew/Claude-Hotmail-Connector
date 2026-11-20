@@ -102,11 +102,11 @@ Claude Desktop / Claude Code ──stdio──▶ this server ──HTTPS──�
 
 - **TypeScript on Node.js.** The MCP ecosystem is TypeScript-first; the reference SDK is
   `@modelcontextprotocol/sdk`.
-- **Runtime: Node.js 24 LTS** for development, CI and release *(#45)*. `engines.node` is `>=22.12`
-  *(#148, owner decision 2026-10-23)*: Node 20 reached end-of-life in April 2026, and vitest 5 needs
-  22.12. The Claude Desktop extension runs on Claude Desktop's own bundled Node (24.22 in Claude
+- **Runtime: Node.js 24 LTS** for development, CI and release *(#45)*. `engines.node` is `>=22.18`
+  *(#148, owner decision 2026-10-23; raised from 22.12 for tsup 9, #188, owner decision 2026-11-20)*:
+  Node 20 reached end-of-life in April 2026, vitest 5 needs 22.12, and tsup 9 needs 22.18. The Claude Desktop extension runs on Claude Desktop's own bundled Node (24.22 in Claude
   Desktop 3.6556.1, read from the app; not documented), and its manifest declares `engines.node` as
-  the minimum. CI also builds and tests on exactly 22.12 to keep that minimum true.
+  the minimum. CI also builds and tests on exactly 22.18 to keep that minimum true.
   - It was `>=20` until #95, then `>=20.8`. The cross-process sign-in lock on Linux is an abstract
     Unix socket, which Node can listen on only from 20.8. Every process sharing a cache must use the
     same lock, so older runtimes are refused rather than given a different one (§7.1a); that check

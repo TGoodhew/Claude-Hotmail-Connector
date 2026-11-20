@@ -52,9 +52,9 @@ jobs:
         env:
           REQUIRE_BUILT_PDF_WORKERS: "1"
 
-  # The .mcpb declares package.json engines.node (Node 22.12+) as its minimum,
+  # The .mcpb declares package.json engines.node (Node 22.18+) as its minimum,
   # and source checkouts need it too. Keep that claim true: build and test on
-  # exactly that version as well (#148). Claude Desktop itself runs extensions on
+  # exactly that version as well (#148; 22.18 since tsup 9, #188). Claude Desktop itself runs extensions on
   # its own bundled Node, 24.22 as of Claude Desktop 3.6556.1.
   minimum-node:
     runs-on: ubuntu-latest
@@ -64,7 +64,7 @@ jobs:
       - name: Set up Node.js (oldest supported)
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22.12"
+          node-version: "22.18"
           cache: npm
 
       - name: Install dependencies
