@@ -14,6 +14,7 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { clientSafeMessage, ValidationError } from "../util/errors.js";
+import { escapeHtml } from "../util/html.js";
 import { createLogger, type Logger } from "../util/log.js";
 
 export interface Recipient {
@@ -95,13 +96,6 @@ interface Entry {
   decided: Promise<ConfirmOutcome>;
   settle: (outcome: ConfirmOutcome) => void;
   expiry: ReturnType<typeof setTimeout>;
-}
-
-export function escapeHtml(s: string): string {
-  return s.replace(
-    /[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
-  );
 }
 
 export function createSendConfirmer(deps: SendConfirmerDeps): SendConfirmer {

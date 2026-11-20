@@ -108,14 +108,12 @@ async function run(): Promise<void> {
     baseUrl: config.graphBaseUrl,
     interactiveSignIn: { waitMs: ON_DEMAND_SIGN_IN_WAIT_MS },
   });
+  const openBrowser = (url: string) =>
+    import("open").then((m) => m.default(url).then(launcherSucceeded));
   // Only when sending is turned on (#57): every email is then shown on a local
   // page in the browser, and sent only when the user clicks Send there.
-  const sendConfirmer = config.allowSendMail
-    ? createSendConfirmer({
-        openBrowser: (url) => import("open").then((m) => m.default(url).then(launcherSucceeded)),
-      })
-    : undefined;
-  const server = createMcpServer({ graph: toolGraph, config, auth, sendConfirmer });
+  const sendConfirmer = config.allowSendMail ? createSendConfirmer({ openBrowser }) : undefined;
+  const server = createMcpServer({ graph: toolGraph, config, auth, sendConfirmer, openBrowser });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info("MCP server ready on stdio.", { account });

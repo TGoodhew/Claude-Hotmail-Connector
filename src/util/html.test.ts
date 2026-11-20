@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { htmlToText, NAMED_ENTITIES } from "./html.js";
+import { htmlToText, NAMED_ENTITIES, textToHtml } from "./html.js";
+
+// escapeHtml is tested with the send confirmation page that first used it.
+describe("textToHtml (#184)", () => {
+  it("turns every kind of line break into <br>", () => {
+    expect(textToHtml("one\ntwo\r\nthree\rfour")).toBe("one<br>two<br>three<br>four");
+  });
+
+  it("keeps blank lines", () => {
+    expect(textToHtml("Hi,\n\nThanks.")).toBe("Hi,<br><br>Thanks.");
+  });
+
+  it("escapes markup, so it shows as written", () => {
+    expect(textToHtml("<b>x</b> & y")).toBe("&lt;b&gt;x&lt;/b&gt; &amp; y");
+  });
+
+  it("keeps runs of spaces, which HTML would collapse", () => {
+    expect(textToHtml("a  b   c d")).toBe("a&nbsp; b&nbsp;&nbsp; c d");
+  });
+
+  it("round-trips through htmlToText", () => {
+    const text = "Dear <team> & co,\n\nLine two.\nLine three.";
+    expect(htmlToText(textToHtml(text))).toBe(text);
+  });
+});
 
 describe("htmlToText", () => {
   it("returns empty string for empty input", () => {

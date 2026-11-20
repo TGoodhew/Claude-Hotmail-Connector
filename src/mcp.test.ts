@@ -23,8 +23,8 @@ describe("toolsForScopes", () => {
       .map((t) => t.name)
       .sort();
 
-  it("keeps every tool but the send tools for the default scopes", () => {
-    const send = ["reply_to_email", "send_email"];
+  it("keeps every tool but the send and draft tools for the default scopes", () => {
+    const send = ["create_draft", "reply_to_email", "send_email"];
     expect(names(loadConfig({ MICROSOFT_CLIENT_ID: "c" }).scopes)).toEqual(
       allTools()
         .map((t) => t.name)
@@ -45,7 +45,12 @@ describe("toolsForScopes", () => {
 
   it("adds the send tools only when sending is turned on (#57)", () => {
     const on = loadConfig({ MICROSOFT_CLIENT_ID: "c", ALLOW_SEND_MAIL: "true" }).scopes;
-    expect(toolsForScopes(on)).toHaveLength(allTools().length);
+    expect(names(on)).toEqual(
+      allTools()
+        .map((t) => t.name)
+        .filter((n) => n !== "create_draft")
+        .sort(),
+    );
     // Narrowed away again, they go too.
     const narrowed = loadConfig({
       MICROSOFT_CLIENT_ID: "c",
@@ -53,6 +58,27 @@ describe("toolsForScopes", () => {
       MICROSOFT_SCOPES: "User.Read Mail.Read",
     }).scopes;
     expect(names(narrowed)).not.toContain("send_email");
+  });
+
+  it("adds create_draft only when drafts are turned on, independently of sending (#184)", () => {
+    const drafts = names(
+      loadConfig({ MICROSOFT_CLIENT_ID: "c", ALLOW_MAIL_DRAFTS: "true" }).scopes,
+    );
+    expect(drafts).toContain("create_draft");
+    expect(drafts).not.toContain("send_email");
+    const both = loadConfig({
+      MICROSOFT_CLIENT_ID: "c",
+      ALLOW_SEND_MAIL: "true",
+      ALLOW_MAIL_DRAFTS: "true",
+    }).scopes;
+    expect(toolsForScopes(both)).toHaveLength(allTools().length);
+    // Narrowed away again, it goes too.
+    const narrowed = loadConfig({
+      MICROSOFT_CLIENT_ID: "c",
+      ALLOW_MAIL_DRAFTS: "true",
+      MICROSOFT_SCOPES: "User.Read Mail.Read",
+    }).scopes;
+    expect(names(narrowed)).not.toContain("create_draft");
   });
 
   it("drops the calendar write tools when narrowed to Calendars.Read", () => {
@@ -98,6 +124,7 @@ describe("toolsForScopes", () => {
 
 const EXPECTED_TOOLS = [
   "cancel_event",
+  "create_draft",
   "create_event",
   "find_free_time",
   "get_attachment",
@@ -114,8 +141,13 @@ const EXPECTED_TOOLS = [
   "whoami",
 ];
 
-/** Offered by default: all but the send tools, which need ALLOW_SEND_MAIL (#57). */
-const DEFAULT_TOOLS = EXPECTED_TOOLS.filter((n) => n !== "send_email" && n !== "reply_to_email");
+/**
+ * Offered by default: all but the send tools, which need ALLOW_SEND_MAIL (#57),
+ * and create_draft, which needs ALLOW_MAIL_DRAFTS (#184).
+ */
+const DEFAULT_TOOLS = EXPECTED_TOOLS.filter(
+  (n) => n !== "send_email" && n !== "reply_to_email" && n !== "create_draft",
+);
 
 const config = loadConfig({ MICROSOFT_CLIENT_ID: "test-client" });
 
@@ -385,6 +417,7 @@ describe("built server subprocess", () => {
           ...stringEnv(),
           MICROSOFT_CLIENT_ID: "smoke-test-dummy-id",
           ALLOW_SEND_MAIL: "false",
+          ALLOW_MAIL_DRAFTS: "false",
           LOG_FILE: "false",
         },
         stderr: "ignore",

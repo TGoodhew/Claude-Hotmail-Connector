@@ -50,8 +50,8 @@ function checkAddresses(list: string[], label: string): string[] {
   return out;
 }
 
-/** The body and subject limits, shared by new emails and replies. */
-function checkText(subject: string, body: string): void {
+/** The body and subject limits, shared by new emails, replies and drafts (#184). */
+export function checkText(subject: string, body: string): void {
   if (subject.length > MAX_SUBJECT_CHARS) {
     throw new ValidationError(
       `The subject can be at most ${MAX_SUBJECT_CHARS} characters. Nothing was sent.`,
