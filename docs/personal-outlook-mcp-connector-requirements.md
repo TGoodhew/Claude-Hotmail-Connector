@@ -802,9 +802,9 @@ Claude-Hotmail-Connector/
     no `node_modules`), the extension icon (`icon.png`, rendered from `assets/icon.svg`, #179),
     license notices, and `manifest.json` (spec 0.3). It is validated and packed with the pinned
     `@anthropic-ai/mcpb` CLI.
-  - Claude Desktop installs it from **Settings → Extensions → Advanced settings → Install
-    Extension…**, runs it on its own bundled Node, and collects the client id through a generated
-    settings UI. The bundle declares Windows, macOS and Linux as compatible, but only **Windows** is
+  - Claude Desktop installs it from **Settings → Desktop app → Extensions (Manage) → Advanced
+    settings → Install Extension…** (**Settings → Extensions** before 6.28899), runs it on its own
+    bundled Node, and collects the client id through a generated settings UI. The bundle declares Windows, macOS and Linux as compatible, but only **Windows** is
     supported and tested by the maintainer; macOS and Linux are untested (README, Platforms).
   - Sign-in is on demand (§8.2). CI builds the bundle on every PR, and `release.yml` publishes it with
     a SHA-256 checksum when a `v*` tag matching `package.json` is pushed.

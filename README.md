@@ -94,8 +94,8 @@ message, but **only after you confirm each one**:
    working after 5 minutes. Claude never sees the page's link, so it can't confirm for you.
 3. Claude is told whether you sent or cancelled it.
 
-To turn it on, tick **Allow sending email** under **Settings → Extensions → Hotmail Connector**, or set
-`ALLOW_SEND_MAIL=true` when running from source. Then:
+To turn it on, tick **Allow sending email** under **Settings → Desktop app → Extensions (Manage) →
+Hotmail Connector**, or set `ALLOW_SEND_MAIL=true` when running from source. Then:
 
 - **Fully restart Claude Desktop** (Quit from the tray icon, then reopen it). Claude Desktop keeps
   using its earlier list of tools in chats until it restarts, so Claude won't see the send tools yet.
@@ -116,8 +116,8 @@ want to finish an email yourself: "draft a reply to Shane so I can review and se
 A reply draft goes to the message's sender (or its Reply-To), in the same conversation, with your text
 above the quoted original. Add Cc in Outlook if you need it.
 
-To turn it on, tick **Allow saving email drafts** under **Settings → Extensions → Hotmail
-Connector**, or set `ALLOW_MAIL_DRAFTS=true` when running from source. Then:
+To turn it on, tick **Allow saving email drafts** under **Settings → Desktop app → Extensions (Manage)
+→ Hotmail Connector**, or set `ALLOW_MAIL_DRAFTS=true` when running from source. Then:
 
 - **Fully restart Claude Desktop** (Quit from the tray icon, then reopen it), so chats see the new tool.
 - The first time, Claude will say your sign-in doesn't include permission to save drafts. Ask it to
@@ -171,12 +171,14 @@ The connector signs in as a **public/native client**. No client secret is ever u
    [latest release](https://github.com/TGoodhew/Claude-Hotmail-Connector/releases/latest). You can
    verify it against `SHA256SUMS.txt`, or check where it was built, with the GitHub CLI:
    `gh attestation verify hotmail-connector.mcpb --repo TGoodhew/Claude-Hotmail-Connector`.
-2. In Claude Desktop, open **Settings → Extensions → Advanced settings → Install Extension…**,
-   choose the downloaded file, then **Install**. (Double-clicking it, or dragging it onto the
-   Extensions page, may also work in some versions; dropping it on a chat only attaches it to the
-   chat.)
+2. In Claude Desktop, open **Settings → Desktop app**, select **Manage** next to **Extensions**,
+   then **Advanced settings → Install Extension…**. Choose the downloaded file, then **Install**.
+   (Older versions have it under **Settings → Extensions → Advanced settings**. Double-clicking the
+   file, or dragging it onto the Extensions page, may also work; dropping it on a chat only attaches
+   it to the chat.)
 3. Enter your **Application (client) ID** from step 1. You can change it later under **Settings →
-   Extensions → Hotmail Connector**. Make sure the extension is switched on there. If you also run
+   Desktop app → Extensions (Manage) → Hotmail Connector**. Make sure the extension is switched on
+   there. If you also run
    the connector from source (step 2b), use the same client ID. On Windows each keeps its own saved
    sign-in, because Claude Desktop is an MSIX app (see [Security](#security)).
 4. Ask Claude something that needs your mailbox or calendar. The first time, a Microsoft sign-in opens
@@ -342,8 +344,8 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
 ## Troubleshooting
 
 - **Seeing what the connector did:** Claude Desktop doesn't keep the extension's logs, so turn on
-  **Write a log file** under **Settings → Extensions → Hotmail Connector**, then restart Claude Desktop
-  fully (Quit from the tray icon). The log is `connector.log` in
+  **Write a log file** under **Settings → Desktop app → Extensions (Manage) → Hotmail Connector**,
+  then restart Claude Desktop fully (Quit from the tray icon). The log is `connector.log` in
   `%LOCALAPPDATA%\Packages\<Claude package>\LocalCache\Local\claude-hotmail-connector` (the
   folder Windows gives Claude Desktop, see [Security](#security) and
   [#176](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/176)), or in `%LOCALAPPDATA%\claude-hotmail-connector` from a source checkout with `LOG_FILE=true`. Each
@@ -365,7 +367,7 @@ private reporting as described in [SECURITY.md](SECURITY.md); please don't open 
   with an IANA `timeZone`, never a `Z`-suffixed value. The connector rejects `Z`/offset values for
   event times.
 - **"No Microsoft app registration is configured":** no client ID is set. Enter it in **Claude Desktop
-  → Settings → Extensions → Hotmail Connector**, or set `MICROSOFT_CLIENT_ID` in your client's server
+  → Settings → Desktop app → Extensions (Manage) → Hotmail Connector**, or set `MICROSOFT_CLIENT_ID` in your client's server
   config (step 2b).
 - **A tool says to finish signing in, or "sign-in is required":** finish the Microsoft sign-in in the
   browser window that opened, then ask Claude to retry. If no window appeared, check that a default web
