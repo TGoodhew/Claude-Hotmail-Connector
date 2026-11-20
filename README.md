@@ -203,9 +203,9 @@ More detail, including how the bundle is built, is in [`docs/packaging.md`](docs
 
 ## Step 2b: run from source (Claude Code / VS Code)
 
-Prerequisites: **Node.js 22.12 or later**; **Node.js 24 LTS** is recommended, and CI builds and
-releases on it. CI also tests on 22.12, the minimum. Node 20 is no longer supported: it reached
-end-of-life in April 2026 (#148).
+Prerequisites: **Node.js 22.18 or later**, and on Node 24 **24.11 or later** (the build tool, tsup 9,
+needs them, #188). **Node.js 24 LTS** is recommended, and CI builds and releases on it. CI also tests
+on 22.18, the minimum. Node 20 is no longer supported: it reached end-of-life in April 2026 (#148).
 
 ```bash
 git clone https://github.com/TGoodhew/Claude-Hotmail-Connector.git
