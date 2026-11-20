@@ -101,12 +101,29 @@ describe("createReplyDraft (#184)", () => {
     }));
     const saved = await createReplyDraft(g, "msg/1", "Thanks!\nSee you then.");
     // Graph's createReply keeps the quote, the thread and the Reply-To; the
-    // comment goes above the quote. Nothing else is written.
+    // comment goes above the quote. Nothing else is written. Graph reads the
+    // comment as HTML, so the line break is sent as <br>.
     expect(g.post).toHaveBeenCalledExactlyOnceWith("/me/messages/msg%2F1/createReply", {
-      comment: "Thanks!\nSee you then.",
+      comment: "Thanks!<br>See you then.",
     });
     expect(saved).toMatchObject({ subject: "RE: Your booking", to: ["jane@example.com"], cc: [] });
     expectNothingSentOrChanged(g);
+  });
+
+  it("sends text that looks like markup as text, so the draft can't hide or disguise anything", async () => {
+    const g = graphWith(async () => draftResponse);
+    // Written from an untrusted email, this could otherwise hide a passage or
+    // dress up a link in the draft the user sends.
+    await createReplyDraft(
+      g,
+      "m",
+      'See <a href="https://x.example">your bank</a> & <span style="display:none">more</span>',
+    );
+    expect(g.post).toHaveBeenCalledExactlyOnceWith("/me/messages/m/createReply", {
+      comment:
+        "See &lt;a href=&quot;https://x.example&quot;&gt;your bank&lt;/a&gt; &amp; " +
+        "&lt;span style=&quot;display:none&quot;&gt;more&lt;/span&gt;",
+    });
   });
 
   it("says to check Drafts when Graph saved one but gave no id, so it isn't saved twice", async () => {
@@ -128,7 +145,8 @@ describe("draft links (#184)", () => {
       composeDeeplink: "https://outlook.live.com/mail/0/deeplink/compose/AQMk%2Fab%2Bc%3D",
       draftsFolder: "https://outlook.live.com/mail/0/drafts/id/AQMk%2Fab%2Bc%3D",
     });
-    expect(draftUrl({ id: "x", webLink: WEB_LINK })).toBe(WEB_LINK);
+    // The compose deeplink opens the draft for editing; webLink only reads it.
+    expect(draftUrl({ id: "AQMk/ab+c=", webLink: WEB_LINK })).toBe(c.composeDeeplink);
   });
 
   it("opens nothing that isn't Outlook on the web over HTTPS", () => {
@@ -144,8 +162,9 @@ describe("draft links (#184)", () => {
       expect(draftUrl({ id: "x", webLink }), String(webLink)).toBeUndefined();
       expect(draftUrlCandidates({ id: "x", webLink }), String(webLink)).toEqual({});
     }
+    // A work account's Outlook host is kept.
     expect(draftUrl({ id: "x", webLink: "https://outlook.office.com/owa/?ItemID=x" })).toBe(
-      "https://outlook.office.com/owa/?ItemID=x",
+      "https://outlook.office.com/mail/0/deeplink/compose/x",
     );
   });
 });

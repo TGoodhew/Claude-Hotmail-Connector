@@ -7,6 +7,7 @@
  */
 
 import { GraphError, TimeoutError, ValidationError } from "../util/errors.js";
+import { textToHtml } from "../util/html.js";
 import type { CheckedEmail } from "./send.js";
 import type { GraphClient } from "./client.js";
 
@@ -92,6 +93,11 @@ export async function createDraft(graph: GraphClient, email: CheckedEmail): Prom
  * Save a reply to a message as a draft, without sending it. Graph puts the
  * `comment` above the quoted original, and keeps the thread and the message's
  * Reply-To, so the draft is just what Outlook's own Reply would start.
+ *
+ * Graph reads `comment` as HTML, for plain-text originals too (seen live,
+ * #184): raw text loses its line breaks, and text that looks like a tag would
+ * become real markup, such as a hidden passage or a disguised link written
+ * from an untrusted email. So the text is escaped, with line breaks as `<br>`.
  */
 export async function createReplyDraft(
   graph: GraphClient,
@@ -101,7 +107,7 @@ export async function createReplyDraft(
   let d: GraphDraft;
   try {
     d = await graph.post<GraphDraft>(`/me/messages/${encodeURIComponent(messageId)}/createReply`, {
-      comment: body,
+      comment: textToHtml(body),
     });
   } catch (e) {
     uncertain(e);
@@ -144,9 +150,10 @@ export function draftUrlCandidates(draft: Pick<SavedDraft, "id" | "webLink">): {
 
 /**
  * The link `create_draft` opens: undefined if Graph gave none on Outlook's own
- * hosts. Graph's `webLink` until the live check (#184) shows which form opens
- * the draft for editing.
+ * hosts. The compose deeplink with the draft's REST id, which the live check
+ * (#184) showed opens the draft for editing, a reply with its quote included.
+ * Graph's `webLink` only shows the draft read-only.
  */
 export function draftUrl(draft: Pick<SavedDraft, "id" | "webLink">): string | undefined {
-  return draftUrlCandidates(draft).webLink;
+  return draftUrlCandidates(draft).composeDeeplink;
 }

@@ -521,12 +521,17 @@ an email that the user finishes and sends themselves. This tool does that, and i
   `POST /me/messages` with `contentType: "Text"`, which saves it to Drafts without sending it.
 - **Reply draft:** `replyToMessageId` and `body`. `POST /me/messages/{id}/createReply` with the body as
   its `comment`, so Graph puts it above the quoted original and keeps the thread and the Reply-To.
-  `to`, `cc` and `subject` are rejected with a reply; Cc can be added in Outlook.
+  Graph reads `comment` as HTML, for plain-text originals too (seen live), so the body MUST be sent
+  HTML-escaped, with its line breaks as `<br>`: raw text loses its line breaks, and text that looks
+  like markup would become markup (a hidden passage, or a disguised link written from an untrusted
+  email). `to`, `cc` and `subject` are rejected with a reply; Cc can be added in Outlook.
 - **Limits:** the same as §7.9: plain addresses only, at most **10** recipients (To + Cc, duplicates
   merged), a body of at most **20,000** characters, and a subject of at most 255. No attachments; the
   user can add them in Outlook.
 - **Opening it:** the draft is opened in Outlook on the web, in the compose window, in the user's
-  default browser. The URL form is the one the live check shows opens an editable draft. The
+  default browser. The URL is `<Outlook origin>/mail/0/deeplink/compose/<draft REST id>`, on the host
+  of Graph's `webLink`: the live check showed it opens a new draft and a reply draft (quote included)
+  for editing, while `webLink` itself only shows the draft read-only (checked 2026-11-20). The
   `deeplink/compose?subject=&body=` form MUST NOT be the main path: it saves no draft, and long bodies
   exceed URL limits. If the browser can't be opened, the call still succeeds and returns the URL.
 - **Result:** the draft's id, subject, recipients and URL, whether the browser opened, and a line telling

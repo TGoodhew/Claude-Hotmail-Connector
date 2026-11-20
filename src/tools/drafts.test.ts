@@ -8,6 +8,8 @@ import { UNTRUSTED_CONTENT_NOTICE, type ToolContext } from "./types.js";
 type Post = (path: string, body: unknown) => Promise<unknown>;
 
 const WEB_LINK = "https://outlook.live.com/owa/?ItemID=d1&exvsurl=1";
+/** What create_draft opens: the compose deeplink, which opens the draft for editing. */
+const DRAFT_URL = "https://outlook.live.com/mail/0/deeplink/compose/d1";
 
 /** A Graph client that saves drafts; it can't send, change or delete anything. */
 function graph(reply = false) {
@@ -57,7 +59,7 @@ describe("create_draft (#184)", () => {
       ctx({ graph: g.client, openBrowser }),
     );
     expect(g.post).toHaveBeenCalledExactlyOnceWith("/me/messages", expect.anything());
-    expect(openBrowser).toHaveBeenCalledExactlyOnceWith(WEB_LINK);
+    expect(openBrowser).toHaveBeenCalledExactlyOnceWith(DRAFT_URL);
     expect(text(res)).toMatch(/^Draft saved and opened in Outlook\. Review and send it there\./);
     expect(res.structuredContent).toEqual({
       status: "draft_saved",
@@ -65,7 +67,7 @@ describe("create_draft (#184)", () => {
       subject: "Hi",
       to: ["jane@example.com"],
       cc: [],
-      url: WEB_LINK,
+      url: DRAFT_URL,
       browserOpened: true,
     });
     expect(text(res)).not.toMatch(/\bsent\b/i);
@@ -176,14 +178,14 @@ describe("create_draft (#184)", () => {
       ctx({ openBrowser: failing }),
     );
     expect(text(res)).toMatch(/^Draft saved to Drafts, but the browser couldn't be opened/);
-    expect(res.structuredContent).toMatchObject({ url: WEB_LINK, browserOpened: false });
+    expect(res.structuredContent).toMatchObject({ url: DRAFT_URL, browserOpened: false });
 
     // No launcher at all is the same.
     const none = await createDraftTool.handler(
       { to: ["a@example.com"], body: "b" },
       ctx({ openBrowser: undefined }),
     );
-    expect(none.structuredContent).toMatchObject({ url: WEB_LINK, browserOpened: false });
+    expect(none.structuredContent).toMatchObject({ url: DRAFT_URL, browserOpened: false });
   });
 
   it("doesn't wait forever for a stuck browser launch", async () => {
@@ -195,7 +197,7 @@ describe("create_draft (#184)", () => {
     );
     await vi.advanceTimersByTimeAsync(OPEN_BROWSER_WAIT_MS);
     const res = await call;
-    expect(res.structuredContent).toMatchObject({ browserOpened: false, url: WEB_LINK });
+    expect(res.structuredContent).toMatchObject({ browserOpened: false, url: DRAFT_URL });
   });
 
   it("waits less for the browser when the call's deadline is near", async () => {
@@ -214,7 +216,7 @@ describe("create_draft (#184)", () => {
     await vi.advanceTimersByTimeAsync(0);
     const res = await call;
     expect(stuck).toHaveBeenCalledOnce();
-    expect(res.structuredContent).toMatchObject({ browserOpened: false, url: WEB_LINK });
+    expect(res.structuredContent).toMatchObject({ browserOpened: false, url: DRAFT_URL });
   });
 
   it("points to Drafts, opening nothing, when Graph's link isn't Outlook's", async () => {

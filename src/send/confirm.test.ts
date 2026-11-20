@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../util/errors.js";
-import {
-  createSendConfirmer,
-  escapeHtml,
-  type OutgoingEmail,
-  type SendConfirmer,
-} from "./confirm.js";
+import { escapeHtml } from "../util/html.js";
+import { createSendConfirmer, type OutgoingEmail, type SendConfirmer } from "./confirm.js";
 
 const quiet = { debug() {}, info() {}, warn() {}, error() {} } as never;
 

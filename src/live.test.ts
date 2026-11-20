@@ -47,8 +47,12 @@ const LIVE = process.env.HOTMAIL_LIVE_TESTS === "1";
 const KEEP_DRAFTS = process.env.HOTMAIL_LIVE_KEEP_DRAFTS === "1";
 /** Built from a char code, so no escape sequence can be mangled in editing. */
 const NEWLINE = String.fromCharCode(10);
+/** Text that looks like markup, which a reply draft must keep as text (#184). */
+const TEST_DRAFT_SECOND = "Second line: <b>not bold</b> & kept.";
 /** Two lines, to check a reply draft keeps the line break. */
-const TEST_DRAFT_BODY = ["Hotmail Connector live test: don't send.", "Second line."].join(NEWLINE);
+const TEST_DRAFT_BODY = ["Hotmail Connector live test: don't send.", TEST_DRAFT_SECOND].join(
+  NEWLINE,
+);
 /** Deadlines for the write test's main steps and for removing what it created. */
 const MAIN_MS = 70_000;
 const CLEANUP_MS = 35_000;
@@ -341,13 +345,14 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
         expect(replyRead.conversationId).toBe(original.conversationId);
         const text = replyRead.body?.content ?? "";
         const first = text.indexOf("Hotmail Connector live test");
-        const second = text.indexOf("Second line.");
+        // Found as written only if Graph kept it as text, not as bold markup.
+        const second = text.indexOf(TEST_DRAFT_SECOND);
         // Lines, trimmed (Graph's text may use CRLF), to find the quote's header
         // and whether the comment's line break survived.
         const lines = text.split(NEWLINE).map((l) => l.trim());
         const quote = lines.findIndex((l) => /^(From|De|Von):/.test(l));
         const kept = lines.some(
-          (l, i) => l.endsWith("don't send.") && lines[i + 1] === "Second line.",
+          (l, i) => l.endsWith("don't send.") && lines[i + 1] === TEST_DRAFT_SECOND,
         );
         console.log(
           `[live] Reply draft text: comment at ${first}, second line at ${second}, quote header ` +
@@ -356,13 +361,13 @@ describe.runIf(LIVE)("live Microsoft Graph (opt-in, #48)", () => {
         // Links first, so they're printed even if a check below fails.
         await printLinks(g, "reply draft", reply);
         expect(first).toBeGreaterThanOrEqual(0);
-        expect(second).toBeGreaterThan(first);
-        // Graph must keep the comment's line break, else replies need HTML (#184).
+        expect(second, "the reply draft's text was read as markup").toBeGreaterThan(first);
+        // Graph reads the comment as HTML, so it's sent with <br> line breaks (#184).
         expect(kept, "the reply draft lost the comment's line break").toBe(true);
         // The quoted original must be kept, below the comment: its header line
         // ("From:", or "De:"/"Von:" in other languages) is how it's found.
         expect(quote, "the reply draft has no quoted original").toBeGreaterThanOrEqual(0);
-        expect(quote).toBeGreaterThan(lines.findIndex((l) => l === "Second line."));
+        expect(quote).toBeGreaterThan(lines.findIndex((l) => l === TEST_DRAFT_SECOND));
       } finally {
         if (KEEP_DRAFTS) {
           console.log(
