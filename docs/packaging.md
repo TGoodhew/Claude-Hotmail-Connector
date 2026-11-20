@@ -37,12 +37,15 @@ The connector signs in to Microsoft through an Entra app registration that **you
    `SHA256SUMS.txt`. Releases also carry signed build provenance, so with the GitHub CLI you can
    check the bundle was built by this repository's release workflow:
    `gh attestation verify hotmail-connector.mcpb --repo TGoodhew/Claude-Hotmail-Connector`.
-2. In Claude Desktop, open **Settings → Extensions → Advanced settings → Install Extension…**,
-   choose the file, then **Install**. (Double-clicking it, or dragging it onto the Extensions page, may
-   also work in some versions; dropping it on a chat only attaches it. Claude Desktop 3.1623.4 on
-   Windows, the MSIX build, registers no file association for `.mcpb`.)
+2. In Claude Desktop, open **Settings → Desktop app**, select **Manage** next to **Extensions**, then
+   **Advanced settings → Install Extension…**. Choose the file, then **Install**. (Claude Desktop
+   6.28899 moved the Extensions page there; older versions have it at **Settings → Extensions**.
+   Double-clicking the file, or dragging it onto the Extensions page, may also work; dropping it on a
+   chat only attaches it. Claude Desktop 3.1623.4 on Windows, the MSIX build, registers no file
+   association for `.mcpb`.)
 3. Enter your **Application (client) ID** when asked. You can change it later under **Settings →
-   Extensions → Hotmail Connector**. Make sure the extension is switched on there. If you also run a
+   Desktop app → Extensions (Manage) → Hotmail Connector**. Make sure the extension is switched on
+   there. If you also run a
    source checkout, give it the same client ID. On Windows each keeps its own saved sign-in, because
    Claude Desktop is an MSIX app (see **Cache location** below); elsewhere they share one when they
    use the same cache folder.
@@ -50,7 +53,7 @@ The connector signs in to Microsoft through an Entra app registration that **you
    in your browser. Finish it and that request carries on, or ask again if it took longer than about
    45 seconds.
 
-Uninstall or disable it from **Settings → Extensions**. Removing the extension doesn't delete the
+Uninstall or disable it from **Settings → Desktop app → Extensions (Manage)**. Removing the extension doesn't delete the
 saved sign-in, so to leave nothing behind, first ask Claude to **sign out** (the `sign_out` tool).
 
 ### Updating to a newer release

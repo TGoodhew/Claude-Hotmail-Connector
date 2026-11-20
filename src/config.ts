@@ -105,7 +105,7 @@ export const MISSING_CLIENT_ID_MESSAGE =
   '(see "Step 1: register your own Microsoft Entra application" in the README, or run ' +
   "scripts/register-app.ps1), " +
   "then enter its Application (client) ID in the extension's settings in Claude Desktop " +
-  "(Settings > Extensions > Hotmail Connector), or set MICROSOFT_CLIENT_ID.";
+  "(Settings > Desktop app > Extensions (Manage) > Hotmail Connector), or set MICROSOFT_CLIENT_ID.";
 
 const EnvSchema = z.object({
   // Optional in the schema so loadConfig can raise the friendlier MISSING_CLIENT_ID_MESSAGE.

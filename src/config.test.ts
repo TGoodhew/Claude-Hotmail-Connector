@@ -56,7 +56,10 @@ describe("loadConfig", () => {
   it("requires a client id: there is no bundled shared default", () => {
     expect(() => loadConfig({})).toThrow(ConfigError);
     expect(() => loadConfig({ MICROSOFT_CLIENT_ID: "   " })).toThrow(MISSING_CLIENT_ID_MESSAGE);
-    expect(MISSING_CLIENT_ID_MESSAGE).toContain("Settings > Extensions");
+    // Where Claude Desktop 6.28899 and later keep an extension's settings.
+    expect(MISSING_CLIENT_ID_MESSAGE).toContain(
+      "Settings > Desktop app > Extensions (Manage) > Hotmail Connector",
+    );
   });
 
   it("uses MICROSOFT_CLIENT_ID (trimmed)", () => {

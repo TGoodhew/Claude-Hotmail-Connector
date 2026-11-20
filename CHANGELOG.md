@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Claude Desktop's new Settings layout.** From Claude Desktop 6.28899, extensions are under
+  **Settings → Desktop app → Extensions (Manage)**, not **Settings → Extensions**. The "no client ID"
+  message, the README, the packaging notes and the release notes now say so.
+
 ## v1.1.0 — 2026-11-20
 
 Adds **drafts**: Claude can save an email or a reply to your Drafts folder and open it in Outlook,
@@ -7,10 +15,11 @@ where you review, edit and send it yourself. It's off by default, and it never s
 also updates the docs for where current Claude Desktop builds keep their data, and takes security
 updates to the connector's dependencies.
 
-**Updating from v1.0.0.** Install the new `hotmail-connector.mcpb` the same way: **Settings →
-Extensions → Advanced settings → Install Extension…**. Your client ID, settings and sign-in carry over.
-Fully restart Claude Desktop (Quit from the tray icon) to see the new **Allow saving email drafts**
-setting.
+**Updating from v1.0.0.** Install the new `hotmail-connector.mcpb` over the old one. In current
+Claude Desktop that's **Settings → Desktop app**, **Manage** next to **Extensions**, then **Advanced
+settings → Install Extension…** (older versions: **Settings → Extensions → Advanced settings**). Your
+client ID, settings and sign-in carry over. Fully restart Claude Desktop (Quit from the tray icon) to
+see the new **Allow saving email drafts** setting.
 
 ### Added
 

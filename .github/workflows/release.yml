@@ -96,7 +96,7 @@ jobs:
 
           ### Install and verify
 
-          Download \`hotmail-connector.mcpb\`, then in Claude Desktop open **Settings → Extensions → Advanced settings → Install Extension…**, choose it, and enter your own Entra app's Application (client) ID. See the README for creating the app registration, and for Claude Code (source) setup.
+          Download \`hotmail-connector.mcpb\`, then in Claude Desktop open **Settings → Desktop app**, select **Manage** next to **Extensions**, then **Advanced settings → Install Extension…** (on older versions, **Settings → Extensions → Advanced settings**). Choose it, and enter your own Entra app's Application (client) ID. See the README for creating the app registration, and for Claude Code (source) setup.
 
           Verify the download against \`SHA256SUMS.txt\`, or check its build provenance: \`gh attestation verify hotmail-connector.mcpb --repo $GITHUB_REPOSITORY\`.
           EOF
