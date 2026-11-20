@@ -1,6 +1,6 @@
 {
   "name": "claude-hotmail-connector",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local (stdio) MCP server and Claude Desktop extension giving Claude email (read, plus opt-in sending you confirm) and read/write calendar access to your personal Microsoft account (Outlook.com / Hotmail / Live) via Microsoft Graph.",
   "license": "MIT",
   "author": "Tony Goodhew",

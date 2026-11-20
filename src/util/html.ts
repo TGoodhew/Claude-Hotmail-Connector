@@ -405,3 +405,23 @@ export function htmlToText(html: string): string {
     .replace(/^[\n ]+|[\n ]+$/g, ""); // not tabs: they can be empty cells
   return text.replace(PLACEHOLDER_RE, (_, i: string) => pres[Number(i)] ?? "");
 }
+
+/** Escape text for HTML, attributes included, so it's shown as written and never read as markup. */
+export function escapeHtml(s: string): string {
+  return s.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  );
+}
+
+/**
+ * Plain text as HTML that looks the same: escaped, with each line break
+ * (CRLF, CR or LF) as `<br>` and runs of spaces kept. Graph reads a reply
+ * draft's `comment` as HTML (#184): raw text there loses its line breaks, and
+ * anything that looks like a tag becomes markup.
+ */
+export function textToHtml(text: string): string {
+  return escapeHtml(text)
+    .replace(/\r\n|\r|\n/g, "<br>")
+    .replace(/ (?= )/g, "&nbsp;"); // all but the last space of a run, so the run survives
+}
