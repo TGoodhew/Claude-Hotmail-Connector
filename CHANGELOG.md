@@ -1,9 +1,11 @@
 # Changelog
 
-## v1.1.0 — unreleased
+## v1.1.0 — 2026-11-20
 
 Adds **drafts**: Claude can save an email or a reply to your Drafts folder and open it in Outlook,
-where you review, edit and send it yourself. It's off by default, and it never sends.
+where you review, edit and send it yourself. It's off by default, and it never sends. This release
+also updates the docs for where current Claude Desktop builds keep their data, and takes security
+updates to the connector's dependencies.
 
 **Updating from v1.0.0.** Install the new `hotmail-connector.mcpb` the same way: **Settings →
 Extensions → Advanced settings → Install Extension…**. Your client ID, settings and sign-in carry over.
@@ -19,12 +21,44 @@ setting.
     source). The first draft asks you to sign in again, to allow it.
   - A new draft goes to the addresses Claude gives. A reply draft goes to the message's sender (or its
     Reply-To), in the same conversation, with your text above the quoted original.
-  - The draft opens in Outlook on the web. If the browser can't be opened, Claude gets the link, and
-    the draft is in **Drafts** anyway.
+  - The draft opens in Outlook on the web, in the compose window, ready to edit. If the browser can't
+    be opened, Claude gets the link, and the draft is in **Drafts** anyway.
+  - Your text stays plain text, line breaks included. Microsoft reads a reply's text as HTML, so the
+    connector escapes it: nothing Claude writes can turn into hidden text or a disguised link.
+  - The same limits as sending apply, a reply's inherited recipients and subject included: at most
+    10 people, a subject of 255 characters, and 20,000 characters of text.
   - It needs `Mail.ReadWrite`, which also allows changing and deleting mail: Microsoft has no
     drafts-only permission. The connector uses it only to create drafts. The spec's least-privilege
     rule now allows it only behind this setting (spec §6, §7.10, threat T13).
   - The opt-in live test (`npm run test:live`) checks drafts too, and prints the ways to open them.
+
+### Changed
+
+- **Running from source needs Node.js 22.18 or later, or 24.11 or later on Node 24**
+  ([#188](https://github.com/TGoodhew/Claude-Hotmail-Connector/pull/188)). The build tool, tsup 9,
+  needs it; the built connector is the same. The extension's manifest declares the same range.
+  Claude Desktop runs the extension on its own Node 24, so installing the extension isn't affected.
+
+### Fixed
+
+- **Docs for Claude Desktop's moved data folder**
+  ([#196](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/196),
+  [#197](https://github.com/TGoodhew/Claude-Hotmail-Connector/issues/197)). Current Microsoft Store
+  builds keep their data, config included, in `%LOCALAPPDATA%\Claude-Data`.
+  - The README has a new **Finding Claude Desktop's config file** section, with a PowerShell snippet
+    that shows which `claude_desktop_config.json` Claude Desktop reads.
+  - **Every tool appears twice** now says how to remove a v0.1.0 entry that the move copied into
+    `Claude-Data`, which the v0.1.0 uninstaller doesn't reach.
+  - The extension's sign-in and log file are still in `Packages\<Claude package>\LocalCache\Local`;
+    the docs now name both Store package IDs.
+
+### Security
+
+- **Dependency updates** for published advisories: `zod` 4.6.7
+  ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5), high), `body-parser`
+  2.4.0 ([GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828), high, not in the
+  bundle), `hono` 4.13.19 (moderate, not in the bundle) and `dotenv` 18.0.9, plus build and test
+  tools.
 
 ## v1.0.0 — 2026-10-23
 
